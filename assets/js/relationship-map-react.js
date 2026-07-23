@@ -2378,8 +2378,8 @@
           readField("Concept", character.concept, true),
           readField("Ambition", character.ambition, true),
           readField("Desire", character.desire, true),
-          readField("Convictions", character.convictions, true),
-          readField("Touchstones", character.touchstones, true)
+          dossierEntryGroup({ title: "Convictions", entryText: character.convictions, accentColor: "#d10d40", emptyText: "Not set" }),
+          dossierEntryGroup({ title: "Touchstones", entryText: character.touchstones, accentColor: "#d10d40", emptyText: "Not set" })
         ];
 
         var pairFields = [
