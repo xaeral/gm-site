@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tools | GM Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/css/styles.css" />
+</head>
+<body>
+  <div class="site-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><h1>Campaign Atlas</h1><p>GM Command Center</p></div>
+      <nav class="nav" aria-label="Primary navigation">
+        <a class="nav-link" href="../index.html">Home</a>
+        <a class="nav-link" href="gm-notes.html">GM Notes</a>
+        <a class="nav-link" href="relationship-map.html">Relationship Map</a>
+        <a class="nav-link" href="characters.html">Characters</a>
+        <a class="nav-link" href="locations.html">Locations</a>
+        <a class="nav-link" href="timeline.html">Timeline</a>
+        <a class="nav-link" href="sessions.html">Sessions</a>
+        <a class="nav-link active" href="tools.html">Tools</a>
+        <a class="nav-link" href="settings.html">Settings</a>
+      </nav>
+      <div class="sidebar-footer"><p>Module</p><strong>Utility Tools</strong></div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="sidebar">Menu</button>
+        <div class="topbar-title"><h2>Tools</h2><p>GM utility workspace for checklists and trackers.</p></div>
+      </header>
+
+      <section class="detail-grid">
+        <article class="card"><h3>Initiative Tracker</h3><p class="note">Combat turn order helper.</p></article>
+        <article class="card"><h3>Encounter Builder</h3><p class="note">Assemble scenes and pacing cues.</p></article>
+        <article class="card"><h3>Safety Checklist</h3><p class="note">Session safety and table agreements.</p></article>
+        <article class="card"><h3>Faction Reputation</h3><p class="note">Quick influence and standing notes.</p></article>
+      </section>
+
+      <footer class="page-footer"><small>Campaign Atlas Dashboard</small><small id="yearStamp"></small></footer>
+    </main>
+  </div>
+
+  <script src="../assets/js/common.js"></script>
+</body>
+</html>

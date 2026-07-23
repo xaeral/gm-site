@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GM Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/css/styles.css" />
+</head>
+<body>
+  <div class="site-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <h1>Campaign Atlas</h1>
+        <p>GM Command Center</p>
+      </div>
+
+      <nav class="nav" aria-label="Primary navigation">
+        <a class="nav-link active" href="index.html">Home</a>
+        <a class="nav-link" href="pages/gm-notes.html">GM Notes</a>
+        <a class="nav-link" href="pages/relationship-map.html">Relationship Map</a>
+        <a class="nav-link" href="pages/characters.html">Characters</a>
+        <a class="nav-link" href="pages/locations.html">Locations</a>
+        <a class="nav-link" href="pages/timeline.html">Timeline</a>
+        <a class="nav-link" href="pages/sessions.html">Sessions</a>
+        <a class="nav-link" href="pages/tools.html">Tools</a>
+        <a class="nav-link" href="pages/settings.html">Settings</a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <p>Session Focus</p>
+        <strong>The Weeping Crown</strong>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="sidebar">Menu</button>
+        <div class="topbar-title">
+          <h2>Home Dashboard</h2>
+          <p>All campaign tools in one organized workspace.</p>
+        </div>
+      </header>
+
+      <section class="search-panel card">
+        <label for="globalSearch">Search Campaign Content</label>
+        <div class="search-row">
+          <input id="globalSearch" type="search" placeholder="Search NPCs, clues, locations, sessions..." autocomplete="off" />
+          <button id="clearSearch" type="button">Clear</button>
+        </div>
+        <ul id="searchResults" class="search-results" aria-live="polite"></ul>
+      </section>
+
+      <section class="dashboard-grid" aria-label="Quick access">
+        <article class="card quick-card">
+          <h3>GM Notes</h3>
+          <p>Direct access to your published campaign notebook.</p>
+          <a href="pages/gm-notes.html">Open Notes</a>
+        </article>
+        <article class="card quick-card">
+          <h3>Relationship Map</h3>
+          <p>Inspect alliance webs, factions, and hidden ties.</p>
+          <a href="pages/relationship-map.html">Open Map</a>
+        </article>
+        <article class="card quick-card">
+          <h3>Sessions</h3>
+          <p>Track prep status, unresolved hooks, and recap flow.</p>
+          <a href="pages/sessions.html">View Sessions</a>
+        </article>
+        <article class="card quick-card">
+          <h3>Encounter Vault</h3>
+          <p>Organize active combat scenes and challenge ideas.</p>
+          <a href="pages/tools.html">Open Tools</a>
+        </article>
+      </section>
+
+      <section class="columns">
+        <article class="card" aria-labelledby="recent-notes-heading">
+          <div class="section-heading">
+            <h3 id="recent-notes-heading">Recent Notes</h3>
+            <a href="pages/gm-notes.html">View all</a>
+          </div>
+          <ul id="recentNotesList" class="stack-list"></ul>
+        </article>
+
+        <article class="card" aria-labelledby="pinned-npcs-heading" id="npcs">
+          <div class="section-heading">
+            <h3 id="pinned-npcs-heading">Pinned NPCs</h3>
+            <a href="pages/characters.html">Manage list</a>
+          </div>
+          <ul id="pinnedNpcList" class="stack-list"></ul>
+        </article>
+
+        <article class="card" aria-labelledby="active-threads-heading">
+          <div class="section-heading">
+            <h3 id="active-threads-heading">Active Threads</h3>
+            <a href="#clues">Cross-reference clues</a>
+          </div>
+          <ul id="activeThreadsList" class="stack-list"></ul>
+        </article>
+      </section>
+
+      <section class="detail-grid">
+        <article class="card" id="locations">
+          <h3>Locations</h3>
+          <p class="note"><a class="inline-link" href="pages/locations.html">Open Locations Database</a></p>
+          <ul id="locationList" class="tag-list"></ul>
+        </article>
+
+        <article class="card" id="clues">
+          <h3>Clues</h3>
+          <ul id="clueList" class="tag-list"></ul>
+        </article>
+
+        <article class="card" id="sessions">
+          <h3>Sessions</h3>
+          <p class="note"><a class="inline-link" href="pages/sessions.html">Open Sessions Archive</a></p>
+          <ul id="sessionList" class="tag-list"></ul>
+        </article>
+
+        <article class="card" id="encounters">
+          <h3>Encounters</h3>
+          <ul id="encounterList" class="tag-list"></ul>
+        </article>
+      </section>
+
+      <section class="card" id="quick-links">
+        <div class="section-heading">
+          <h3>Quick Links</h3>
+          <a href="#">Edit links</a>
+        </div>
+        <ul id="quickLinksList" class="link-grid"></ul>
+      </section>
+
+      <footer class="page-footer">
+        <small>Campaign Atlas Dashboard</small>
+        <small id="yearStamp"></small>
+      </footer>
+    </main>
+  </div>
+
+  <script src="assets/js/data.js"></script>
+  <script src="assets/js/common.js"></script>
+  <script src="assets/js/app.js"></script>
+</body>
+</html>

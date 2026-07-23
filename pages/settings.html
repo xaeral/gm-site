@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Settings | GM Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/css/styles.css" />
+</head>
+<body>
+  <div class="site-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><h1>Campaign Atlas</h1><p>GM Command Center</p></div>
+      <nav class="nav" aria-label="Primary navigation">
+        <a class="nav-link" href="../index.html">Home</a>
+        <a class="nav-link" href="gm-notes.html">GM Notes</a>
+        <a class="nav-link" href="relationship-map.html">Relationship Map</a>
+        <a class="nav-link" href="characters.html">Characters</a>
+        <a class="nav-link" href="locations.html">Locations</a>
+        <a class="nav-link" href="timeline.html">Timeline</a>
+        <a class="nav-link" href="sessions.html">Sessions</a>
+        <a class="nav-link" href="tools.html">Tools</a>
+        <a class="nav-link active" href="settings.html">Settings</a>
+      </nav>
+      <div class="sidebar-footer"><p>Module</p><strong>Site Settings</strong></div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="sidebar">Menu</button>
+        <div class="topbar-title"><h2>Settings</h2><p>Application preferences and behavior controls.</p></div>
+      </header>
+
+      <section class="columns">
+        <article class="card"><h3>General</h3><p class="note">Chronicle identity, autosave, and display defaults.</p></article>
+        <article class="card"><h3>Editor</h3><p class="note">Writing mode, markdown preferences, and shortcuts.</p></article>
+        <article class="card"><h3>Data</h3><p class="note">Backups, import/export, and retention controls.</p></article>
+      </section>
+
+      <footer class="page-footer"><small>Campaign Atlas Dashboard</small><small id="yearStamp"></small></footer>
+    </main>
+  </div>
+
+  <script src="../assets/js/common.js"></script>
+</body>
+</html>

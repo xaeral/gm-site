@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Locations | GM Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../assets/css/styles.css" />
+</head>
+<body>
+  <div class="site-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><h1>Campaign Atlas</h1><p>GM Command Center</p></div>
+      <nav class="nav" aria-label="Primary navigation">
+        <a class="nav-link" href="../index.html">Home</a>
+        <a class="nav-link" href="gm-notes.html">GM Notes</a>
+        <a class="nav-link" href="relationship-map.html">Relationship Map</a>
+        <a class="nav-link" href="characters.html">Characters</a>
+        <a class="nav-link active" href="locations.html">Locations</a>
+        <a class="nav-link" href="timeline.html">Timeline</a>
+        <a class="nav-link" href="sessions.html">Sessions</a>
+        <a class="nav-link" href="tools.html">Tools</a>
+        <a class="nav-link" href="settings.html">Settings</a>
+      </nav>
+      <div class="sidebar-footer"><p>Module</p><strong>Location Database</strong></div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="sidebar">Menu</button>
+        <div class="topbar-title"><h2>Locations</h2><p>Havens, domains, elysiums, and linked campaign history.</p></div>
+      </header>
+
+      <section class="columns">
+        <article class="card">
+          <h3>Location Types</h3>
+          <ul class="stack-list">
+            <li class="stack-item"><strong>Havens</strong><p>Personal and faction shelters.</p></li>
+            <li class="stack-item"><strong>Domains</strong><p>Territory ownership and pressure zones.</p></li>
+            <li class="stack-item"><strong>Elysiums</strong><p>Neutral grounds and diplomacy points.</p></li>
+            <li class="stack-item"><strong>Businesses and Landmarks</strong><p>Operational fronts and notable places.</p></li>
+          </ul>
+        </article>
+
+        <article class="card">
+          <h3>Linked Data</h3>
+          <ul class="stack-list">
+            <li class="stack-item"><strong>Linked Characters</strong><p>Who controls or frequents each location.</p></li>
+            <li class="stack-item"><strong>Session History</strong><p>Which sessions visited the location.</p></li>
+            <li class="stack-item"><strong>Maps and Notes</strong><p>Floor plans, clues, and GM commentary.</p></li>
+          </ul>
+        </article>
+      </section>
+
+      <footer class="page-footer"><small>Campaign Atlas Dashboard</small><small id="yearStamp"></small></footer>
+    </main>
+  </div>
+
+  <script src="../assets/js/common.js"></script>
+</body>
+</html>
