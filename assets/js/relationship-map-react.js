@@ -18,13 +18,30 @@
   var dbPromise = null;
   var persistenceQueue = Promise.resolve();
 
+  var CAMPAIGN_ATLAS_ICON_ASSETS = {
+    characters: "../assets/Icons/Characters.svg",
+    zones: "../assets/Icons/zones.svg",
+    relationships: "../assets/Icons/Relationships.svg",
+    tag: "../assets/Icons/tag.svg",
+    settings: "../assets/Icons/settings.svg",
+    menu: "../assets/Icons/Menu.svg",
+    delete: "../assets/Icons/delete.svg",
+    copy: "../assets/Icons/copy.svg",
+    export: "../assets/Icons/export.svg",
+    badges: "../assets/Icons/Badges.svg",
+    overlays: "../assets/Icons/Overlays.svg",
+    dashboard: "../assets/Icons/Dashboard.svg"
+  };
+
+  var warnedMissingIcons = {};
+
   var TOOL_NAV = [
-    { key: "characters", label: "Characters", icon: "◉" },
-    { key: "zones", label: "Zones", icon: "▭" },
-    { key: "relationships", label: "Relationships", icon: "↔" },
-    { key: "tags", label: "Tags", icon: "#" },
-    { key: "badges", label: "Badges", icon: "◎" },
-    { key: "overlays", label: "Overlays", icon: "◍" }
+    { key: "characters", label: "Characters", iconId: "characters", icon: "◉" },
+    { key: "zones", label: "Zones", iconId: "zones", icon: "▭" },
+    { key: "relationships", label: "Relationships", iconId: "relationships", icon: "↔" },
+    { key: "tags", label: "Tags", iconId: "tag", icon: "#" },
+    { key: "badges", label: "Badges", iconId: "badges", icon: "◎" },
+    { key: "overlays", label: "Overlays", iconId: "overlays", icon: "◍" }
   ];
 
   var SECT_OPTIONS = ["None", "Anarch", "Ashirra", "Camarilla", "Sabbat"];
@@ -442,6 +459,33 @@
     return lines.map(function (line) { return line.trim(); }).filter(function (line) { return line.length > 0; });
   }
 
+  function safeHexColor(value, fallback) {
+    var text = String(value || "").trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(text)) {
+      return text.toLowerCase();
+    }
+    return fallback;
+  }
+
+  function resolveCampaignAtlasIcon(iconId, fallbackGlyph) {
+    var asset = CAMPAIGN_ATLAS_ICON_ASSETS[iconId];
+    if (!asset) {
+      if (!warnedMissingIcons[iconId]) {
+        warnedMissingIcons[iconId] = true;
+        console.warn("Missing Campaign Atlas icon asset for '" + iconId + "'. Falling back to current icon.");
+      }
+      return {
+        src: "",
+        fallback: fallbackGlyph || ""
+      };
+    }
+
+    return {
+      src: asset,
+      fallback: fallbackGlyph || ""
+    };
+  }
+
   function dossierEntryGroup(options) {
     var opts = options && typeof options === "object" ? options : {};
     var title = opts.title || "";
@@ -462,6 +506,88 @@
         </div>`
         : html`<p>${emptyText}</p>`}
     </article>`;
+  }
+
+  function IconButton(options) {
+    var opts = options && typeof options === "object" ? options : {};
+    var className = opts.className || "";
+    var icon = opts.icon || "";
+    var ariaLabel = opts.ariaLabel || "";
+    var title = opts.title || ariaLabel || "";
+    var type = opts.type || "button";
+    var disabled = Boolean(opts.disabled);
+    var onClick = opts.onClick;
+
+    return html`<button
+      type=${type}
+      className=${"icon-button" + (className ? " " + className : "")}
+      aria-label=${ariaLabel || title}
+      title=${title}
+      disabled=${disabled}
+      onClick=${onClick}
+    >
+      <span className="icon-button-icon" aria-hidden="true">${icon}</span>
+    </button>`;
+  }
+
+  function ToolbarIcon(options) {
+    var opts = options && typeof options === "object" ? options : {};
+    var iconId = opts.iconId || "";
+    var fallbackGlyph = opts.fallbackGlyph || "";
+    var alt = opts.alt || opts.label || "";
+    var resolved = resolveCampaignAtlasIcon(iconId, fallbackGlyph);
+    var _imageError = useState(false);
+    var imageError = _imageError[0];
+    var setImageError = _imageError[1];
+
+    if (!resolved.src || imageError) {
+      return html`<span className="tool-rail-icon-fallback" aria-hidden="true">${resolved.fallback}</span>`;
+    }
+
+    return html`<img
+      className="tool-rail-icon-image"
+      src=${resolved.src}
+      alt=${alt}
+      aria-hidden=${alt ? "false" : "true"}
+      onError=${function () {
+        setImageError(true);
+        if (resolved.src && !warnedMissingIcons[iconId + "::error"]) {
+          warnedMissingIcons[iconId + "::error"] = true;
+          console.warn("Failed to load Campaign Atlas icon asset for '" + iconId + "': " + resolved.src);
+        }
+      }}
+    />`;
+  }
+
+  function ColorField(options) {
+    var opts = options && typeof options === "object" ? options : {};
+    var label = opts.label || "Colour";
+    var value = safeHexColor(opts.value, opts.fallback || "#d10d40");
+    var onChange = typeof opts.onChange === "function" ? opts.onChange : function () {};
+    var fieldName = opts.fieldName || label;
+
+    return html`<div className="color-field">
+      <label>${label}</label>
+      <div className="color-field-row">
+        <div className="color-field-swatch-wrap">
+          <span className="color-field-swatch" style=${{ backgroundColor: value }} aria-hidden="true"></span>
+          <input
+            className="color-field-native"
+            type="color"
+            value=${value}
+            aria-label=${fieldName}
+            onInput=${function (event) { onChange(event.target.value); }}
+          />
+        </div>
+        <input
+          className="color-field-hex"
+          value=${value}
+          onInput=${function (event) { onChange(event.target.value); }}
+          spellCheck="false"
+          inputMode="text"
+        />
+      </div>
+    </div>`;
   }
 
   function richHtmlToText(htmlContent) {
@@ -1181,6 +1307,35 @@
     var contextMenu = _contextMenu[0];
     var setContextMenu = _contextMenu[1];
 
+    var _tagGroupExpanded = useState({});
+    var tagGroupExpanded = _tagGroupExpanded[0];
+    var setTagGroupExpanded = _tagGroupExpanded[1];
+
+    var _tagGroupCreate = useState({ open: false, name: "" });
+    var tagGroupCreate = _tagGroupCreate[0];
+    var setTagGroupCreate = _tagGroupCreate[1];
+
+    var _tagGroupRenameDraft = useState({ groupId: null, name: "" });
+    var tagGroupRenameDraft = _tagGroupRenameDraft[0];
+    var setTagGroupRenameDraft = _tagGroupRenameDraft[1];
+
+    var _tagDraftsByGroup = useState({});
+    var tagDraftsByGroup = _tagDraftsByGroup[0];
+    var setTagDraftsByGroup = _tagDraftsByGroup[1];
+
+    var _tagEditDialog = useState({
+      open: false,
+      groupId: null,
+      tagId: null,
+      originalName: "",
+      name: "",
+      color: "#d10d40",
+      icon: "",
+      description: ""
+    });
+    var tagEditDialog = _tagEditDialog[0];
+    var setTagEditDialog = _tagEditDialog[1];
+
     var _undo = useState([]);
     var undoStack = _undo[0];
     var setUndoStack = _undo[1];
@@ -1383,6 +1538,30 @@
       }
       previousPanelRef.current = activePanel;
     }, [activePanel]);
+
+    useEffect(function () {
+      setTagGroupExpanded(function (prev) {
+        var next = {};
+        var changed = false;
+
+        (data.tagGroups || []).forEach(function (group) {
+          if (Object.prototype.hasOwnProperty.call(prev, group.id)) {
+            next[group.id] = prev[group.id];
+          } else {
+            next[group.id] = true;
+            changed = true;
+          }
+        });
+
+        Object.keys(prev).forEach(function (groupId) {
+          if (!Object.prototype.hasOwnProperty.call(next, groupId)) {
+            changed = true;
+          }
+        });
+
+        return changed ? next : prev;
+      });
+    }, [data.tagGroups]);
 
     useEffect(function () {
       function onKey(event) {
@@ -1668,6 +1847,278 @@
       });
     }
 
+    function safeHexColor(value, fallback) {
+      var text = String(value || "").trim();
+      if (/^#[0-9a-fA-F]{6}$/.test(text)) {
+        return text.toLowerCase();
+      }
+      return fallback;
+    }
+
+    function makeUiId(prefix) {
+      return prefix + "-" + Date.now() + "-" + Math.floor(Math.random() * 1000);
+    }
+
+    function countTagUsage(tagName) {
+      return data.characters.filter(function (character) {
+        return (character.tags || []).indexOf(tagName) >= 0;
+      }).length;
+    }
+
+    function formatTagUsageCount(usageCount) {
+      if (usageCount <= 0) {
+        return "Unused";
+      }
+      if (usageCount === 1) {
+        return "1 character";
+      }
+      return usageCount + " characters";
+    }
+
+    function toggleTagGroup(groupId) {
+      setTagGroupExpanded(function (prev) {
+        var current = Object.prototype.hasOwnProperty.call(prev, groupId) ? prev[groupId] : true;
+        return Object.assign({}, prev, { [groupId]: !current });
+      });
+    }
+
+    function openTagGroupCreate() {
+      setTagGroupCreate({ open: true, name: "" });
+    }
+
+    function cancelTagGroupCreate() {
+      setTagGroupCreate({ open: false, name: "" });
+    }
+
+    function saveTagGroupCreate() {
+      var name = String(tagGroupCreate.name || "").trim();
+      if (!name) {
+        return;
+      }
+      var groupId = makeUiId("tg");
+      commit(function (next) {
+        next.tagGroups.push({ id: groupId, name: name, tags: [] });
+      });
+      setTagGroupExpanded(function (prev) { return Object.assign({}, prev, { [groupId]: true }); });
+      setTagGroupCreate({ open: false, name: "" });
+    }
+
+    function openTagGroupRename(group) {
+      setTagGroupRenameDraft({ groupId: group.id, name: group.name || "" });
+    }
+
+    function cancelTagGroupRename() {
+      setTagGroupRenameDraft({ groupId: null, name: "" });
+    }
+
+    function saveTagGroupRename() {
+      var targetGroupId = tagGroupRenameDraft.groupId;
+      var nextName = String(tagGroupRenameDraft.name || "").trim();
+      if (!targetGroupId || !nextName) {
+        cancelTagGroupRename();
+        return;
+      }
+
+      commit(function (next) {
+        var target = next.tagGroups.find(function (group) { return group.id === targetGroupId; });
+        if (target) {
+          target.name = nextName;
+        }
+      });
+
+      cancelTagGroupRename();
+    }
+
+    function deleteTagGroup(groupId) {
+      var group = (data.tagGroups || []).find(function (item) { return item.id === groupId; });
+      if (!group) {
+        return;
+      }
+
+      commit(function (next) {
+        next.tagGroups = next.tagGroups.filter(function (item) { return item.id !== groupId; });
+      });
+
+      setTagDraftsByGroup(function (prev) {
+        if (!Object.prototype.hasOwnProperty.call(prev, groupId)) {
+          return prev;
+        }
+        var next = Object.assign({}, prev);
+        delete next[groupId];
+        return next;
+      });
+
+      setTagGroupExpanded(function (prev) {
+        if (!Object.prototype.hasOwnProperty.call(prev, groupId)) {
+          return prev;
+        }
+        var next = Object.assign({}, prev);
+        delete next[groupId];
+        return next;
+      });
+
+      if (tagGroupRenameDraft.groupId === groupId) {
+        cancelTagGroupRename();
+      }
+      if (tagEditDialog.groupId === groupId) {
+        closeTagEditDialog();
+      }
+    }
+
+    function openTagCreate(groupId) {
+      setTagDraftsByGroup(function (prev) {
+        return Object.assign({}, prev, {
+          [groupId]: {
+            open: true,
+            name: "",
+            color: "#d10d40"
+          }
+        });
+      });
+    }
+
+    function closeTagCreate(groupId) {
+      setTagDraftsByGroup(function (prev) {
+        if (!Object.prototype.hasOwnProperty.call(prev, groupId)) {
+          return prev;
+        }
+        var next = Object.assign({}, prev);
+        next[groupId] = { open: false, name: "", color: "#d10d40" };
+        return next;
+      });
+    }
+
+    function updateTagCreateDraft(groupId, field, value) {
+      setTagDraftsByGroup(function (prev) {
+        var current = prev[groupId] || { open: true, name: "", color: "#d10d40" };
+        return Object.assign({}, prev, {
+          [groupId]: Object.assign({}, current, { [field]: value })
+        });
+      });
+    }
+
+    function saveTagCreate(groupId) {
+      var draft = tagDraftsByGroup[groupId] || { open: false, name: "", color: "#d10d40" };
+      var tagName = String(draft.name || "").trim();
+      if (!tagName) {
+        return;
+      }
+
+      commit(function (next) {
+        var group = next.tagGroups.find(function (item) { return item.id === groupId; });
+        if (!group) {
+          return;
+        }
+        group.tags = group.tags || [];
+        group.tags.push({
+          id: makeUiId("tag"),
+          name: tagName,
+          color: safeHexColor(draft.color, "#d10d40"),
+          icon: "",
+          description: "",
+          visible: true
+        });
+      });
+
+      closeTagCreate(groupId);
+    }
+
+    function updateTagColor(groupId, tagId, color) {
+      commit(function (next) {
+        var group = next.tagGroups.find(function (item) { return item.id === groupId; });
+        var tag = group && (group.tags || []).find(function (item) { return item.id === tagId; });
+        if (tag) {
+          tag.color = safeHexColor(color, "#d10d40");
+        }
+      });
+    }
+
+    function openTagEditDialog(groupId, tagId) {
+      var group = (data.tagGroups || []).find(function (item) { return item.id === groupId; });
+      var tag = group && (group.tags || []).find(function (item) { return item.id === tagId; });
+      if (!tag) {
+        return;
+      }
+
+      setTagEditDialog({
+        open: true,
+        groupId: groupId,
+        tagId: tagId,
+        originalName: String(tag.name || ""),
+        name: String(tag.name || ""),
+        color: safeHexColor(tag.color, "#d10d40"),
+        icon: String(tag.icon || ""),
+        description: String(tag.description || "")
+      });
+    }
+
+    function closeTagEditDialog() {
+      setTagEditDialog({
+        open: false,
+        groupId: null,
+        tagId: null,
+        originalName: "",
+        name: "",
+        color: "#d10d40",
+        icon: "",
+        description: ""
+      });
+    }
+
+    function updateTagEditField(field, value) {
+      setTagEditDialog(function (prev) {
+        if (!prev.open) {
+          return prev;
+        }
+        return Object.assign({}, prev, { [field]: value });
+      });
+    }
+
+    function saveTagEditDialog() {
+      if (!tagEditDialog.open || !tagEditDialog.groupId || !tagEditDialog.tagId) {
+        return;
+      }
+
+      var nextTagName = String(tagEditDialog.name || "").trim();
+      if (!nextTagName) {
+        return;
+      }
+
+      commit(function (next) {
+        var group = next.tagGroups.find(function (item) { return item.id === tagEditDialog.groupId; });
+        var tag = group && (group.tags || []).find(function (item) { return item.id === tagEditDialog.tagId; });
+        if (!tag) {
+          return;
+        }
+
+        tag.name = nextTagName;
+        tag.color = safeHexColor(tagEditDialog.color, "#d10d40");
+        tag.icon = String(tagEditDialog.icon || "");
+        tag.description = String(tagEditDialog.description || "");
+      });
+
+      closeTagEditDialog();
+    }
+
+    function deleteTag(groupId, tagId) {
+      var group = (data.tagGroups || []).find(function (item) { return item.id === groupId; });
+      var tag = group && (group.tags || []).find(function (item) { return item.id === tagId; });
+      if (!tag) {
+        return;
+      }
+
+      commit(function (next) {
+        var nextGroup = next.tagGroups.find(function (item) { return item.id === groupId; });
+        if (nextGroup) {
+          nextGroup.tags = (nextGroup.tags || []).filter(function (item) { return item.id !== tagId; });
+        }
+      });
+
+      if (tagEditDialog.open && tagEditDialog.groupId === groupId && tagEditDialog.tagId === tagId) {
+        closeTagEditDialog();
+      }
+    }
+
     function createCharacter() {
       var id = "char-" + Date.now();
       commit(function (next) {
@@ -1720,7 +2171,7 @@
     function panelHeader(title) {
       return html`<div className="panel-header">
         <h2>${title}</h2>
-        <button onClick=${function () { setActivePanel(null); }} aria-label="Close panel">×</button>
+        ${IconButton({ onClick: function () { setActivePanel(null); }, ariaLabel: "Close panel", icon: "×", className: "icon-button-32 panel-close-button" })}
       </div>`;
     }
 
@@ -2332,7 +2783,7 @@
         return html`<div key="directory" className="character-view character-view-directory">
           <div className="panel-header">
             <h2>Character Directory</h2>
-            <button onClick=${function () { setActivePanel(null); }} aria-label="Close panel">×</button>
+            ${IconButton({ onClick: function () { setActivePanel(null); }, ariaLabel: "Close panel", icon: "×", className: "icon-button-32 panel-close-button" })}
           </div>
           <div className="panel-body character-directory-body">
             <div className="character-directory-controls">
@@ -2530,7 +2981,7 @@
         return html`<div key=${"edit-" + character.id} className="character-view character-view-details mode-edit edit-character-shell">
           <div className="panel-header edit-character-header">
             <h2>EDIT CHARACTER</h2>
-            <button onClick=${function () { setActivePanel(null); }} aria-label="Close panel">×</button>
+            ${IconButton({ onClick: function () { setActivePanel(null); }, ariaLabel: "Close panel", icon: "×", className: "icon-button-32 panel-close-button" })}
           </div>
           <div className="edit-character-content">
             <section className="edit-character-section">
@@ -2550,7 +3001,7 @@
                     <small>Click to replace portrait</small>
                   </span>
                 </button>
-                <button className="edit-portrait-delete" onClick=${clearPortrait} aria-label="Delete portrait">⌫</button>
+                ${IconButton({ onClick: clearPortrait, ariaLabel: "Delete portrait", icon: "⌫", className: "icon-button-48 edit-portrait-delete" })}
               </div>
             </section>
 
@@ -2640,7 +3091,7 @@
             <div className="panel-header details-header">
               <button onClick=${backToDirectory}>Directory</button>
               <h2>Character Details</h2>
-              <button onClick=${function () { setActivePanel(null); }} aria-label="Close panel">×</button>
+              ${IconButton({ onClick: function () { setActivePanel(null); }, ariaLabel: "Close panel", icon: "×", className: "icon-button-32 panel-close-button" })}
             </div>
             <div className="panel-body"><div className="card">No character selected.</div></div>
           </div>`;
@@ -2649,7 +3100,7 @@
           <div className="panel-header details-header">
             <button onClick=${backToDirectory}>Directory</button>
             <h2>Character Details</h2>
-            <button onClick=${function () { setActivePanel(null); }} aria-label="Close panel">×</button>
+            ${IconButton({ onClick: function () { setActivePanel(null); }, ariaLabel: "Close panel", icon: "×", className: "icon-button-32 panel-close-button" })}
           </div>
           <div className="panel-body details-body">
             ${renderDetailsReadOnly(focused)}
@@ -2848,7 +3299,7 @@
             </div>
           </div>
           <div className="profile-header-controls">
-            <button className="profile-close-button" onClick=${returnFromCharacterProfile} aria-label="Close biography view">×</button>
+            ${IconButton({ onClick: returnFromCharacterProfile, ariaLabel: "Close biography view", icon: "×", className: "icon-button-34 profile-close-button" })}
             ${profileEditMode
               ? html`<div className="profile-header-actions"><button onClick=${saveProfileEdit}>Save</button><button onClick=${cancelProfileEdit}>Cancel</button></div>`
               : null}
@@ -3070,24 +3521,143 @@
 
     function tagsPanel() {
       return html`${panelHeader("Tag Manager")}
-      <div className="panel-body">
-        ${data.tagGroups.map(function (g) {
-          return html`<div className="card" key=${g.id}>
-            <div className="row"><strong>${g.name}</strong><span className="hint">${g.tags.length} tags</span></div>
-            ${g.tags.map(function (t) {
-              var usage = data.characters.filter(function (c) { return (c.tags || []).indexOf(t.name) >= 0; }).length;
-              return html`<div className="card" key=${t.id} style=${{ marginTop: 8 }}>
-                <div className="row"><strong>${t.name}</strong><span className="hint">${usage} usage</span></div>
-                <div className="split" style=${{ marginTop: 6 }}>
-                  <div><label>Colour</label><input type="color" value=${t.color} onInput=${function (e) { commit(function (next) { var tg = next.tagGroups.find(function (x) { return x.id === g.id; }); var tt = tg && tg.tags.find(function (x) { return x.id === t.id; }); if (tt) tt.color = e.target.value; }); }} /></div>
-                  <div><label>Icon</label><input value=${t.icon} onInput=${function (e) { commit(function (next) { var tg = next.tagGroups.find(function (x) { return x.id === g.id; }); var tt = tg && tg.tags.find(function (x) { return x.id === t.id; }); if (tt) tt.icon = e.target.value; }); }} /></div>
+      <div className="panel-body tag-manager-body">
+        <div className="tag-group-create-root">
+          <button onClick=${openTagGroupCreate}>+ New Tag Group</button>
+          <div className=${"tag-inline-editor-shell" + (tagGroupCreate.open ? " expanded" : "") }>
+            <div className="tag-inline-editor-grid">
+              <label>Group Name</label>
+              <input value=${tagGroupCreate.name} onInput=${function (e) { setTagGroupCreate({ open: true, name: e.target.value }); }} placeholder="Politics" />
+              <div className="tag-inline-editor-actions">
+                <button type="button" onClick=${cancelTagGroupCreate}>Cancel</button>
+                <button type="button" onClick=${saveTagGroupCreate}>Add Group</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        ${data.tagGroups.map(function (group) {
+          var isExpanded = tagGroupExpanded[group.id] !== false;
+          var createTagDraft = tagDraftsByGroup[group.id] || { open: false, name: "", color: "#d10d40" };
+          var groupTagCount = (group.tags || []).length;
+          var isRenaming = tagGroupRenameDraft.groupId === group.id;
+
+          return html`<section className="tag-group-shell" key=${group.id}>
+            <header className="tag-group-header">
+              <button className="tag-group-toggle" onClick=${function () { toggleTagGroup(group.id); }} aria-expanded=${String(isExpanded)}>
+                <span className="tag-group-caret">${isExpanded ? "▼" : "▶"}</span>
+                <strong>${group.name}</strong>
+              </button>
+              <div className="tag-group-actions">
+                <span className="hint">${groupTagCount} tags</span>
+                ${IconButton({ onClick: function () { openTagGroupRename(group); }, ariaLabel: "Rename tag group", icon: "✎", className: "icon-button-24 tag-icon-button" })}
+                ${IconButton({ onClick: function () { deleteTagGroup(group.id); }, ariaLabel: "Delete tag group", icon: "✕", className: "icon-button-24 tag-icon-button" })}
+              </div>
+            </header>
+
+            <div className=${"tag-group-content" + (isExpanded ? " expanded" : "") }>
+              <div className="tag-group-content-inner">
+                <div className=${"tag-inline-editor-shell" + (isRenaming ? " expanded" : "") }>
+                  <div className="tag-inline-editor-grid">
+                    <label>Group Name</label>
+                    <input value=${isRenaming ? tagGroupRenameDraft.name : ""} onInput=${function (e) { setTagGroupRenameDraft({ groupId: group.id, name: e.target.value }); }} placeholder="Group name" />
+                    <div className="tag-inline-editor-actions">
+                      <button type="button" onClick=${cancelTagGroupRename}>Cancel</button>
+                      <button type="button" onClick=${saveTagGroupRename}>Save Group</button>
+                    </div>
+                  </div>
                 </div>
-                <label>Description</label>
-                <input value=${t.description} onInput=${function (e) { commit(function (next) { var tg = next.tagGroups.find(function (x) { return x.id === g.id; }); var tt = tg && tg.tags.find(function (x) { return x.id === t.id; }); if (tt) tt.description = e.target.value; }); }} />
-              </div>`;
-            })}
-          </div>`;
+
+                <div className="tag-row-list">
+                  ${(group.tags || []).map(function (tag) {
+                    var usageCount = countTagUsage(tag.name);
+                    return html`<article className="tag-row" key=${tag.id}>
+                      <div className="tag-row-main">
+                        <div className="tag-color-cell">
+                          <span className="tag-color-square" style=${{ backgroundColor: safeHexColor(tag.color, "#d10d40") }} aria-hidden="true"></span>
+                          <input className="tag-color-input tag-row-color-input" type="color" value=${safeHexColor(tag.color, "#d10d40")} onInput=${function (event) { updateTagColor(group.id, tag.id, event.target.value); if (tagEditDialog.open && tagEditDialog.groupId === group.id && tagEditDialog.tagId === tag.id) { updateTagEditField("color", event.target.value); } }} aria-label=${"Tag color for " + tag.name} />
+                        </div>
+                        <span className="tag-row-name">${tag.name}</span>
+                      </div>
+                      <div className="tag-row-actions">
+                        <span className="tag-row-usage">${formatTagUsageCount(usageCount)}</span>
+                        ${IconButton({ onClick: function () { openTagEditDialog(group.id, tag.id); }, ariaLabel: "Edit " + tag.name, icon: "✎", className: "icon-button-24 tag-icon-button" })}
+                        ${IconButton({ onClick: function () { deleteTag(group.id, tag.id); }, ariaLabel: "Delete " + tag.name, icon: "✕", className: "icon-button-24 tag-icon-button" })}
+                      </div>
+                    </article>`;
+                  })}
+                </div>
+
+                <button className="tag-add-button" onClick=${function () { openTagCreate(group.id); }}>+ Add Tag</button>
+
+                <div className=${"tag-inline-editor-shell" + (createTagDraft.open ? " expanded" : "") }>
+                  <div className="tag-inline-editor-grid">
+                    <label>Tag Name</label>
+                    <input value=${createTagDraft.name} onInput=${function (event) { updateTagCreateDraft(group.id, "name", event.target.value); }} placeholder="Sheriff" />
+                    ${ColorField({
+                      label: "Colour",
+                      fieldName: "Colour",
+                      value: createTagDraft.color,
+                      fallback: "#d10d40",
+                      onChange: function (nextColor) {
+                        updateTagCreateDraft(group.id, "color", nextColor);
+                      }
+                    })}
+                    <div className="tag-inline-editor-actions">
+                      <button type="button" onClick=${function () { closeTagCreate(group.id); }}>Cancel</button>
+                      <button type="button" onClick=${function () { saveTagCreate(group.id); }}>Add Tag</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>`;
         })}
+      </div>`;
+    }
+
+    function renderTagEditDialog() {
+      if (!tagEditDialog.open) {
+        return null;
+      }
+
+      var usageCount = countTagUsage(tagEditDialog.originalName || tagEditDialog.name);
+
+      return html`<div className="tag-edit-dialog-backdrop" onClick=${closeTagEditDialog}>
+        <div className="tag-edit-dialog" onClick=${function (event) { event.stopPropagation(); }}>
+          <header className="tag-edit-dialog-header">
+            <h3>Edit Tag</h3>
+          </header>
+          <div className="tag-edit-dialog-body">
+            <label>Tag Name</label>
+            <input value=${tagEditDialog.name} onInput=${function (event) { updateTagEditField("name", event.target.value); }} placeholder="Tag name" />
+
+            ${ColorField({
+              label: "Colour Picker",
+              fieldName: "Colour Picker",
+              value: tagEditDialog.color,
+              fallback: "#d10d40",
+              onChange: function (nextColor) {
+                updateTagEditField("color", nextColor);
+                updateTagColor(tagEditDialog.groupId, tagEditDialog.tagId, nextColor);
+              }
+            })}
+
+            <label>Icon (future use)</label>
+            <input value=${tagEditDialog.icon} onInput=${function (event) { updateTagEditField("icon", event.target.value); }} placeholder="e.g. ♛" />
+
+            <label>Description (future use)</label>
+            <textarea rows="3" value=${tagEditDialog.description} onInput=${function (event) { updateTagEditField("description", event.target.value); }} placeholder="Optional description"></textarea>
+
+            <label>Usage Count</label>
+            <p className="tag-edit-usage">${usageCount} ${usageCount === 1 ? "character" : "characters"}</p>
+          </div>
+          <footer className="tag-edit-dialog-actions">
+            <button type="button" onClick=${saveTagEditDialog}>Save</button>
+            <button type="button" onClick=${closeTagEditDialog}>Cancel</button>
+            <button type="button" className="destructive" onClick=${function () { deleteTag(tagEditDialog.groupId, tagEditDialog.tagId); }}>Delete Tag</button>
+          </footer>
+        </div>
       </div>`;
     }
 
@@ -3151,7 +3721,7 @@
           <nav className="workspace-tool-rail">
             ${TOOL_NAV.map(function (item) {
               return html`<button key=${"rail-" + item.key} className=${"tool-rail-item" + (activePanel === item.key ? " active" : "")} onClick=${function () { togglePanel(item.key); }}>
-                <span className="tool-rail-icon">${item.icon}</span>
+                <span className="tool-rail-icon" aria-hidden="true">${ToolbarIcon({ iconId: item.iconId, fallbackGlyph: item.icon, label: item.label })}</span>
                 <span className="tool-rail-label">${item.label}</span>
               </button>`;
             })}
@@ -3239,6 +3809,8 @@
           <button onClick=${function () { setView({ x: 80, y: 60, scale: 0.58 }); setContextMenu(null); }}>Reset View</button>
         </div>`}
       </div>` : null}
+
+      ${renderTagEditDialog()}
 
       <input ref=${profilePortraitInputRef} type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/gif" hidden onChange=${onProfilePortraitSelected} />
       ${renderPortraitWorkflowModal()}
