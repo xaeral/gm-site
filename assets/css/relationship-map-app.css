@@ -1632,6 +1632,29 @@ h6 {
   resize: vertical;
 }
 
+.profile-info-card.dossier-field-card {
+  padding-top: 0.45rem;
+  padding-bottom: 0.5rem;
+}
+
+.dossier-entry-list {
+  display: grid;
+  gap: 0.46rem;
+}
+
+.dossier-entry {
+  border-left: 2px solid var(--dossier-accent-color, var(--accent-red));
+  padding: 0.08rem 0 0.08rem 0.62rem;
+}
+
+.dossier-entry p {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.38;
+  color: #f4f4ff;
+  white-space: pre-wrap;
+}
+
 .profile-image-strip {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

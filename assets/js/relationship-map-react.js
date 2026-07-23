@@ -378,6 +378,92 @@
     return "<p>" + plainText.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>") + "</p>";
   }
 
+  function parseDossierEntries(rawText) {
+    var text = String(rawText || "").replace(/\r\n?/g, "\n").trim();
+    if (!text) {
+      return [];
+    }
+
+    var lines = text.split("\n");
+    var hasLegacyBullets = lines.some(function (line) { return /^\s*-\s+/.test(line); });
+
+    if (hasLegacyBullets) {
+      var entries = [];
+      var current = [];
+
+      lines.forEach(function (line) {
+        var isLegacyStart = /^\s*-\s*/.test(line);
+        if (isLegacyStart) {
+          if (current.length) {
+            var completed = current.join("\n").trim();
+            if (completed) {
+              entries.push(completed);
+            }
+          }
+          current = [line.replace(/^\s*-\s*/, "").trim()];
+          return;
+        }
+
+        if (!line.trim()) {
+          return;
+        }
+
+        if (!current.length) {
+          current = [line.trim()];
+          return;
+        }
+
+        current.push(line.trimEnd());
+      });
+
+      if (current.length) {
+        var finalLegacy = current.join("\n").trim();
+        if (finalLegacy) {
+          entries.push(finalLegacy);
+        }
+      }
+
+      return entries;
+    }
+
+    if (/\n\s*\n/.test(text)) {
+      return text
+        .split(/\n\s*\n+/)
+        .map(function (chunk) {
+          return chunk
+            .split("\n")
+            .map(function (line) { return line.trimEnd(); })
+            .join("\n")
+            .trim();
+        })
+        .filter(function (entry) { return entry.length > 0; });
+    }
+
+    return lines.map(function (line) { return line.trim(); }).filter(function (line) { return line.length > 0; });
+  }
+
+  function dossierEntryGroup(options) {
+    var opts = options && typeof options === "object" ? options : {};
+    var title = opts.title || "";
+    var entryText = opts.entryText || "";
+    var accentColor = opts.accentColor || "var(--accent-red)";
+    var emptyText = opts.emptyText || "Not set";
+    var entries = parseDossierEntries(entryText);
+
+    return html`<article className="profile-info-card dossier-field-card">
+      ${title ? html`<h4>${title}</h4>` : null}
+      ${entries.length
+        ? html`<div className="dossier-entry-list">
+          ${entries.map(function (entry, index) {
+            return html`<div className="dossier-entry" style=${{ "--dossier-accent-color": accentColor }} key=${"dossier-entry-" + title + "-" + index}>
+              <p>${entry}</p>
+            </div>`;
+          })}
+        </div>`
+        : html`<p>${emptyText}</p>`}
+    </article>`;
+  }
+
   function richHtmlToText(htmlContent) {
     var wrapper = document.createElement("div");
     wrapper.innerHTML = String(htmlContent || "");
@@ -2710,6 +2796,14 @@
         var value = profileRecord[key] || "";
         var displayValue = (inputType === "date" && !profileEditMode) ? formatDisplayDate(value) : value;
         if (!profileEditMode) {
+          if (key === "convictions" || key === "touchstones") {
+            return dossierEntryGroup({
+              title: label,
+              entryText: value,
+              accentColor: "#d10d40",
+              emptyText: "Not set"
+            });
+          }
           return profileInfoCard(label, displayValue);
         }
         return html`<article className="profile-info-card" key=${"profile-" + label}>
