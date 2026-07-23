@@ -69,29 +69,29 @@
   ];
 
   var SECT_ICON_FILES = {
-    "Anarch": "Anarch.png",
-    "Ashirra": "Ashirra.png",
-    "Camarilla": "Camarilla.png",
-    "Sabbat": "Sabbat.png"
+    "Anarch": "Anarch.svg",
+    "Ashirra": "Ashirra.svg",
+    "Camarilla": "Camarilla.svg",
+    "Sabbat": "Sabbat.svg"
   };
 
   var CLAN_ICON_FILES = {
-    "Banu Haqim": "Banu Haqim.png",
-    "Brujah": "Brujah.png",
-    "Gangrel": "Gangrel.png",
-    "Hecata": "Hecata.png",
-    "Lasombra": "Lasombra.png",
-    "Malkavian": "Malkavian.png",
-    "Ministry": "Ministry.png",
-    "Nosferatu": "Nosferatu.png",
-    "Ravnos": "Ravnos.png",
-    "Salubri": "Salubri.png",
-    "Toreador": "Toreador.png",
-    "Tremere": "Tremere.png",
-    "Tzimisce": "Tzimisce.png",
-    "Ventrue": "Ventrue.jpg",
-    "Caitiff": "Caitiff.png",
-    "Thin-Blood": "Thin-blood.png"
+    "Banu Haqim": "Banu-Haqim.svg",
+    "Brujah": "Brujah.svg",
+    "Gangrel": "Gangrel.svg",
+    "Hecata": "Hecata.svg",
+    "Lasombra": "Lasombra.svg",
+    "Malkavian": "Malkavian.svg",
+    "Ministry": "Ministry.svg",
+    "Nosferatu": "Nosferatu.svg",
+    "Ravnos": "Ravnos.svg",
+    "Salubri": "Salubri.svg",
+    "Toreador": "Toreador.svg",
+    "Tremere": "Tremere.svg",
+    "Tzimisce": "Tzimisce.svg",
+    "Ventrue": "Ventrue.svg",
+    "Caitiff": "Caitiff.svg",
+    "Thin-Blood": "Thin-blood.svg"
   };
 
   var PORTRAITS = [
@@ -170,6 +170,34 @@
     return clan === "None" ? "" : (CLAN_ICON_LOOKUP[clan] || "");
   }
 
+  function Icon(config) {
+    if (!config || !config.icon) {
+      return null;
+    }
+    var iconSize = Number(config.size) || null;
+    var className = "atlas-icon" + (config.className ? " " + config.className : "");
+    var maskSource = "url('" + config.icon + "')";
+    var style = {
+      color: config.color || "currentColor",
+      backgroundColor: "currentColor",
+      maskImage: maskSource,
+      maskRepeat: "no-repeat",
+      maskPosition: "center",
+      maskSize: "contain",
+      maskMode: "alpha",
+      WebkitMaskImage: maskSource,
+      WebkitMaskRepeat: "no-repeat",
+      WebkitMaskPosition: "center",
+      WebkitMaskSize: "contain",
+      WebkitMaskMode: "alpha"
+    };
+    if (iconSize) {
+      style.width = iconSize + "px";
+      style.height = iconSize + "px";
+    }
+    return html`<span className=${className} style=${style} aria-hidden="true"></span>`;
+  }
+
   function IconBadge(config) {
     if (!config || !config.icon) {
       return null;
@@ -177,9 +205,99 @@
     var size = Math.max(24, Number(config.size) || 44);
     var backgroundColor = config.backgroundColor || "#6d132a";
     var tooltip = config.tooltip || "";
-    return html`<span className="icon-badge" style=${{ width: size + "px", height: size + "px", background: backgroundColor }} title=${tooltip} aria-label=${tooltip}>
-      <img className="icon-badge-image" src=${config.icon} alt=${tooltip || "Icon badge"} />
+    var className = "icon-badge" + (config.className ? " " + config.className : "");
+    var imageClassName = "icon-badge-image" + (config.imageClassName ? " " + config.imageClassName : "");
+    var borderColor = config.borderColor || null;
+    var badgeStyle = { width: size + "px", height: size + "px", background: backgroundColor };
+    if (borderColor) {
+      badgeStyle.borderColor = borderColor;
+    }
+    return html`<span className=${className} style=${badgeStyle} title=${tooltip} aria-label=${tooltip}>
+      ${Icon({ icon: config.icon, color: config.iconColor || "#ffffff", className: imageClassName })}
     </span>`;
+  }
+
+  function characterNodeBadges(character, portraitDiameter) {
+    var badgeSize = Math.round(clamp(toNumber(portraitDiameter, 74) * 0.28, 18, 42));
+    var badges = [];
+    var sect = normalizeSectValue(character && character.sect);
+    var clan = normalizeClanValue(character && character.clan);
+    var sectIcon = resolveSectIcon(sect);
+    var clanIcon = resolveClanIcon(clan);
+
+    if (sect !== "None" && sectIcon) {
+      badges.push({
+        id: "sect",
+        anchor: "left",
+        icon: sectIcon,
+        tooltip: sect,
+        size: badgeSize,
+        backgroundColor: "#000000",
+        borderColor: "#2e2e2e",
+        iconColor: "#d10d40"
+      });
+    }
+
+    if (clan !== "None" && clanIcon) {
+      badges.push({
+        id: "clan",
+        anchor: "right",
+        icon: clanIcon,
+        tooltip: clan,
+        size: badgeSize,
+        backgroundColor: "#000000",
+        borderColor: "#2e2e2e",
+        iconColor: "#ffffff"
+      });
+    }
+
+    return badges;
+  }
+
+  function renderNodeBadgeAnchors(badges) {
+    if (!badges || !badges.length) {
+      return null;
+    }
+
+    var grouped = {
+      left: [],
+      right: []
+    };
+
+    badges.forEach(function (badge) {
+      if (!badge || !badge.icon) {
+        return;
+      }
+      var anchor = badge.anchor === "right" ? "right" : "left";
+      grouped[anchor].push(badge);
+    });
+
+    function renderAnchor(anchor) {
+      var entries = grouped[anchor];
+      if (!entries.length) {
+        return null;
+      }
+      return html`<div className=${"node-badge-anchor node-badge-anchor-" + anchor}>
+        ${entries.map(function (badge, index) {
+          return html`<span className="node-badge-item" key=${"node-badge-" + anchor + "-" + (badge.id || index) + "-" + index}>
+            ${IconBadge({
+              icon: badge.icon,
+              size: badge.size,
+              backgroundColor: badge.backgroundColor,
+              borderColor: badge.borderColor,
+              iconColor: badge.iconColor,
+              tooltip: badge.tooltip,
+              className: "node-icon-badge"
+            })}
+          </span>`;
+        })}
+      </div>`;
+    }
+
+    return html`<div className="node-badge-layer" aria-hidden="true">
+      ${renderAnchor("left")}
+      ${renderAnchor("right")}
+    </div>`;
   }
 
   function renderPortraitSource(portrait) {
@@ -3783,9 +3901,14 @@
                   var shape = c.nodeShape === "rounded" ? "square" : (c.nodeShape || "circle");
                   var radius = shape === "circle" ? "50%" : "8px";
                   var clip = shape === "hexagon" ? "polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0 50%)" : "none";
+                  var portraitDiameter = 74 * nodeSize;
+                  var nodeBadges = characterNodeBadges(c, portraitDiameter);
                   return html`<div key=${c.id} className=${"node" + (selected.indexOf(c.id) >= 0 ? " selected" : "")} style=${{ left: c.x, top: c.y, width: 130 * nodeSize }} onPointerDown=${function (e) { onNodePointerDown(e, c); }} onLostPointerCapture=${onNodeLostPointerCapture} onMouseDown=${function (e) { e.stopPropagation(); }} onClick=${function (e) { e.stopPropagation(); setFocusedId(c.id); if (!e.shiftKey) setSelected([c.id]); }} onDoubleClick=${function (e) { e.stopPropagation(); setFocusedId(c.id); setActivePanel("characters"); }} onContextMenu=${function (e) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, type: "node", id: c.id }); }}>
-                    <div className="node-portrait-frame" style=${{ width: 74 * nodeSize, height: 74 * nodeSize, borderColor: outlineColor, borderRadius: radius, clipPath: clip }}>
-                      <img className="node-portrait media" src=${portraitState(c).src} alt=${c.name} style=${portraitMediaStyle(c)} />
+                    <div className="node-portrait-shell">
+                      <div className="node-portrait-frame" style=${{ width: portraitDiameter, height: portraitDiameter, borderColor: outlineColor, borderRadius: radius, clipPath: clip }}>
+                        <img className="node-portrait media" src=${portraitState(c).src} alt=${c.name} style=${portraitMediaStyle(c)} />
+                      </div>
+                      ${renderNodeBadgeAnchors(nodeBadges)}
                     </div>
                     <span>${c.name.toUpperCase()}</span>
                   </div>`;
