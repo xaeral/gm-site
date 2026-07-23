@@ -606,13 +606,14 @@
 
   function dossierEntryGroup(options) {
     var opts = options && typeof options === "object" ? options : {};
+    var rootKey = opts.key;
     var title = opts.title || "";
     var entryText = opts.entryText || "";
     var accentColor = opts.accentColor || "var(--accent-red)";
     var emptyText = opts.emptyText || "Not set";
     var entries = parseDossierEntries(entryText);
 
-    return html`<article className="profile-info-card dossier-field-card">
+    return html`<article className="profile-info-card dossier-field-card" key=${rootKey}>
       ${title ? html`<h4>${title}</h4>` : null}
       ${entries.length
         ? html`<div className="dossier-entry-list">
@@ -2923,7 +2924,7 @@
                     <span className="tag">${c.clan || "Unknown Clan"}</span>
                     <span className="tag">${c.sect || "Unknown Sect"}</span>
                     <span className="tag">${c.status || "Unknown"}</span>
-                    ${(c.tags || []).slice(0, 3).map(function (t) { return html`<span className="tag" key=${c.id + t}>${t}</span>`; })}
+                      ${(c.tags || []).slice(0, 3).map(function (t, index) { return html`<span className="tag" key=${c.id + "-tag-" + t + "-" + index}>${t}</span>`; })}
                   </div>
                   <div className="hint">${links} links</div>
                 </div>`;
@@ -2947,8 +2948,8 @@
           readField("Concept", character.concept, true),
           readField("Ambition", character.ambition, true),
           readField("Desire", character.desire, true),
-          dossierEntryGroup({ title: "Convictions", entryText: character.convictions, accentColor: "#d10d40", emptyText: "Not set" }),
-          dossierEntryGroup({ title: "Touchstones", entryText: character.touchstones, accentColor: "#d10d40", emptyText: "Not set" })
+          dossierEntryGroup({ key: "field-" + character.id + "-convictions", title: "Convictions", entryText: character.convictions, accentColor: "#d10d40", emptyText: "Not set" }),
+          dossierEntryGroup({ key: "field-" + character.id + "-touchstones", title: "Touchstones", entryText: character.touchstones, accentColor: "#d10d40", emptyText: "Not set" })
         ];
 
         var pairFields = [
@@ -2979,7 +2980,7 @@
                   <span className="tag">${character.clan || "Unknown Clan"}</span>
                   <span className="tag">${character.sect || "Unknown Sect"}</span>
                   <span className="tag">${character.status || "Unknown"}</span>
-                  ${(character.tags || []).map(function (tag) { return html`<span className="tag" key=${"summary-" + character.id + tag}>${tag}</span>`; })}
+                  ${(character.tags || []).map(function (tag, index) { return html`<span className="tag" key=${"summary-" + character.id + "-" + tag + "-" + index}>${tag}</span>`; })}
                 </div>
               </div>
               <button className="character-summary-edit" onClick=${function () { enterEditMode("details", false); }}>Edit</button>
@@ -3839,7 +3840,7 @@
           <nav className="workspace-tool-rail">
             ${TOOL_NAV.map(function (item) {
               return html`<button key=${"rail-" + item.key} className=${"tool-rail-item" + (activePanel === item.key ? " active" : "")} onClick=${function () { togglePanel(item.key); }}>
-                <span className="tool-rail-icon" aria-hidden="true">${ToolbarIcon({ iconId: item.iconId, fallbackGlyph: item.icon, label: item.label })}</span>
+                <span className="tool-rail-icon" aria-hidden="true"><${ToolbarIcon} iconId=${item.iconId} fallbackGlyph=${item.icon} label=${item.label} /></span>
                 <span className="tool-rail-label">${item.label}</span>
               </button>`;
             })}
