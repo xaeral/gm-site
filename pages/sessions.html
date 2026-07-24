@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="../assets/css/styles.css" />
+  <link rel="stylesheet" href="../assets/css/relationship-map-app.css" />
 </head>
 <body>
   <div class="site-shell">
@@ -24,34 +25,29 @@
         <a class="nav-link" href="tools.html">Tools</a>
         <a class="nav-link" href="settings.html">Settings</a>
       </nav>
-      <div class="sidebar-footer"><p>Module</p><strong>Session Archive</strong></div>
+      <div class="sidebar-footer"><p>Module</p><strong>Session Journal</strong></div>
     </aside>
 
-    <main class="main-content">
+    <main class="main-content sessions-main-content">
       <header class="topbar">
         <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="sidebar">Menu</button>
-        <div class="topbar-title"><h2>Sessions</h2><p>Preparation, encounters, recaps, and story-beat tracking.</p></div>
+        <div class="topbar-title"><h2>SESSIONS</h2><p>Historical record of completed game sessions and campaign events.</p></div>
       </header>
 
-      <section class="columns">
-        <article class="card"><h3>Session Preparation</h3><p class="note">Planning templates, objectives, and scene goals.</p></article>
-        <article class="card"><h3>Encounter Tracker</h3><p class="note">Combat flow and initiative order workspace.</p></article>
-        <article class="card"><h3>Recaps and Beats</h3><p class="note">Session outcomes, cliffhangers, and thread updates.</p></article>
-      </section>
-
-      <section class="card">
-        <div class="section-heading"><h3>Recent Sessions</h3><a href="#">Create Session</a></div>
-        <ul class="stack-list">
-          <li class="stack-item"><strong>Session 18</strong><p>Market of Broken Vows</p></li>
-          <li class="stack-item"><strong>Session 19</strong><p>The Silent Cistern</p></li>
-          <li class="stack-item"><strong>Session 20</strong><p>Blood Oath at Dawn</p></li>
-        </ul>
-      </section>
+      <div id="sessionJournalApp" class="session-journal-app-root" aria-live="polite">Loading session journal...</div>
 
       <footer class="page-footer"><small>Chronicle Codex Dashboard</small><small id="yearStamp"></small></footer>
     </main>
   </div>
 
   <script src="../assets/js/common.js"></script>
+  <script src="../assets/js/data.js"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+  <script src="../assets/js/gm-notebook-shared.js"></script>
+  <script src="../assets/js/character-biography-shared.js"></script>
+  <script src="../assets/js/session-journal-shared.js"></script>
+  <script src="../assets/js/sessions-journal.js"></script>
 </body>
 </html>

@@ -11,10 +11,13 @@
   var html = window.htm ? window.htm.bind(ReactRef.createElement) : null;
 
   var DB_NAME = "CampaignAtlas";
-  var DB_VERSION = 1;
+  var DB_VERSION = 3;
   var STORE_CHARACTERS = "characters";
   var STORE_RELATIONSHIPS = "relationships";
+  var STORE_LOCATIONS = "locations";
   var STORE_TIMELINE = "timeline";
+  var LOCATION_SYNC_CHANNEL = "campaign-atlas-locations";
+  var locationSanitizePromise = null;
   var PORTRAIT_BLOB_MARKER = "__campaignAtlasPortraitBlob__";
   var DEFAULT_PORTRAIT = "Default.png";
   var PORTRAIT_EDITOR_SIZE = 320;
@@ -153,6 +156,9 @@
         if (!db.objectStoreNames.contains(STORE_RELATIONSHIPS)) {
           db.createObjectStore(STORE_RELATIONSHIPS, { keyPath: "id" });
         }
+        if (!db.objectStoreNames.contains(STORE_LOCATIONS)) {
+          db.createObjectStore(STORE_LOCATIONS, { keyPath: "id" });
+        }
         if (!db.objectStoreNames.contains(STORE_TIMELINE)) {
           db.createObjectStore(STORE_TIMELINE, { keyPath: "id" });
         }
@@ -197,29 +203,244 @@
     });
   }
 
+  function previewFromHtml(value) {
+    return String(value || "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180);
+  }
+
+  function normalizeLocationRecord(location) {
+    var source = location && typeof location === "object" ? location : {};
+    var tags = Array.isArray(source.tags) ? source.tags.map(function (tag) { return String(tag || "").trim(); }).filter(Boolean) : [];
+    var images = Array.isArray(source.images) ? clone(source.images) : [];
+    var floorPlans = Array.isArray(source.floorPlans) ? clone(source.floorPlans) : [];
+    var handouts = Array.isArray(source.handouts) ? clone(source.handouts) : [];
+    var travelRoutes = Array.isArray(source.travelRoutes) ? clone(source.travelRoutes) : [];
+    var encounterNotes = Array.isArray(source.encounterNotes) ? clone(source.encounterNotes) : [];
+    var relatedCharacterIds = Array.isArray(source.relatedCharacterIds) ? source.relatedCharacterIds.map(String) : [];
+    var now = new Date().toISOString();
+    return {
+      id: String(source.id || source.name || "location-" + Date.now() + "-" + Math.floor(Math.random() * 100000)),
+      name: String(source.name || source.title || "Unnamed Location"),
+      type: String(source.type || "Notable Place"),
+      ownerId: String(source.ownerId || ""),
+      ownerName: String(source.ownerName || ""),
+      description: String(source.description || source.details || ""),
+      detailsHtml: String(source.detailsHtml || source.descriptionHtml || source.details || source.description || "<p></p>"),
+      tags: tags,
+      images: images,
+      floorPlans: floorPlans,
+      handouts: handouts,
+      travelRoutes: travelRoutes,
+      encounterNotes: encounterNotes,
+      relatedCharacterIds: relatedCharacterIds,
+      locationLinks: Array.isArray(source.locationLinks) ? clone(source.locationLinks) : [],
+      mapLinks: Array.isArray(source.mapLinks) ? clone(source.mapLinks) : [],
+      color: String(source.color || ""),
+      borderColor: String(source.borderColor || ""),
+      opacity: source.opacity,
+      borderThickness: source.borderThickness,
+      borderStyle: String(source.borderStyle || ""),
+      lock: Boolean(source.lock),
+      layer: Number.isFinite(Number(source.layer)) ? Number(source.layer) : 0,
+      previewText: previewFromHtml(source.detailsHtml || source.description || ""),
+      searchText: [
+        String(source.name || ""),
+        String(source.type || ""),
+        String(source.ownerName || ""),
+        String(source.description || ""),
+        String(source.detailsHtml || ""),
+        tags.join(" "),
+        relatedCharacterIds.join(" ")
+      ].join(" ").toLowerCase(),
+      createdAt: String(source.createdAt || now),
+      updatedAt: String(source.updatedAt || now)
+    };
+  }
+
+  function locationHasZoneGeometry(record) {
+    if (!record || typeof record !== "object") {
+      return false;
+    }
+    return Number.isFinite(Number(record.x)) && Number.isFinite(Number(record.y)) && Number.isFinite(Number(record.width)) && Number.isFinite(Number(record.height));
+  }
+
+  function isInvalidLocationRecord(record) {
+    if (!record || typeof record !== "object") {
+      return true;
+    }
+    var id = String(record.id || "").trim().toLowerCase();
+    var name = String(record.name || record.title || "").trim().toLowerCase();
+    if (!id) {
+      return true;
+    }
+    if (id.indexOf("zone-") === 0) {
+      return true;
+    }
+    if (name === "new zone") {
+      return true;
+    }
+    if (locationHasZoneGeometry(record)) {
+      return true;
+    }
+    return false;
+  }
+
+  async function sanitizeLocationStore(options) {
+    var force = Boolean(options && options.force);
+    if (!force && locationSanitizePromise) {
+      return locationSanitizePromise;
+    }
+    locationSanitizePromise = (async function () {
+      var db = await openCampaignAtlasDb();
+      var transaction = db.transaction([STORE_LOCATIONS], "readwrite");
+      var store = transaction.objectStore(STORE_LOCATIONS);
+      var allReq = store.getAll();
+      var allPromise = requestToPromise(allReq);
+      var allRecords = await allPromise;
+      (allRecords || []).forEach(function (record) {
+        if (isInvalidLocationRecord(record)) {
+          store.delete(String(record.id || ""));
+        }
+      });
+      await transactionToPromise(transaction);
+    })().catch(function () {
+      locationSanitizePromise = null;
+    });
+    return locationSanitizePromise;
+  }
+
+  function notifyLocationRecordsChanged(reason) {
+    var payload = { reason: String(reason || "updated"), timestamp: Date.now() };
+    try {
+      if (typeof window.BroadcastChannel === "function") {
+        var channel = new window.BroadcastChannel(LOCATION_SYNC_CHANNEL);
+        channel.postMessage(payload);
+        channel.close();
+      }
+    } catch (_error) {
+      // BroadcastChannel is optional.
+    }
+    try {
+      window.dispatchEvent(new CustomEvent("campaign-atlas:locations-updated", { detail: payload }));
+    } catch (_error2) {
+      // Event dispatch best effort.
+    }
+  }
+
+  function subscribeLocationRecordChanges(listener) {
+    if (typeof listener !== "function") {
+      return function () {};
+    }
+    var channel = null;
+    var onWindowEvent = function () { listener(); };
+    window.addEventListener("campaign-atlas:locations-updated", onWindowEvent);
+    try {
+      if (typeof window.BroadcastChannel === "function") {
+        channel = new window.BroadcastChannel(LOCATION_SYNC_CHANNEL);
+        channel.onmessage = function () { listener(); };
+      }
+    } catch (_error) {
+      channel = null;
+    }
+    return function () {
+      window.removeEventListener("campaign-atlas:locations-updated", onWindowEvent);
+      if (channel) {
+        channel.close();
+      }
+    };
+  }
+
   async function readCampaignAtlasState() {
+    await sanitizeLocationStore();
     var db = await openCampaignAtlasDb();
-    var transaction = db.transaction([STORE_CHARACTERS, STORE_RELATIONSHIPS, STORE_TIMELINE], "readonly");
+    var transaction = db.transaction([STORE_CHARACTERS, STORE_RELATIONSHIPS, STORE_LOCATIONS, STORE_TIMELINE], "readonly");
     var charactersReq = transaction.objectStore(STORE_CHARACTERS).getAll();
     var relationshipsReq = transaction.objectStore(STORE_RELATIONSHIPS).getAll();
+    var locationsReq = transaction.objectStore(STORE_LOCATIONS).getAll();
     var timelineReq = transaction.objectStore(STORE_TIMELINE).getAll();
 
     var charactersPromise = requestToPromise(charactersReq);
     var relationshipsPromise = requestToPromise(relationshipsReq);
+    var locationsPromise = requestToPromise(locationsReq);
     var timelinePromise = requestToPromise(timelineReq);
 
     await transactionToPromise(transaction);
 
     var charactersRaw = await charactersPromise;
     var relationships = await relationshipsPromise;
+    var locations = await locationsPromise;
     var timelineEntries = await timelinePromise;
 
     var characters = await Promise.all((charactersRaw || []).map(deserializeCharacterFromStorage));
 
     return {
       characters: applyCharacterTimeline(characters || [], timelineEntries || []),
-      relationships: clone(relationships || [])
+      relationships: clone(relationships || []),
+      locations: (locations || []).map(normalizeLocationRecord)
     };
+  }
+
+  async function readLocationRecords() {
+    await sanitizeLocationStore();
+    var db = await openCampaignAtlasDb();
+    var transaction = db.transaction([STORE_LOCATIONS], "readonly");
+    var locationsReq = transaction.objectStore(STORE_LOCATIONS).getAll();
+    var locationsPromise = requestToPromise(locationsReq);
+    await transactionToPromise(transaction);
+    return (await locationsPromise || []).map(normalizeLocationRecord);
+  }
+
+  async function readLocationRecordById(locationId) {
+    if (!locationId) {
+      return null;
+    }
+    await sanitizeLocationStore();
+    var db = await openCampaignAtlasDb();
+    var transaction = db.transaction([STORE_LOCATIONS], "readonly");
+    var locationReq = transaction.objectStore(STORE_LOCATIONS).get(String(locationId));
+    var locationPromise = requestToPromise(locationReq);
+    await transactionToPromise(transaction);
+    var location = await locationPromise;
+    return location ? normalizeLocationRecord(location) : null;
+  }
+
+  async function saveLocationRecord(location) {
+    if (!location || !location.id) {
+      return;
+    }
+    await sanitizeLocationStore();
+    var db = await openCampaignAtlasDb();
+    var transaction = db.transaction([STORE_LOCATIONS], "readwrite");
+    var store = transaction.objectStore(STORE_LOCATIONS);
+    var existingPromise = requestToPromise(store.get(location.id));
+    var existing = await existingPromise;
+    var merged = Object.assign({}, clone(existing || {}), clone(location || {}));
+    var normalized = normalizeLocationRecord(merged);
+    if (isInvalidLocationRecord(normalized)) {
+      return null;
+    }
+    normalized.updatedAt = new Date().toISOString();
+    if (!normalized.createdAt) {
+      normalized.createdAt = normalized.updatedAt;
+    }
+    store.put(normalized);
+    await transactionToPromise(transaction);
+    notifyLocationRecordsChanged("save");
+    return normalized;
+  }
+
+  async function deleteLocationRecord(locationId) {
+    if (!locationId) {
+      return;
+    }
+    var db = await openCampaignAtlasDb();
+    var transaction = db.transaction([STORE_LOCATIONS], "readwrite");
+    transaction.objectStore(STORE_LOCATIONS).delete(String(locationId));
+    await transactionToPromise(transaction);
+    notifyLocationRecordsChanged("delete");
   }
 
   async function saveCharacterToCampaignAtlas(character) {
@@ -1550,6 +1771,11 @@
     normalizeCharacterForProfile: normalizeCharacterForProfile,
     readGmNotesEntries: readGmNotesEntries,
     readCampaignAtlasState: readCampaignAtlasState,
+    readLocationRecords: readLocationRecords,
+    readLocationRecordById: readLocationRecordById,
+    saveLocationRecord: saveLocationRecord,
+    deleteLocationRecord: deleteLocationRecord,
+    subscribeLocationRecordChanges: subscribeLocationRecordChanges,
     saveCharacterToCampaignAtlas: saveCharacterToCampaignAtlas,
     CharacterBiographyWorkspace: CharacterBiographyWorkspace,
     CharacterProfilePortrait: CharacterProfilePortrait,

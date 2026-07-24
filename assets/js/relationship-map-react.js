@@ -12,10 +12,10 @@
 
   var STORAGE_KEY = "relationship-map-desktop-v1";
   var DB_NAME = "CampaignAtlas";
-  var DB_VERSION = 1;
+  var DB_VERSION = 3;
   var STORE_CHARACTERS = "characters";
   var STORE_RELATIONSHIPS = "relationships";
-  var STORE_LOCATIONS = "locations";
+  var STORE_ZONES = "zones";
   var STORE_TIMELINE = "timeline";
   var STORE_SESSIONS = "sessions";
   var STORE_SETTINGS = "settings";
@@ -1214,6 +1214,18 @@
     });
   }
 
+  function isLegacyZoneRecord(record) {
+    if (!record || typeof record !== "object") {
+      return false;
+    }
+    var id = String(record.id || "").trim().toLowerCase();
+    var name = String(record.name || record.title || "").trim().toLowerCase();
+    if (id.indexOf("zone-") === 0 || name === "new zone") {
+      return true;
+    }
+    return Number.isFinite(Number(record.x)) && Number.isFinite(Number(record.y)) && Number.isFinite(Number(record.width)) && Number.isFinite(Number(record.height));
+  }
+
   function openCampaignAtlasDb() {
     if (!indexedDbAvailable()) {
       return Promise.reject(new Error("IndexedDB is not available in this browser."));
@@ -1223,16 +1235,17 @@
       dbPromise = new Promise(function (resolve, reject) {
         var request = window.indexedDB.open(DB_NAME, DB_VERSION);
 
-        request.onupgradeneeded = function () {
+        request.onupgradeneeded = function (event) {
           var db = request.result;
+          var transaction = event.target.transaction;
           if (!db.objectStoreNames.contains(STORE_CHARACTERS)) {
             db.createObjectStore(STORE_CHARACTERS, { keyPath: "id" });
           }
           if (!db.objectStoreNames.contains(STORE_RELATIONSHIPS)) {
             db.createObjectStore(STORE_RELATIONSHIPS, { keyPath: "id" });
           }
-          if (!db.objectStoreNames.contains(STORE_LOCATIONS)) {
-            db.createObjectStore(STORE_LOCATIONS, { keyPath: "id" });
+          if (!db.objectStoreNames.contains(STORE_ZONES)) {
+            db.createObjectStore(STORE_ZONES, { keyPath: "id" });
           }
           if (!db.objectStoreNames.contains(STORE_TIMELINE)) {
             db.createObjectStore(STORE_TIMELINE, { keyPath: "id" });
@@ -1242,6 +1255,24 @@
           }
           if (!db.objectStoreNames.contains(STORE_SETTINGS)) {
             db.createObjectStore(STORE_SETTINGS, { keyPath: "id" });
+          }
+
+          if (event.oldVersion < 3 && db.objectStoreNames.contains("locations") && transaction) {
+            var legacyLocationStore = transaction.objectStore("locations");
+            var zoneStore = transaction.objectStore(STORE_ZONES);
+            var cursorReq = legacyLocationStore.openCursor();
+            cursorReq.onsuccess = function () {
+              var cursor = cursorReq.result;
+              if (!cursor) {
+                return;
+              }
+              var record = cursor.value;
+              if (isLegacyZoneRecord(record)) {
+                zoneStore.put(clone(record));
+                legacyLocationStore.delete(cursor.primaryKey);
+              }
+              cursor.continue();
+            };
           }
         };
 
@@ -1391,7 +1422,7 @@
     return {
       characters: characters,
       relationships: clone(source.relationships || []),
-      locations: clone(source.zones || []),
+      zones: clone(source.zones || []),
       timeline: timelines,
       sessions: sessions,
       settings: settings,
@@ -1403,27 +1434,27 @@
     var db = await openCampaignAtlasDb();
     var payload = await stateToDbPayload(state);
     var transaction = db.transaction(
-      [STORE_CHARACTERS, STORE_RELATIONSHIPS, STORE_LOCATIONS, STORE_TIMELINE, STORE_SESSIONS, STORE_SETTINGS],
+      [STORE_CHARACTERS, STORE_RELATIONSHIPS, STORE_ZONES, STORE_TIMELINE, STORE_SESSIONS, STORE_SETTINGS],
       "readwrite"
     );
 
     var characterStore = transaction.objectStore(STORE_CHARACTERS);
     var relationshipStore = transaction.objectStore(STORE_RELATIONSHIPS);
-    var locationStore = transaction.objectStore(STORE_LOCATIONS);
+    var zoneStore = transaction.objectStore(STORE_ZONES);
     var timelineStore = transaction.objectStore(STORE_TIMELINE);
     var sessionsStore = transaction.objectStore(STORE_SESSIONS);
     var settingsStore = transaction.objectStore(STORE_SETTINGS);
 
     characterStore.clear();
     relationshipStore.clear();
-    locationStore.clear();
+    zoneStore.clear();
     timelineStore.clear();
     sessionsStore.clear();
     settingsStore.clear();
 
     payload.characters.forEach(function (item) { characterStore.put(item); });
     payload.relationships.forEach(function (item) { relationshipStore.put(item); });
-    payload.locations.forEach(function (item) { locationStore.put(item); });
+    payload.zones.forEach(function (item) { zoneStore.put(item); });
     payload.timeline.forEach(function (item) { timelineStore.put(item); });
     sessionsStore.put(payload.sessions);
     settingsStore.put(payload.settings);
@@ -1435,13 +1466,13 @@
   async function readStateFromIndexedDb() {
     var db = await openCampaignAtlasDb();
     var transaction = db.transaction(
-      [STORE_CHARACTERS, STORE_RELATIONSHIPS, STORE_LOCATIONS, STORE_TIMELINE, STORE_SESSIONS, STORE_SETTINGS],
+      [STORE_CHARACTERS, STORE_RELATIONSHIPS, STORE_ZONES, STORE_TIMELINE, STORE_SESSIONS, STORE_SETTINGS],
       "readonly"
     );
 
     var charactersReq = transaction.objectStore(STORE_CHARACTERS).getAll();
     var relationshipsReq = transaction.objectStore(STORE_RELATIONSHIPS).getAll();
-    var locationsReq = transaction.objectStore(STORE_LOCATIONS).getAll();
+    var zonesReq = transaction.objectStore(STORE_ZONES).getAll();
     var timelineReq = transaction.objectStore(STORE_TIMELINE).getAll();
     var sessionsReq = transaction.objectStore(STORE_SESSIONS).get("current");
     var settingsReq = transaction.objectStore(STORE_SETTINGS).get("app");
@@ -1449,7 +1480,7 @@
 
     var storedCharactersRawPromise = requestToPromise(charactersReq);
     var storedRelationshipsPromise = requestToPromise(relationshipsReq);
-    var storedLocationsPromise = requestToPromise(locationsReq);
+    var storedZonesPromise = requestToPromise(zonesReq);
     var storedTimelinePromise = requestToPromise(timelineReq);
     var storedSessionPromise = requestToPromise(sessionsReq);
     var storedSettingsPromise = requestToPromise(settingsReq);
@@ -1459,7 +1490,7 @@
 
     var storedCharactersRaw = await storedCharactersRawPromise;
     var storedRelationships = await storedRelationshipsPromise;
-    var storedLocations = await storedLocationsPromise;
+    var storedZones = await storedZonesPromise;
     var storedTimeline = await storedTimelinePromise;
     var storedSession = await storedSessionPromise;
     var storedSettings = await storedSettingsPromise;
@@ -1483,8 +1514,8 @@
     if (storedRelationships && storedRelationships.length) {
       state.relationships = clone(storedRelationships);
     }
-    if (storedLocations && storedLocations.length) {
-      state.zones = clone(storedLocations);
+    if (storedZones && storedZones.length) {
+      state.zones = clone(storedZones);
     }
     if (storedSession) {
       state.session = storedSession.session !== undefined ? storedSession.session : state.session;
@@ -1504,21 +1535,21 @@
 
   async function indexedDbHasData() {
     var db = await openCampaignAtlasDb();
-    var transaction = db.transaction([STORE_CHARACTERS, STORE_RELATIONSHIPS, STORE_LOCATIONS, STORE_SETTINGS], "readonly");
+    var transaction = db.transaction([STORE_CHARACTERS, STORE_RELATIONSHIPS, STORE_ZONES, STORE_SETTINGS], "readonly");
     var charsCountReq = transaction.objectStore(STORE_CHARACTERS).count();
     var relCountReq = transaction.objectStore(STORE_RELATIONSHIPS).count();
-    var locCountReq = transaction.objectStore(STORE_LOCATIONS).count();
+    var zoneCountReq = transaction.objectStore(STORE_ZONES).count();
     var settingsReq = transaction.objectStore(STORE_SETTINGS).get("app");
     var charsCountPromise = requestToPromise(charsCountReq);
     var relCountPromise = requestToPromise(relCountReq);
-    var locCountPromise = requestToPromise(locCountReq);
+    var zoneCountPromise = requestToPromise(zoneCountReq);
     var settingsPromise = requestToPromise(settingsReq);
     await transactionToPromise(transaction);
     var charsCount = await charsCountPromise;
     var relCount = await relCountPromise;
-    var locCount = await locCountPromise;
+    var zoneCount = await zoneCountPromise;
     var settings = await settingsPromise;
-    return Boolean(charsCount || relCount || locCount || settings);
+    return Boolean(charsCount || relCount || zoneCount || settings);
   }
 
   function loadStateFromLocalStorage() {

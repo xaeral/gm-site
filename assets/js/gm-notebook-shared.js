@@ -16,7 +16,8 @@
     { id: "factions", title: "Factions", kind: "system", order: 3, collapsed: false },
     { id: "mysteries", title: "Mysteries", kind: "system", order: 4, collapsed: false },
     { id: "locations", title: "Locations", kind: "system", order: 5, collapsed: false },
-    { id: "npc-plans", title: "NPC Plans", kind: "system", order: 6, collapsed: false }
+    { id: "npc-plans", title: "NPC Plans", kind: "system", order: 6, collapsed: false },
+    { id: "archive", title: "Archive", kind: "system", order: 7, collapsed: true }
   ];
 
   function clone(value) {
@@ -211,6 +212,18 @@
     if (!Array.isArray(folders) || !folders.length) {
       DEFAULT_FOLDER_DEFS.forEach(function (folder) {
         folderStore.put(normalizeFolder(folder, folder.order));
+      });
+    } else {
+      var existingIds = {};
+      folders.forEach(function (folder) {
+        if (folder && folder.id) {
+          existingIds[String(folder.id)] = true;
+        }
+      });
+      DEFAULT_FOLDER_DEFS.forEach(function (folder) {
+        if (!existingIds[folder.id]) {
+          folderStore.put(normalizeFolder(folder, folder.order));
+        }
       });
     }
     await transactionToPromise(folderTxn);

@@ -8,11 +8,16 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="../assets/css/styles.css" />
+  <link rel="stylesheet" href="../assets/css/relationship-map-app.css" />
 </head>
-<body>
+<body class="workspace-page">
   <div class="site-shell">
     <aside class="sidebar" id="sidebar">
-      <div class="brand"><h1>Chronicle Codex</h1><p>GM Command Center</p></div>
+      <div class="brand">
+        <h1>Chronicle Codex</h1>
+        <p>GM Command Center</p>
+      </div>
+
       <nav class="nav" aria-label="Primary navigation">
         <a class="nav-link" href="../index.html">Home</a>
         <a class="nav-link" href="gm-notes.html">GM Notes</a>
@@ -24,40 +29,38 @@
         <a class="nav-link" href="tools.html">Tools</a>
         <a class="nav-link" href="settings.html">Settings</a>
       </nav>
-      <div class="sidebar-footer"><p>Module</p><strong>Location Database</strong></div>
+
+      <div class="sidebar-footer">
+        <p>Module</p>
+        <strong>Location Database</strong>
+      </div>
     </aside>
 
-    <main class="main-content">
+    <main class="main-content relationship-main-content locations-main-content">
       <header class="topbar">
         <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="sidebar">Menu</button>
-        <div class="topbar-title"><h2>Locations</h2><p>Havens, domains, elysiums, and linked campaign history.</p></div>
+        <div class="topbar-title">
+          <h2>LOCATIONS</h2>
+          <p>Searchable database of important places, havens, domains and campaign locations.</p>
+        </div>
       </header>
 
-      <section class="columns">
-        <article class="card">
-          <h3>Location Types</h3>
-          <ul class="stack-list">
-            <li class="stack-item"><strong>Havens</strong><p>Personal and faction shelters.</p></li>
-            <li class="stack-item"><strong>Domains</strong><p>Territory ownership and pressure zones.</p></li>
-            <li class="stack-item"><strong>Elysiums</strong><p>Neutral grounds and diplomacy points.</p></li>
-            <li class="stack-item"><strong>Businesses and Landmarks</strong><p>Operational fronts and notable places.</p></li>
-          </ul>
-        </article>
+      <div id="locationsDatabaseApp" class="locations-app-root"></div>
 
-        <article class="card">
-          <h3>Linked Data</h3>
-          <ul class="stack-list">
-            <li class="stack-item"><strong>Linked Characters</strong><p>Who controls or frequents each location.</p></li>
-            <li class="stack-item"><strong>Session History</strong><p>Which sessions visited the location.</p></li>
-            <li class="stack-item"><strong>Maps and Notes</strong><p>Floor plans, clues, and GM commentary.</p></li>
-          </ul>
-        </article>
-      </section>
-
-      <footer class="page-footer"><small>Chronicle Codex Dashboard</small><small id="yearStamp"></small></footer>
+      <footer class="page-footer">
+        <small>Chronicle Codex Dashboard</small>
+        <small id="yearStamp"></small>
+      </footer>
     </main>
   </div>
 
   <script src="../assets/js/common.js"></script>
+  <script src="../assets/js/data.js"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+  <script src="../assets/js/gm-notebook-shared.js"></script>
+  <script src="../assets/js/character-biography-shared.js"></script>
+  <script src="../assets/js/locations-database-react.js"></script>
 </body>
 </html>

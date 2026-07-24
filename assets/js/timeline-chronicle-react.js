@@ -1182,7 +1182,7 @@
           <div className="chronicle-modal-panel card">
             <div className="chronicle-modal-head">
               <h3>${modalState.mode === "edit" ? "Edit Event" : "Add Event"}</h3>
-              <button type="button" onClick=${closeModal}>Close</button>
+              <button type="button" className="icon-button chronicle-modal-close-button" aria-label="Close dialog" onClick=${closeModal}>×</button>
             </div>
             <div className="chronicle-modal-grid">
               <label>Character

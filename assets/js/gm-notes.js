@@ -24,18 +24,29 @@
     return notebook.clone ? notebook.clone(value) : JSON.parse(JSON.stringify(value));
   }
 
+  function normalizeString(value, fallback) {
+    var next = String(value || "").trim();
+    return next || String(fallback || "");
+  }
+
   function uniqueStrings(values) {
     return Array.from(new Set((values || []).map(function (value) { return String(value || "").trim(); }).filter(Boolean))).sort(function (a, b) {
       return a.localeCompare(b);
     });
   }
 
-  function stripHtml(htmlValue) {
-    return notebook.stripHtml ? notebook.stripHtml(htmlValue) : String(htmlValue || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-  }
-
   function optionLabelFromCharacter(character) {
     return character.name + (character.clan ? " • " + character.clan : "") + (character.sect ? " • " + character.sect : "");
+  }
+
+  function shortSummary(allLabel, selected) {
+    if (!selected || !selected.length) {
+      return allLabel;
+    }
+    if (selected.length === 1) {
+      return selected[0];
+    }
+    return selected.length + " Selected";
   }
 
   function ChipList(props) {
@@ -49,10 +60,10 @@
     }
 
     return html`<div className="notebook-chip-list">
-      ${items.map(function (item) {
+      ${items.map(function (item, index) {
         return html`<button
           type="button"
-          key=${item.id}
+          key=${"chip-" + (item.id || item.label || "item") + "-" + index}
           className="notebook-chip"
           onClick=${function () { if (onClick) { onClick(item); } }}
         >
@@ -63,35 +74,90 @@
     </div>`;
   }
 
-  function FilterDropdown(props) {
+  function SearchFilterDropdown(props) {
+    var id = props.id;
     var label = props.label;
+    var allLabel = props.allLabel || "All";
     var options = props.options || [];
     var selected = props.selected || [];
-    var onToggle = props.onToggle;
-    var active = props.active;
-    var setActive = props.setActive;
-    var summary = props.summary || (selected.length ? selected.length + " Selected" : "All");
-    var id = props.id;
+    var onToggle = typeof props.onToggle === "function" ? props.onToggle : function () {};
 
-    return html`<div className="character-filter-dropdown notebook-filter-dropdown">
+    var _open = useState(false);
+    var open = _open[0];
+    var setOpen = _open[1];
+
+    var _query = useState("");
+    var query = _query[0];
+    var setQuery = _query[1];
+
+    var rootRef = useRef(null);
+
+    useEffect(function () {
+      if (!open) {
+        setQuery("");
+        return;
+      }
+      function onPointerDown(event) {
+        if (rootRef.current && !rootRef.current.contains(event.target)) {
+          setOpen(false);
+        }
+      }
+      function onEscape(event) {
+        if (event.key === "Escape") {
+          setOpen(false);
+        }
+      }
+      document.addEventListener("pointerdown", onPointerDown);
+      document.addEventListener("keydown", onEscape);
+      return function () {
+        document.removeEventListener("pointerdown", onPointerDown);
+        document.removeEventListener("keydown", onEscape);
+      };
+    }, [open]);
+
+    var selectedLabels = selected.map(function (value) {
+      var found = options.find(function (option) { return option.value === value; });
+      return found ? found.label : value;
+    }).filter(Boolean);
+
+    var filteredOptions = useMemo(function () {
+      var term = normalizeString(query, "").toLowerCase();
+      if (!term) {
+        return options;
+      }
+      return options.filter(function (option) {
+        return String(option.label || "").toLowerCase().indexOf(term) >= 0;
+      });
+    }, [options, query]);
+
+    return html`<div className="character-filter-dropdown notebook-filter-dropdown" ref=${rootRef}>
       <span className="character-filter-label">${label}</span>
       <button
         type="button"
-        className=${"character-filter-trigger" + (active ? " open" : "")}
+        className=${"character-filter-trigger" + (open ? " open" : "")}
         aria-haspopup="menu"
-        aria-expanded=${active ? "true" : "false"}
+        aria-expanded=${open ? "true" : "false"}
         aria-controls=${id}
-        onClick=${function () { setActive(active ? null : id); }}
+        onClick=${function () { setOpen(!open); }}
       >
-        <span className="character-filter-trigger-text">${summary}</span>
+        <span className="character-filter-trigger-text">${shortSummary(allLabel, selectedLabels)}</span>
         <span className="character-filter-trigger-caret" aria-hidden="true">v</span>
       </button>
-      ${active ? html`<div id=${id} className="character-filter-menu notebook-filter-menu" role="menu">
-        ${options.length ? options.map(function (option) {
+      ${open ? html`<div id=${id} className="character-filter-menu notebook-filter-menu" role="menu">
+        <div className="notebook-filter-search-row">
+          <input
+            type="search"
+            value=${query}
+            placeholder="Search..."
+            autoFocus=${true}
+            onInput=${function (event) { setQuery(event.target.value); }}
+          />
+        </div>
+        ${filteredOptions.length ? filteredOptions.map(function (option, index) {
           var checked = selected.indexOf(option.value) >= 0;
           return html`<button
             type="button"
-            key=${option.value}
+            key=${id + "-" + option.value + "-" + index}
             className=${"character-filter-option" + (checked ? " checked" : "")}
             role="menuitemcheckbox"
             aria-checked=${checked ? "true" : "false"}
@@ -100,7 +166,7 @@
             <span className="character-filter-check" aria-hidden="true"></span>
             <span>${option.label}</span>
           </button>`;
-        }) : html`<div className="character-filter-option notebook-filter-empty"><span></span><span>No options yet.</span></div>`}
+        }) : html`<div className="character-filter-option notebook-filter-empty"><span></span><span>No options found.</span></div>`}
       </div>` : null}
     </div>`;
   }
@@ -114,6 +180,10 @@
     var characters = _characters[0];
     var setCharacters = _characters[1];
 
+    var _locations = useState([]);
+    var locations = _locations[0];
+    var setLocations = _locations[1];
+
     var _selectedNoteId = useState(null);
     var selectedNoteId = _selectedNoteId[0];
     var setSelectedNoteId = _selectedNoteId[1];
@@ -126,11 +196,11 @@
     var searchTerm = _searchTerm[0];
     var setSearchTerm = _searchTerm[1];
 
-    var _activeDropdown = useState(null);
-    var activeDropdown = _activeDropdown[0];
-    var setActiveDropdown = _activeDropdown[1];
+    var _explorerSearch = useState("");
+    var explorerSearch = _explorerSearch[0];
+    var setExplorerSearch = _explorerSearch[1];
 
-    var _filters = useState({ folderIds: [], sessions: [], characters: [], locations: [], tags: [] });
+    var _filters = useState({ sessions: [], characters: [], locations: [], tags: [] });
     var filters = _filters[0];
     var setFilters = _filters[1];
 
@@ -142,16 +212,15 @@
     var status = _status[0];
     var setStatus = _status[1];
 
-    var editorRef = useRef(null);
     var saveTimerRef = useRef(null);
     var noteBodyCacheRef = useRef({});
-    var prefetchRunnerRef = useRef(null);
 
     useEffect(function () {
       var cancelled = false;
       Promise.all([
         notebook.readNotebookState(),
-        shared.readCampaignAtlasState ? shared.readCampaignAtlasState() : Promise.resolve({ characters: [] })
+        shared.readCampaignAtlasState ? shared.readCampaignAtlasState() : Promise.resolve({ characters: [] }),
+        shared.readLocationRecords ? shared.readLocationRecords() : Promise.resolve([])
       ]).then(function (results) {
         if (cancelled) {
           return;
@@ -159,26 +228,16 @@
 
         var notebookState = results[0] || { folders: [], notes: [] };
         var characterState = results[1] || { characters: [] };
+        var locationState = results[2] || [];
         var notes = notebookState.notes || [];
 
         setState({ folders: notebookState.folders || [], notes: notes });
         setCharacters(Array.isArray(characterState.characters) ? characterState.characters : []);
+        setLocations(Array.isArray(locationState) ? locationState : []);
         setStatus(notes.length ? "Notebook ready." : "Notebook ready. Create your first note.");
 
-        if (!selectedNoteId) {
-          if (notes.length) {
-            setSelectedNoteId(notes[0].id);
-          } else {
-            notebook.createNote(notebook.getDefaultFolderId()).then(function (note) {
-              return notebook.readNotebookState().then(function (nextState) {
-                if (cancelled) {
-                  return;
-                }
-                setState({ folders: nextState.folders || [], notes: nextState.notes || [] });
-                setSelectedNoteId(note.id);
-              });
-            });
-          }
+        if (!selectedNoteId && notes.length) {
+          setSelectedNoteId(notes[0].id);
         }
       }).catch(function () {
         if (!cancelled) {
@@ -192,7 +251,22 @@
     }, []);
 
     useEffect(function () {
+      if (typeof shared.subscribeLocationRecordChanges !== "function") {
+        return function () {};
+      }
+      return shared.subscribeLocationRecordChanges(function () {
+        if (!shared.readLocationRecords) {
+          return;
+        }
+        shared.readLocationRecords().then(function (records) {
+          setLocations(Array.isArray(records) ? records : []);
+        }).catch(function () {});
+      });
+    }, []);
+
+    useEffect(function () {
       if (!selectedNoteId) {
+        setDraft(null);
         return;
       }
       setMentionState(null);
@@ -209,6 +283,10 @@
         }
         noteBodyCacheRef.current[note.id] = clone(note);
         setDraft(clone(note));
+      }).catch(function () {
+        if (!cancelled) {
+          setStatus("Unable to load note content.");
+        }
       });
       return function () {
         cancelled = true;
@@ -297,6 +375,8 @@
           });
           noteBodyCacheRef.current[savedNote.id] = clone(savedNote);
           setStatus("Draft saved.");
+        }).catch(function () {
+          setStatus("Unable to save draft.");
         });
       }, 250);
       return function () {
@@ -307,30 +387,37 @@
       };
     }, [draft && draft.id, draft && draft.title, draft && draft.bodyHtml, draft && draft.folderId, draft && draft.sessionLabel, draft && draft.pinned, draft && draft.archived, JSON.stringify(draft && draft.characterIds ? draft.characterIds : []), JSON.stringify(draft && draft.locationIds ? draft.locationIds : []), JSON.stringify(draft && draft.tags ? draft.tags : [])]);
 
-    var visibleNotes = useMemo(function () {
-      return notebook.filterNotes(state.notes || [], state, filters, searchTerm).slice().sort(function (a, b) {
-        if (a.pinned !== b.pinned) {
-          return a.pinned ? -1 : 1;
-        }
-        return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+    function toggleFilterValue(field, value) {
+      setFilters(function (current) {
+        var next = clone(current);
+        var bucket = Array.isArray(next[field]) ? next[field] : [];
+        next[field] = bucket.indexOf(value) >= 0 ? bucket.filter(function (entry) { return entry !== value; }) : bucket.concat([value]);
+        return next;
       });
-    }, [state.notes, state.folders, searchTerm, JSON.stringify(filters)]);
+    }
 
-    var groupedByFolder = useMemo(function () {
-      var groups = {};
-      visibleNotes.forEach(function (note) {
-        var folderId = note.folderId || notebook.getDefaultFolderId();
-        if (!groups[folderId]) {
-          groups[folderId] = [];
-        }
-        groups[folderId].push(note);
+    var characterOptions = useMemo(function () {
+      return (characters || []).map(function (character) {
+        return { value: character.id, label: optionLabelFromCharacter(character) };
+      }).sort(function (a, b) { return a.label.localeCompare(b.label); });
+    }, [characters]);
+
+    var locationOptions = useMemo(function () {
+      var fromState = (locations || []).map(function (location) {
+        var locationId = normalizeString(location.id, "");
+        var label = normalizeString(location.name, locationId || "Unknown Location");
+        return { value: locationId || label, label: label };
       });
-      return groups;
-    }, [visibleNotes]);
-
-    var folderOptions = useMemo(function () {
-      return (state.folders || []).map(function (folder) { return { value: folder.id, label: folder.title }; });
-    }, [state.folders]);
+      var merged = {};
+      fromState.forEach(function (option) {
+        if (option && option.value && !merged[option.value]) {
+          merged[option.value] = option;
+        }
+      });
+      return Object.keys(merged).map(function (key) { return merged[key]; }).sort(function (a, b) {
+        return a.label.localeCompare(b.label);
+      });
+    }, [locations]);
 
     var sessionOptions = useMemo(function () {
       return uniqueStrings((state.notes || []).map(function (note) { return note.sessionLabel; })).map(function (session) {
@@ -346,21 +433,40 @@
       });
     }, [state.notes]);
 
-    var locationOptions = useMemo(function () {
-      var seeded = Array.isArray(window.GMData && window.GMData.locations) ? window.GMData.locations : [];
-      var noteLocations = (state.notes || []).reduce(function (all, note) {
-        return all.concat(Array.isArray(note.locationIds) ? note.locationIds : []);
-      }, []);
-      return uniqueStrings(seeded.concat(noteLocations)).map(function (location) {
-        return { value: location, label: location };
+    var visibleNotes = useMemo(function () {
+      return notebook.filterNotes(state.notes || [], state, filters, searchTerm).slice().sort(function (a, b) {
+        if (a.pinned !== b.pinned) {
+          return a.pinned ? -1 : 1;
+        }
+        return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
       });
-    }, [state.notes]);
+    }, [state.notes, state.folders, searchTerm, JSON.stringify(filters)]);
 
-    var characterOptions = useMemo(function () {
-      return (characters || []).map(function (character) {
-        return { value: character.id, label: optionLabelFromCharacter(character) };
-      }).sort(function (a, b) { return a.label.localeCompare(b.label); });
-    }, [characters]);
+    var explorerVisibleNotes = useMemo(function () {
+      var term = normalizeString(explorerSearch, "").toLowerCase();
+      if (!term) {
+        return visibleNotes;
+      }
+      return visibleNotes.filter(function (note) {
+        var title = String(note.title || "").toLowerCase();
+        var preview = String(note.previewText || "").toLowerCase();
+        return title.indexOf(term) >= 0 || preview.indexOf(term) >= 0;
+      });
+    }, [visibleNotes, explorerSearch]);
+
+    var groupedByFolder = useMemo(function () {
+      var groups = {};
+      explorerVisibleNotes.forEach(function (note) {
+        var folderId = note.folderId || notebook.getDefaultFolderId();
+        if (!groups[folderId]) {
+          groups[folderId] = [];
+        }
+        groups[folderId].push(note);
+      });
+      return groups;
+    }, [explorerVisibleNotes]);
+
+    var selectedFolderId = draft ? (draft.folderId || notebook.getDefaultFolderId()) : notebook.getDefaultFolderId();
 
     var selectedCharacterObjects = (draft && draft.characterIds ? draft.characterIds : []).map(function (id) {
       return characters.find(function (character) { return character.id === id; });
@@ -369,7 +475,9 @@
     });
 
     var selectedLocationObjects = (draft && draft.locationIds ? draft.locationIds : []).map(function (id) {
-      return { id: id, label: id };
+      var value = String(id);
+      var found = locationOptions.find(function (option) { return option.value === value; });
+      return { id: value, label: found ? found.label : value };
     });
 
     function updateDraftField(field, value) {
@@ -383,6 +491,10 @@
       });
     }
 
+    function updateTags(value) {
+      updateDraftField("tags", String(value || "").split(",").map(function (tag) { return tag.trim(); }).filter(Boolean));
+    }
+
     async function selectNote(noteId) {
       if (draft) {
         await notebook.saveNote(draft, draft.folderId);
@@ -390,13 +502,20 @@
       setSelectedNoteId(noteId);
     }
 
-    async function createNoteInFolder(folderId) {
-      var note = await notebook.createNote(folderId || notebook.getDefaultFolderId());
+    async function refreshNotebookState(nextStatus) {
       var nextState = await notebook.readNotebookState();
       setState({ folders: nextState.folders || [], notes: nextState.notes || [] });
+      if (nextStatus) {
+        setStatus(nextStatus);
+      }
+      return nextState;
+    }
+
+    async function createNote(folderId) {
+      var note = await notebook.createNote(folderId || selectedFolderId || notebook.getDefaultFolderId());
       noteBodyCacheRef.current[note.id] = null;
+      await refreshNotebookState("New note created.");
       setSelectedNoteId(note.id);
-      setStatus("New note created.");
     }
 
     async function createFolderFromPrompt() {
@@ -405,27 +524,33 @@
         return;
       }
       await notebook.createFolder(name);
-      var nextState = await notebook.readNotebookState();
-      setState({ folders: nextState.folders || [], notes: nextState.notes || [] });
-      setStatus("Folder created.");
+      await refreshNotebookState("Folder created.");
     }
 
     async function toggleFolder(folder) {
       var nextFolder = clone(folder);
       nextFolder.collapsed = !folder.collapsed;
       await notebook.saveFolder(nextFolder);
-      var nextState = await notebook.readNotebookState();
-      setState({ folders: nextState.folders || [], notes: nextState.notes || [] });
+      await refreshNotebookState();
     }
 
     async function moveNote(noteId, folderId) {
       await notebook.moveNote(noteId, folderId);
-      var nextState = await notebook.readNotebookState();
-      setState({ folders: nextState.folders || [], notes: nextState.notes || [] });
-      setStatus("Note moved.");
+      await refreshNotebookState("Note moved.");
     }
 
-    function handleEditorKeyUp(event, editor) {
+    async function deleteActiveNote() {
+      if (!draft || !window.confirm("Delete this note?")) {
+        return;
+      }
+      await notebook.deleteNote(draft.id);
+      delete noteBodyCacheRef.current[draft.id];
+      var nextState = await refreshNotebookState("Note deleted.");
+      var first = (nextState.notes || [])[0] || null;
+      setSelectedNoteId(first ? first.id : null);
+    }
+
+    function handleEditorKeyUp(_event, editor) {
       if (!editor) {
         return;
       }
@@ -481,176 +606,125 @@
       setDraft(next);
     }
 
-    function updateNoteTags(value) {
-      updateDraftField("tags", String(value || "").split(",").map(function (tag) { return tag.trim(); }).filter(Boolean));
+    function clearFilters() {
+      setSearchTerm("");
+      setFilters({ sessions: [], characters: [], locations: [], tags: [] });
     }
 
-    var selectedFolderId = draft ? draft.folderId : notebook.getDefaultFolderId();
-
-    return html`<section className="gm-notebook-workspace">
-      <aside className="card gm-notebook-explorer">
-        <div className="section-heading">
-          <h3>Notebook Explorer</h3>
-          <span className="note-subtitle">${visibleNotes.length} notes</span>
-        </div>
-        <div className="notebook-toolbar">
+    return html`<section className="gm-notebook-page">
+      <div className="gm-notebook-global-toolbar card">
+        <div className="gm-notebook-global-search">
+          <label htmlFor="gmNoteSearch">Search Notes</label>
           <input
+            id="gmNoteSearch"
             type="search"
-            placeholder="Search note title, body, tags, sessions, locations..."
+            placeholder="Search title, body, tags, characters, locations..."
             value=${searchTerm}
             onInput=${function (event) { setSearchTerm(event.target.value); }}
           />
-          <div className="notebook-toolbar-actions">
-            <button type="button" onClick=${function () { createNoteInFolder(selectedFolderId); }}>New Note</button>
-            <button type="button" onClick=${createFolderFromPrompt}>New Folder</button>
-          </div>
         </div>
-
-        <div className="notebook-filter-grid">
-          <${FilterDropdown}
-            id="folderFilterMenu"
-            label="Folder"
-            options=${folderOptions}
-            selected=${filters.folderIds}
-            summary=${filters.folderIds && filters.folderIds.length ? filters.folderIds.length + " Selected" : "All Folders"}
-            active=${activeDropdown === "folderFilterMenu"}
-            setActive=${setActiveDropdown}
-            onToggle=${function (value) {
-              setFilters(function (current) {
-                var next = clone(current);
-                next.folderIds = (next.folderIds || []).indexOf(value) >= 0 ? (next.folderIds || []).filter(function (entry) { return entry !== value; }) : (next.folderIds || []).concat([value]);
-                return next;
-              });
-            }}
-          />
-          <${FilterDropdown}
+        <div className="gm-notebook-filter-row">
+          <${SearchFilterDropdown}
             id="sessionFilterMenu"
             label="Session"
+            allLabel="All Sessions"
             options=${sessionOptions}
             selected=${filters.sessions}
-            summary=${filters.sessions && filters.sessions.length ? filters.sessions.length + " Selected" : "All Sessions"}
-            active=${activeDropdown === "sessionFilterMenu"}
-            setActive=${setActiveDropdown}
-            onToggle=${function (value) {
-              setFilters(function (current) {
-                var next = clone(current);
-                next.sessions = (next.sessions || []).indexOf(value) >= 0 ? (next.sessions || []).filter(function (entry) { return entry !== value; }) : (next.sessions || []).concat([value]);
-                return next;
-              });
-            }}
+            onToggle=${function (value) { toggleFilterValue("sessions", value); }}
           />
-          <${FilterDropdown}
+          <${SearchFilterDropdown}
             id="characterFilterMenu"
             label="Character"
+            allLabel="All Characters"
             options=${characterOptions}
             selected=${filters.characters}
-            summary=${filters.characters && filters.characters.length ? filters.characters.length + " Selected" : "All Characters"}
-            active=${activeDropdown === "characterFilterMenu"}
-            setActive=${setActiveDropdown}
-            onToggle=${function (value) {
-              setFilters(function (current) {
-                var next = clone(current);
-                next.characters = (next.characters || []).indexOf(value) >= 0 ? (next.characters || []).filter(function (entry) { return entry !== value; }) : (next.characters || []).concat([value]);
-                return next;
-              });
-            }}
+            onToggle=${function (value) { toggleFilterValue("characters", value); }}
           />
-          <${FilterDropdown}
+          <${SearchFilterDropdown}
             id="locationFilterMenu"
             label="Location"
+            allLabel="All Locations"
             options=${locationOptions}
             selected=${filters.locations}
-            summary=${filters.locations && filters.locations.length ? filters.locations.length + " Selected" : "All Locations"}
-            active=${activeDropdown === "locationFilterMenu"}
-            setActive=${setActiveDropdown}
-            onToggle=${function (value) {
-              setFilters(function (current) {
-                var next = clone(current);
-                next.locations = (next.locations || []).indexOf(value) >= 0 ? (next.locations || []).filter(function (entry) { return entry !== value; }) : (next.locations || []).concat([value]);
-                return next;
-              });
-            }}
+            onToggle=${function (value) { toggleFilterValue("locations", value); }}
           />
-          <${FilterDropdown}
+          <${SearchFilterDropdown}
             id="tagFilterMenu"
-            label="Tag"
+            label="Tags"
+            allLabel="All Tags"
             options=${tagOptions}
             selected=${filters.tags}
-            summary=${filters.tags && filters.tags.length ? filters.tags.length + " Selected" : "All Tags"}
-            active=${activeDropdown === "tagFilterMenu"}
-            setActive=${setActiveDropdown}
-            onToggle=${function (value) {
-              setFilters(function (current) {
-                var next = clone(current);
-                next.tags = (next.tags || []).indexOf(value) >= 0 ? (next.tags || []).filter(function (entry) { return entry !== value; }) : (next.tags || []).concat([value]);
-                return next;
-              });
-            }}
+            onToggle=${function (value) { toggleFilterValue("tags", value); }}
           />
+          <button type="button" className="notebook-clear-button" onClick=${clearFilters}>Clear Filters</button>
         </div>
+        <button type="button" className="notebook-primary-add" aria-label="Create note" onClick=${function () { createNote(selectedFolderId); }}>+</button>
+      </div>
 
-        <div className="notebook-folder-list">
-          ${(state.folders || []).map(function (folder) {
-            var folderNotes = groupedByFolder[folder.id] || [];
-            return html`<section
-              className="notebook-folder-card"
-              key=${folder.id}
-              onDragOver=${function (event) { event.preventDefault(); }}
-              onDrop=${function (event) {
-                event.preventDefault();
-                var noteId = event.dataTransfer.getData("text/notebook-note-id");
-                if (noteId) {
-                  moveNote(noteId, folder.id);
-                }
-              }}
-            >
-              <button type="button" className="notebook-folder-header" onClick=${function () { toggleFolder(folder); }}>
-                <span className="notebook-folder-caret">${folder.collapsed ? ">" : "v"}</span>
-                <span className="notebook-folder-title">${folder.title}</span>
-                <span className="notebook-folder-count">${folderNotes.length} notes</span>
-              </button>
-              <div className="notebook-folder-actions">
-                <button type="button" onClick=${function () { createNoteInFolder(folder.id); }}>+ Note</button>
-              </div>
-              ${folder.collapsed ? null : html`<div className="notebook-note-stack">
-                ${folderNotes.length ? folderNotes.map(function (note) {
-                  var noteText = note.previewText || "No preview available.";
-                  return html`<button
-                    type="button"
-                    key=${note.id}
-                    draggable="true"
-                    className=${"notebook-note-card" + (selectedNoteId === note.id ? " active" : "") + (note.pinned ? " pinned" : "")}
-                    onDragStart=${function (event) { event.dataTransfer.setData("text/notebook-note-id", note.id); }}
-                    onClick=${function () { selectNote(note.id); }}
-                  >
-                    <strong>${note.title || "Untitled Note"}</strong>
-                    <span>${note.sessionLabel || "No session"}</span>
-                    <p>${noteText ? (noteText.length > 120 ? noteText.slice(0, 117) + "..." : noteText) : "No body text yet."}</p>
-                    <div className="notebook-note-meta">
-                      ${note.pinned ? html`<span className="tag">Pinned</span>` : null}
-                      ${note.archived ? html`<span className="tag">Archived</span>` : null}
-                      <span className="tag">${note.updatedAt ? new Date(note.updatedAt).toLocaleDateString() : "New"}</span>
-                    </div>
-                  </button>`;
-                }) : html`<p className="hint">No notes in this folder.</p>`}
-              </div>`}
-            </section>`;
-          })}
-        </div>
-      </aside>
-
-      <section className="card gm-notebook-editor">
-        ${draft ? html`
-          <div className="section-heading notebook-editor-heading">
-            <h3>Rich Text Note Editor</h3>
-            <div className="notebook-editor-status">
-              <span className="tag">${draft.pinned ? "Pinned" : "Unpinned"}</span>
-              <span className="tag">${draft.archived ? "Archived" : "Active"}</span>
-              <span className="tag">${status}</span>
+      <div className="gm-notebook-workspace">
+        <aside className="gm-notebook-explorer">
+          <div className="gm-notebook-explorer-head">
+            <div>
+              <h3>Notebook Explorer</h3>
+              <p>${explorerVisibleNotes.length} visible notes</p>
             </div>
           </div>
 
-          <div className="notebook-editor-shell">
+          <div className="gm-notebook-explorer-controls">
+            <input
+              type="search"
+              placeholder="Search explorer..."
+              value=${explorerSearch}
+              onInput=${function (event) { setExplorerSearch(event.target.value); }}
+            />
+            <div className="gm-notebook-explorer-actions">
+              <button type="button" onClick=${function () { createNote(selectedFolderId); }}>New Note</button>
+              <button type="button" onClick=${createFolderFromPrompt}>New Folder</button>
+            </div>
+          </div>
+
+          <div className="notebook-folder-list">
+            ${(state.folders || []).map(function (folder, folderIndex) {
+              var folderNotes = groupedByFolder[folder.id] || [];
+              return html`<section
+                className="notebook-folder-card"
+                key=${"folder-" + (folder.id || folder.title || "untitled") + "-" + folderIndex}
+                onDragOver=${function (event) { event.preventDefault(); }}
+                onDrop=${function (event) {
+                  event.preventDefault();
+                  var noteId = event.dataTransfer.getData("text/notebook-note-id");
+                  if (noteId) {
+                    moveNote(noteId, folder.id);
+                  }
+                }}
+              >
+                <button type="button" className="notebook-folder-header" onClick=${function () { toggleFolder(folder); }}>
+                  <span className="notebook-folder-caret">${folder.collapsed ? ">" : "v"}</span>
+                  <span className="notebook-folder-title">${folder.title}</span>
+                  <span className="notebook-folder-count">${folderNotes.length}</span>
+                </button>
+                ${folder.collapsed ? null : html`<div className="notebook-note-stack">
+                  ${folderNotes.length ? folderNotes.map(function (note, noteIndex) {
+                    return html`<button
+                      type="button"
+                      key=${"note-" + (note.id || note.title || "untitled") + "-" + noteIndex}
+                      draggable="true"
+                      className=${"notebook-note-card" + (selectedNoteId === note.id ? " active" : "") + (note.pinned ? " pinned" : "")}
+                      onDragStart=${function (event) { event.dataTransfer.setData("text/notebook-note-id", note.id); }}
+                      onClick=${function () { selectNote(note.id); }}
+                    >
+                      <strong>${note.title || "Untitled Note"}</strong>
+                      <span>${note.sessionLabel || "No session"}</span>
+                    </button>`;
+                  }) : html`<p className="hint">No notes in this folder.</p>`}
+                </div>`}
+              </section>`;
+            })}
+          </div>
+        </aside>
+
+        <section className="gm-notebook-editor">
+          ${draft ? html`
             <div className="notebook-editor-header">
               <input
                 type="text"
@@ -660,29 +734,17 @@
                 placeholder="Note title"
               />
               <div className="notebook-editor-actions">
-                <button type="button" onClick=${function () { setDraft(function (current) { var next = clone(current); next.pinned = !next.pinned; return next; }); }}>Pin</button>
-                <button type="button" onClick=${function () { setDraft(function (current) { var next = clone(current); next.archived = !next.archived; return next; }); }}>Archive</button>
-                <button type="button" className="destructive" onClick=${function () {
-                  if (!window.confirm("Delete this note?")) {
-                    return;
-                  }
-                  notebook.deleteNote(draft.id).then(function () {
-                    return notebook.readNotebookState();
-                  }).then(function (nextState) {
-                    setState({ folders: nextState.folders || [], notes: nextState.notes || [] });
-                    var first = (nextState.notes || [])[0] || null;
-                    setSelectedNoteId(first ? first.id : null);
-                    setDraft(first ? clone(first) : null);
-                  });
-                }}>Delete</button>
+                <button type="button" onClick=${function () { setDraft(function (current) { var next = clone(current); next.pinned = !next.pinned; return next; }); }}>${draft.pinned ? "Unpin" : "Pin"}</button>
+                <button type="button" onClick=${function () { setDraft(function (current) { var next = clone(current); next.archived = !next.archived; return next; }); }}>${draft.archived ? "Unarchive" : "Archive"}</button>
+                <button type="button" className="destructive" onClick=${deleteActiveNote}>Delete</button>
               </div>
             </div>
 
             <div className="notebook-metadata-grid">
               <label>Folder
                 <select value=${draft.folderId || notebook.getDefaultFolderId()} onChange=${function (event) { updateDraftField("folderId", event.target.value); }}>
-                  ${(state.folders || []).map(function (folder) {
-                    return html`<option key=${folder.id} value=${folder.id}>${folder.title}</option>`;
+                  ${(state.folders || []).map(function (folder, folderIndex) {
+                    return html`<option key=${"folder-option-" + (folder.id || folder.title || "untitled") + "-" + folderIndex} value=${folder.id}>${folder.title}</option>`;
                   })}
                 </select>
               </label>
@@ -690,7 +752,7 @@
                 <input list="notebook-sessions" value=${draft.sessionLabel || ""} onInput=${function (event) { updateDraftField("sessionLabel", event.target.value); }} placeholder="Session 4" />
               </label>
               <label>General Tags
-                <input value=${(draft.tags || []).join(", ")} onInput=${function (event) { updateNoteTags(event.target.value); }} placeholder="prep, rumor, important" />
+                <input value=${(draft.tags || []).join(", ")} onInput=${function (event) { updateTags(event.target.value); }} placeholder="prep, rumor, important" />
               </label>
             </div>
 
@@ -716,43 +778,46 @@
             </div>
 
             <section className="notebook-body-card">
-              <div className="section-heading">
-                <h3>Note Body</h3>
-                <span className="note-subtitle">Type @ for characters or # for locations</span>
+              <div className="section-heading notebook-writing-heading">
+                <h3>Rich Text Note Editor</h3>
+                <span className="note-subtitle">Type @ for characters or # for locations • ${status}</span>
               </div>
               <${shared.CharacterBiographyWorkspace}
                 editable=${true}
                 value=${String(draft.bodyHtml || "")}
                 onChange=${function (htmlValue) { updateDraftField("bodyHtml", htmlValue); }}
-                editorRef=${editorRef}
                 editorClassName="rich-editor profile-rich-editor character-rich-text notebook-editor"
                 viewerClassName="profile-biography-content character-rich-text"
                 onEditorKeyUp=${handleEditorKeyUp}
               />
+
               ${mentionState ? html`<div className="notebook-mention-picker">
                 <div className="section-heading">
-                  <h3>${mentionState.trigger === "@" ? "Character Picker" : "Location Picker"}</h3>
+                  <h3>${mentionState.trigger === "@" ? "Character Tags" : "Location Tags"}</h3>
                   <span className="note-subtitle">${mentionState.query ? "Filtering: " + mentionState.query : "Start typing to filter"}</span>
                 </div>
                 <div className="notebook-mention-results">
                   ${(mentionState.trigger === "@" ? characterOptions : locationOptions)
                     .filter(function (option) { return !mentionState.query || option.label.toLowerCase().indexOf(mentionState.query.toLowerCase()) >= 0; })
                     .slice(0, 12)
-                    .map(function (option) {
-                      return html`<button key=${option.value} type="button" className="notebook-mention-option" onClick=${function () { addReference(mentionState.trigger === "@" ? "character" : "location", { id: option.value, label: option.label }); }}>
+                    .map(function (option, index) {
+                      return html`<button key=${"mention-option-" + option.value + "-" + index} type="button" className="notebook-mention-option" onClick=${function () { addReference(mentionState.trigger === "@" ? "character" : "location", { id: option.value, label: option.label }); }}>
                         <strong>${option.label}</strong>
                       </button>`;
                     })}
                 </div>
               </div>` : null}
             </section>
-          </div>
-        ` : selectedNoteId ? html`<div className="profile-empty">Loading note content...</div>` : html`<div className="profile-empty">No note selected.</div>`}
-      </section>
+          ` : selectedNoteId ? html`<div className="profile-empty">Loading note content...</div>` : html`<div className="profile-empty">
+            <p>No note selected.</p>
+            <button type="button" onClick=${function () { createNote(selectedFolderId); }}>Create Note</button>
+          </div>`}
 
-      <datalist id="notebook-sessions">
-        ${sessionOptions.map(function (session) { return html`<option key=${session.value} value=${session.value}></option>`; })}
-      </datalist>
+          <datalist id="notebook-sessions">
+            ${sessionOptions.map(function (session, sessionIndex) { return html`<option key=${"session-option-" + session.value + "-" + sessionIndex} value=${session.value}></option>`; })}
+          </datalist>
+        </section>
+      </div>
     </section>`;
   }
 
