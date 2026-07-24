@@ -17,6 +17,14 @@
   var CHANNEL_NAME = "campaign-atlas-characters";
   var sourceId = "timeline-page-" + Date.now() + "-" + Math.floor(Math.random() * 100000);
   var FALLBACK_PORTRAIT_DATA_URI = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E%3Crect width='80' height='80' fill='%2313131a'/%3E%3Ccircle cx='40' cy='30' r='14' fill='%23d10d40' fill-opacity='0.6'/%3E%3Crect x='20' y='48' width='40' height='22' rx='11' fill='%23d10d40' fill-opacity='0.4'/%3E%3C/svg%3E";
+  var SORT_OPTIONS = [
+    { value: "chronological-asc", label: "Chronological (Oldest -> Newest)" },
+    { value: "chronological-desc", label: "Chronological (Newest -> Oldest)" },
+    { value: "title-asc", label: "Event Title (A -> Z)" },
+    { value: "title-desc", label: "Event Title (Z -> A)" },
+    { value: "character-asc", label: "Character Name (A -> Z)" },
+    { value: "character-desc", label: "Character Name (Z -> A)" }
+  ];
 
   function normalizeString(value, fallback) {
     var next = String(value || "").trim();
@@ -256,6 +264,10 @@
     var search = _search[0];
     var setSearch = _search[1];
 
+    var _sortMode = useState("chronological-desc");
+    var sortMode = _sortMode[0];
+    var setSortMode = _sortMode[1];
+
     var _characterFilters = useState({});
     var characterFilters = _characterFilters[0];
     var setCharacterFilters = _characterFilters[1];
@@ -272,7 +284,7 @@
     var activeDropdown = _activeDropdown[0];
     var setActiveDropdown = _activeDropdown[1];
 
-    var _focusedFilterIndex = useState({ character: 0, clan: 0, sect: 0 });
+    var _focusedFilterIndex = useState({ character: 0, clan: 0, sect: 0, sort: 0 });
     var focusedFilterIndex = _focusedFilterIndex[0];
     var setFocusedFilterIndex = _focusedFilterIndex[1];
 
@@ -304,8 +316,8 @@
 
     var channelRef = useRef(null);
     var filterRootRef = useRef(null);
-    var filterTriggerRefs = useRef({ character: null, clan: null, sect: null });
-    var filterOptionRefs = useRef({ character: [], clan: [], sect: [] });
+    var filterTriggerRefs = useRef({ character: null, clan: null, sect: null, sort: null });
+    var filterOptionRefs = useRef({ character: [], clan: [], sect: [], sort: [] });
 
     useEffect(function () {
       var cancelled = false;
@@ -459,8 +471,12 @@
       }
       var optionList = activeDropdown === "character"
         ? characterOptions
-        : (activeDropdown === "clan" ? clanOptions : sectOptions);
-      var maxIndex = optionList.length;
+        : (activeDropdown === "clan"
+          ? clanOptions
+          : (activeDropdown === "sect" ? sectOptions : SORT_OPTIONS));
+      var maxIndex = activeDropdown === "sort"
+        ? Math.max(0, optionList.length - 1)
+        : optionList.length;
       var currentIndex = focusedFilterIndex[activeDropdown] || 0;
       var clamped = Math.max(0, Math.min(maxIndex, currentIndex));
       if (clamped !== currentIndex) {
@@ -529,6 +545,46 @@
         return true;
       });
     }, [timelineEntries, search, characterFilters, clanFilters, sectFilters]);
+
+    var sortedEntries = useMemo(function () {
+      var indexed = filteredEntries.map(function (entry, index) {
+        return { entry: entry, index: index };
+      });
+
+      function titleValue(item) {
+        return normalizeString(item.entry.event && item.entry.event.title, "");
+      }
+
+      function characterValue(item) {
+        return normalizeString(item.entry.character && item.entry.character.name, "");
+      }
+
+      indexed.sort(function (left, right) {
+        var primary = 0;
+        if (sortMode === "chronological-asc") {
+          primary = left.entry.dateInfo.key - right.entry.dateInfo.key;
+        } else if (sortMode === "chronological-desc") {
+          primary = right.entry.dateInfo.key - left.entry.dateInfo.key;
+        } else if (sortMode === "title-asc") {
+          primary = titleValue(left).localeCompare(titleValue(right));
+        } else if (sortMode === "title-desc") {
+          primary = titleValue(right).localeCompare(titleValue(left));
+        } else if (sortMode === "character-asc") {
+          primary = characterValue(left).localeCompare(characterValue(right));
+        } else if (sortMode === "character-desc") {
+          primary = characterValue(right).localeCompare(characterValue(left));
+        }
+
+        if (primary !== 0) {
+          return primary;
+        }
+
+        // Stable fallback prevents visual shuffling when primary values tie.
+        return left.index - right.index;
+      });
+
+      return indexed.map(function (item) { return item.entry; });
+    }, [filteredEntries, sortMode]);
 
     function allOptionsSelected(options, filters) {
       return options.length > 0 && options.every(function (option) { return Boolean(filters[option.value]); });
@@ -638,6 +694,141 @@
         event.preventDefault();
         openFilterDropdown(kind, options, filters);
       }
+    }
+
+    function openSortDropdown() {
+      var selectedIndex = SORT_OPTIONS.findIndex(function (option) {
+        return option.value === sortMode;
+      });
+      setFocusedFilterIndex(function (prev) {
+        var next = Object.assign({}, prev);
+        next.sort = selectedIndex >= 0 ? selectedIndex : 0;
+        return next;
+      });
+      setActiveDropdown("sort");
+    }
+
+    function toggleSortDropdown() {
+      if (activeDropdown === "sort") {
+        setActiveDropdown(null);
+        return;
+      }
+      openSortDropdown();
+    }
+
+    function onSortTriggerKeyDown(event) {
+      if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openSortDropdown();
+      }
+    }
+
+    function setSortFocus(index) {
+      setFocusedFilterIndex(function (prev) {
+        var next = Object.assign({}, prev);
+        next.sort = index;
+        return next;
+      });
+    }
+
+    function chooseSortMode(nextMode) {
+      setSortMode(nextMode);
+      setActiveDropdown(null);
+    }
+
+    function onSortPanelKeyDown(event) {
+      var current = focusedFilterIndex.sort || 0;
+      var max = Math.max(0, SORT_OPTIONS.length - 1);
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSortFocus((current + 1) > max ? 0 : current + 1);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSortFocus((current - 1) < 0 ? max : current - 1);
+        return;
+      }
+      if (event.key === "Home") {
+        event.preventDefault();
+        setSortFocus(0);
+        return;
+      }
+      if (event.key === "End") {
+        event.preventDefault();
+        setSortFocus(max);
+        return;
+      }
+      if (event.key === " " || event.key === "Enter") {
+        event.preventDefault();
+        var target = SORT_OPTIONS[current];
+        if (target) {
+          chooseSortMode(target.value);
+        }
+      }
+    }
+
+    function renderSortDropdown() {
+      var dropdownOpen = activeDropdown === "sort";
+      var panelId = "timeline-filter-panel-sort";
+      var selected = SORT_OPTIONS.find(function (option) {
+        return option.value === sortMode;
+      }) || SORT_OPTIONS[0];
+
+      filterOptionRefs.current.sort = [];
+
+      return React.createElement(
+        "div",
+        { className: "character-filter-dropdown", "data-filter-dropdown": "sort" },
+        React.createElement("span", { className: "character-filter-label", id: "sortTimelineFilterLabel" }, "Sort"),
+        React.createElement(
+          "button",
+          {
+            type: "button",
+            className: "character-filter-trigger" + (dropdownOpen ? " open" : ""),
+            "aria-haspopup": "menu",
+            "aria-expanded": dropdownOpen ? "true" : "false",
+            "aria-controls": panelId,
+            "aria-labelledby": "sortTimelineFilterLabel",
+            ref: function (node) { filterTriggerRefs.current.sort = node; },
+            onClick: toggleSortDropdown,
+            onKeyDown: onSortTriggerKeyDown
+          },
+          React.createElement("span", { className: "character-filter-trigger-text" }, selected.label),
+          React.createElement("span", { className: "character-filter-trigger-caret", "aria-hidden": "true" }, "v")
+        ),
+        dropdownOpen
+          ? React.createElement(
+              "div",
+              {
+                id: panelId,
+                className: "character-filter-menu",
+                role: "menu",
+                "aria-labelledby": "sortTimelineFilterLabel",
+                onKeyDown: onSortPanelKeyDown
+              },
+              SORT_OPTIONS.map(function (option, index) {
+                var checked = option.value === sortMode;
+                return React.createElement(
+                  "button",
+                  {
+                    key: "sort-option-" + option.value,
+                    type: "button",
+                    className: "character-filter-option" + (checked ? " checked" : ""),
+                    role: "menuitemradio",
+                    "aria-checked": checked ? "true" : "false",
+                    tabIndex: -1,
+                    ref: function (node) { filterOptionRefs.current.sort[index] = node; },
+                    onMouseEnter: function () { setSortFocus(index); },
+                    onClick: function () { chooseSortMode(option.value); }
+                  },
+                  React.createElement("span", { className: "character-filter-check", "aria-hidden": "true" }),
+                  React.createElement("span", null, option.label)
+                );
+              })
+            )
+          : null
+      );
     }
 
     function renderFilterDropdown(kind, label, labelPlural, options, filters, mapSetter) {
@@ -913,26 +1104,47 @@
             ${renderFilterDropdown("character", "Character", "Characters", characterOptions, characterFilters, setCharacterFilters)}
             ${renderFilterDropdown("clan", "Clan", "Clans", clanOptions, clanFilters, setClanFilters)}
             ${renderFilterDropdown("sect", "Sect", "Sects", sectOptions, sectFilters, setSectFilters)}
+            ${renderSortDropdown()}
           </div>
         </section>
 
         <section className="card chronicle-timeline-card">
           <div className="section-heading chronicle-heading">
             <h3>Chronicle Timeline</h3>
-            <span>${filteredEntries.length} Events</span>
+            <span>${sortedEntries.length} Events</span>
           </div>
           <div className="chronicle-list" role="list">
             ${loading ? html`<p className="hint">Loading timeline events...</p>` : null}
-            ${!loading && !filteredEntries.length ? html`<p className="hint">No timeline events match your current search and filters.</p>` : null}
-            ${filteredEntries.map(function (entry) {
+            ${!loading && !sortedEntries.length ? html`<p className="hint">No timeline events match your current search and filters.</p>` : null}
+            ${sortedEntries.map(function (entry) {
               var isExpanded = expandedEntryKey === entry.key;
               var characterName = normalizeString(entry.character && entry.character.name, "Unnamed Character");
               return html`<article
                 key=${entry.key}
                 className=${"chronicle-entry" + (isExpanded ? " expanded" : "") + (entry.system ? " system" : "")}
                 role="listitem"
-                onClick=${function () { setExpandedEntryKey(isExpanded ? null : entry.key); }}
-                onDoubleClick=${function () { openEditModal(entry); }}>
+                onClick=${function () { setExpandedEntryKey(isExpanded ? null : entry.key); }}>
+                <div className="chronicle-entry-actions">
+                  <button
+                    type="button"
+                    className="chronicle-entry-action chronicle-expand-action"
+                    aria-label=${isExpanded ? "Collapse event" : "Expand event"}
+                    onClick=${function (event) {
+                      event.stopPropagation();
+                      setExpandedEntryKey(isExpanded ? null : entry.key);
+                    }}
+                  >${isExpanded ? "v" : ">"}</button>
+                  ${!entry.system ? html`<button
+                    type="button"
+                    className="chronicle-entry-action chronicle-edit-action"
+                    aria-label="Edit event"
+                    title="Edit event"
+                    onClick=${function (event) {
+                      event.stopPropagation();
+                      openEditModal(entry);
+                    }}
+                  >✎</button>` : null}
+                </div>
                 <div className="chronicle-entry-row">
                   <div className="chronicle-entry-year">${entry.dateInfo.yearLabel}</div>
                   <img className="chronicle-entry-portrait" src=${portraitSrc(entry.character)} alt=${characterName} onError=${function (event) { event.currentTarget.src = FALLBACK_PORTRAIT_DATA_URI; }} />
@@ -958,7 +1170,7 @@
                     var rendered = typeof value === "string" ? value : JSON.stringify(value);
                     return html`<p key=${entry.key + "-extra-" + key}><strong>${label}:</strong> ${rendered}</p>`;
                   })}
-                  ${entry.system ? html`<p className="hint">System-generated event from date of birth/death.</p>` : html`<p className="hint">Double-click to edit this event.</p>`}
+                  ${entry.system ? html`<p className="hint">System-generated event from date of birth/death.</p>` : html`<p className="hint">Use the pencil icon to edit this event.</p>`}
                 </div>` : null}
               </article>`;
             })}

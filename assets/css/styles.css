@@ -1171,7 +1171,7 @@ button:focus-visible {
 }
 
 .chronicle-controls-card .character-filter-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .chronicle-timeline-card {
@@ -1194,16 +1194,18 @@ button:focus-visible {
   min-height: 0;
   overflow-y: auto;
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-content: start;
   gap: 0.5rem;
   padding-right: 0.25rem;
 }
 
 .chronicle-entry {
+  position: relative;
   border: 1px solid rgba(209, 13, 64, 0.35);
   border-radius: 0.7rem;
   background: rgba(12, 12, 18, 0.84);
-  padding: 0.55rem;
+  padding: 0.55rem 0.55rem 0.6rem;
   cursor: pointer;
 }
 
@@ -1222,6 +1224,52 @@ button:focus-visible {
   grid-template-columns: 64px 46px minmax(0, 1fr);
   align-items: center;
   gap: 0.7rem;
+  padding-right: 3.7rem;
+}
+
+.chronicle-entry-actions {
+  position: absolute;
+  top: 0.42rem;
+  right: 0.42rem;
+  display: flex;
+  gap: 0.25rem;
+}
+
+.chronicle-entry-action {
+  width: 1.72rem;
+  height: 1.72rem;
+  border: 1px solid rgba(209, 13, 64, 0.55);
+  border-radius: 0.45rem;
+  background: rgba(15, 15, 24, 0.92);
+  color: #f6d6df;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  line-height: 1;
+}
+
+.chronicle-entry-action:hover,
+.chronicle-entry-action:focus-visible {
+  border-color: rgba(255, 137, 168, 0.88);
+  background: rgba(209, 13, 64, 0.28);
+}
+
+.chronicle-entry-action:focus-visible {
+  outline: 2px solid rgba(255, 118, 154, 0.8);
+  outline-offset: 1px;
+}
+
+.chronicle-edit-action {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.chronicle-entry:hover .chronicle-edit-action,
+.chronicle-entry:focus-within .chronicle-edit-action,
+.chronicle-entry.expanded .chronicle-edit-action {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .chronicle-entry-year {
@@ -1393,6 +1441,10 @@ button:focus-visible {
   }
 
   .chronicle-controls-card .character-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .chronicle-list {
     grid-template-columns: 1fr;
   }
 
