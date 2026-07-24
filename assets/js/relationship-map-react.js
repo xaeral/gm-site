@@ -29,7 +29,6 @@
     delete: "../assets/Icons/delete.svg",
     copy: "../assets/Icons/copy.svg",
     export: "../assets/Icons/export.svg",
-    badges: "../assets/Icons/Badges.svg",
     overlays: "../assets/Icons/Overlays.svg",
     dashboard: "../assets/Icons/Dashboard.svg"
   };
@@ -41,7 +40,6 @@
     { key: "zones", label: "Zones", iconId: "zones", icon: "▭" },
     { key: "relationships", label: "Relationships", iconId: "relationships", icon: "↔" },
     { key: "tags", label: "Tags", iconId: "tag", icon: "#" },
-    { key: "badges", label: "Badges", iconId: "badges", icon: "◎" },
     { key: "overlays", label: "Overlays", iconId: "overlays", icon: "◍" }
   ];
 
@@ -1121,7 +1119,6 @@
       title: source.title,
       relationshipCategories: clone(source.relationshipCategories || []),
       tagGroups: clone(source.tagGroups || []),
-      badges: clone(source.badges || []),
       overlays: clone(source.overlays || [])
     };
 
@@ -1245,7 +1242,6 @@
       state.title = storedSettings.title !== undefined ? storedSettings.title : state.title;
       state.relationshipCategories = clone(storedSettings.relationshipCategories || []);
       state.tagGroups = clone(storedSettings.tagGroups || []);
-      state.badges = clone(storedSettings.badges || []);
       state.overlays = clone(storedSettings.overlays || []);
     }
     if (storedExtra && storedExtra.data && typeof storedExtra.data === "object") {
@@ -1281,6 +1277,7 @@
         return null;
       }
       var merged = Object.assign(initialState(), JSON.parse(raw));
+      delete merged.badges;
       merged.characters = (merged.characters || []).map(normalizeCharacterRecord);
       return merged;
     } catch (_error) {
@@ -1362,9 +1359,6 @@
       tagGroups: [
         { id: "tg1", name: "Politics", tags: [{ id: "t1", name: "Prince", color: "#d10d40", icon: "♛", description: "Ruling authority", visible: true }, { id: "t2", name: "Council", color: "#8b1e46", icon: "◎", description: "Council aligned", visible: true }] }
       ],
-      badges: [
-        { id: "b1", name: "Crown", position: "Top", icon: "♛", color: "#d10d40", priority: 1, tooltip: "Domain authority", visible: true }
-      ],
       overlays: [
         { id: "o1", name: "Missing", icon: "◌", text: "MISSING", position: "Centre", size: 1, color: "#ff335f", opacity: 0.85, animation: "Pulse", visibleWhen: "status=Missing", enabled: true }
       ]
@@ -1375,6 +1369,7 @@
     var loaded = useMemo(function () {
       var source = props && props.initialData ? props.initialData : initialState();
       var merged = Object.assign(initialState(), source);
+      delete merged.badges;
       merged.characters = (merged.characters || []).map(normalizeCharacterRecord);
       return merged;
     }, [props && props.initialData]);
@@ -1517,6 +1512,9 @@
     var profilePortraitInputRef = useRef(null);
     var profileBiographyEditorRef = useRef(null);
     var profileBiographyLastSyncedRef = useRef(null);
+    var _biographyToolbarState = useState({});
+    var biographyToolbarState = _biographyToolbarState[0];
+    var setBiographyToolbarState = _biographyToolbarState[1];
     var storageWriteErrorRef = useRef(false);
     var portraitDragRef = useRef({ active: false, pointerId: null, lastX: 0, lastY: 0 });
     var portraitPinchRef = useRef({ active: false, startDistance: 0, startZoom: 1 });
@@ -1556,6 +1554,103 @@
       }
       profileBiographyLastSyncedRef.current = { characterId: characterDraft.id, html: nextHtml };
     }, [profileEditMode, characterDraft && characterDraft.id, characterDraft && characterDraft.bioHtml]);
+
+    function syncProfileBiographyDraft() {
+      var editor = profileBiographyEditorRef.current;
+      if (!editor || !characterDraft) {
+        return;
+      }
+      var htmlValue = editor.innerHTML;
+      profileBiographyLastSyncedRef.current = { characterId: characterDraft.id, html: htmlValue };
+      updateDraftField("bioHtml", htmlValue);
+    }
+
+    function biographySelectionElement() {
+      var editor = profileBiographyEditorRef.current;
+      var selection = window.getSelection();
+      if (!editor || !selection || !selection.rangeCount || !editor.contains(selection.anchorNode)) {
+        return null;
+      }
+      var node = selection.anchorNode.nodeType === 1 ? selection.anchorNode : selection.anchorNode.parentElement;
+      return node;
+    }
+
+    function biographyAncestorTag(tagName) {
+      var editor = profileBiographyEditorRef.current;
+      var node = biographySelectionElement();
+      var expected = String(tagName).toUpperCase();
+      while (node && node !== editor) {
+        if (node.tagName === expected) {
+          return node;
+        }
+        node = node.parentElement;
+      }
+      return null;
+    }
+
+    function refreshBiographyToolbarState() {
+      var editor = profileBiographyEditorRef.current;
+      if (!editor || document.activeElement !== editor) {
+        return;
+      }
+      setBiographyToolbarState({
+        bold: document.queryCommandState("bold"),
+        italic: document.queryCommandState("italic"),
+        underline: document.queryCommandState("underline"),
+        h1: Boolean(biographyAncestorTag("h1")),
+        h2: Boolean(biographyAncestorTag("h2")),
+        bulletList: document.queryCommandState("insertUnorderedList"),
+        numberedList: document.queryCommandState("insertOrderedList"),
+        alignLeft: document.queryCommandState("justifyLeft"),
+        alignCenter: document.queryCommandState("justifyCenter"),
+        alignRight: document.queryCommandState("justifyRight"),
+        callout: Boolean(biographyAncestorTag("blockquote"))
+      });
+    }
+
+    function runBiographyCommand(command, value) {
+      var editor = profileBiographyEditorRef.current;
+      if (!editor) {
+        return;
+      }
+      editor.focus();
+      document.execCommand(command, false, value);
+      syncProfileBiographyDraft();
+      refreshBiographyToolbarState();
+    }
+
+    function toggleBiographyHeading(tagName) {
+      runBiographyCommand("formatBlock", biographyAncestorTag(tagName) ? "<p>" : "<" + tagName + ">");
+    }
+
+    function insertBiographySpoiler() {
+      var editor = profileBiographyEditorRef.current;
+      var selection = window.getSelection();
+      if (!editor || !selection || !selection.rangeCount || !editor.contains(selection.anchorNode)) {
+        return;
+      }
+      var range = selection.getRangeAt(0);
+      var spoiler = document.createElement("details");
+      spoiler.className = "bio-spoiler";
+      var summary = document.createElement("summary");
+      summary.textContent = "Spoiler";
+      var content = document.createElement("div");
+      content.className = "bio-spoiler-content";
+      if (range.collapsed) {
+        content.appendChild(document.createElement("br"));
+      } else {
+        content.appendChild(range.extractContents());
+      }
+      spoiler.appendChild(summary);
+      spoiler.appendChild(content);
+      range.insertNode(spoiler);
+      range.setStartAfter(spoiler);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      syncProfileBiographyDraft();
+      refreshBiographyToolbarState();
+    }
 
     function isEditableElement(element) {
       if (!element || element === document.body || element === document.documentElement) {
@@ -2326,6 +2421,7 @@
       try {
         var parsed = JSON.parse(raw);
         var merged = Object.assign(initialState(), parsed);
+        delete merged.badges;
         merged.characters = (merged.characters || []).map(normalizeCharacterRecord);
         setData(merged);
         setUndoStack([]);
@@ -3505,14 +3601,39 @@
               </div>
               ${profileEditMode
                 ? html`<div className="profile-biography-editor">
-                  <div className="rich-toolbar">
-                    <button onClick=${function () { document.execCommand("bold", false); }}>Bold</button>
-                    <button onClick=${function () { document.execCommand("italic", false); }}>Italic</button>
-                    <button onClick=${function () { document.execCommand("underline", false); }}>Underline</button>
-                    <button onClick=${function () { document.execCommand("insertUnorderedList", false); }}>Bullets</button>
-                    <button onClick=${function () { document.execCommand("insertOrderedList", false); }}>Numbers</button>
+                  <div className="rich-toolbar" role="toolbar" aria-label="Biography formatting">
+                    <div className="rich-toolbar-group">
+                      <button className=${"rich-toolbar-button toolbar-icon-bold" + (biographyToolbarState.bold ? " active" : "")} title="Bold" aria-label="Bold" aria-pressed=${Boolean(biographyToolbarState.bold)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("bold"); }}>B</button>
+                      <button className=${"rich-toolbar-button toolbar-icon-italic" + (biographyToolbarState.italic ? " active" : "")} title="Italic" aria-label="Italic" aria-pressed=${Boolean(biographyToolbarState.italic)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("italic"); }}>I</button>
+                      <button className=${"rich-toolbar-button toolbar-icon-underline" + (biographyToolbarState.underline ? " active" : "")} title="Underline" aria-label="Underline" aria-pressed=${Boolean(biographyToolbarState.underline)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("underline"); }}>U</button>
+                    </div>
+                    <div className="rich-toolbar-divider" aria-hidden="true"></div>
+                    <div className="rich-toolbar-group">
+                      <button className=${"rich-toolbar-button toolbar-icon-heading" + (biographyToolbarState.h1 ? " active" : "")} title="Heading 1" aria-label="Heading 1" aria-pressed=${Boolean(biographyToolbarState.h1)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { toggleBiographyHeading("h1"); }}>H1</button>
+                      <button className=${"rich-toolbar-button toolbar-icon-heading" + (biographyToolbarState.h2 ? " active" : "")} title="Heading 2" aria-label="Heading 2" aria-pressed=${Boolean(biographyToolbarState.h2)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { toggleBiographyHeading("h2"); }}>H2</button>
+                    </div>
+                    <div className="rich-toolbar-divider" aria-hidden="true"></div>
+                    <div className="rich-toolbar-group">
+                      <button className=${"rich-toolbar-button toolbar-icon-list" + (biographyToolbarState.bulletList ? " active" : "")} title="Bullet list" aria-label="Bullet list" aria-pressed=${Boolean(biographyToolbarState.bulletList)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("insertUnorderedList"); }}>•≡</button>
+                      <button className=${"rich-toolbar-button toolbar-icon-list" + (biographyToolbarState.numberedList ? " active" : "")} title="Numbered list" aria-label="Numbered list" aria-pressed=${Boolean(biographyToolbarState.numberedList)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("insertOrderedList"); }}>1≡</button>
+                    </div>
+                    <div className="rich-toolbar-divider" aria-hidden="true"></div>
+                    <div className="rich-toolbar-group">
+                      <button className=${"rich-toolbar-button toolbar-icon-align-left" + (biographyToolbarState.alignLeft ? " active" : "")} title="Align left" aria-label="Align left" aria-pressed=${Boolean(biographyToolbarState.alignLeft)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("justifyLeft"); }}>≡</button>
+                      <button className=${"rich-toolbar-button toolbar-icon-align-center" + (biographyToolbarState.alignCenter ? " active" : "")} title="Align centre" aria-label="Align centre" aria-pressed=${Boolean(biographyToolbarState.alignCenter)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("justifyCenter"); }}>≡</button>
+                      <button className=${"rich-toolbar-button toolbar-icon-align-right" + (biographyToolbarState.alignRight ? " active" : "")} title="Align right" aria-label="Align right" aria-pressed=${Boolean(biographyToolbarState.alignRight)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("justifyRight"); }}>≡</button>
+                    </div>
+                    <div className="rich-toolbar-divider" aria-hidden="true"></div>
+                    <div className="rich-toolbar-group">
+                      <button className=${"rich-toolbar-button toolbar-icon-callout" + (biographyToolbarState.callout ? " active" : "")} title="Callout block" aria-label="Callout block" aria-pressed=${Boolean(biographyToolbarState.callout)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("formatBlock", "<blockquote>"); }}>❝</button>
+                      <button className="rich-toolbar-button toolbar-icon-rule" title="Horizontal rule" aria-label="Horizontal rule" onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("insertHorizontalRule"); }}>―</button>
+                    </div>
+                    <div className="rich-toolbar-divider" aria-hidden="true"></div>
+                    <div className="rich-toolbar-group">
+                      <button className="rich-toolbar-button toolbar-icon-spoiler" title="Insert spoiler block" aria-label="Insert spoiler block" onMouseDown=${function (e) { e.preventDefault(); }} onClick=${insertBiographySpoiler}>◐</button>
+                    </div>
                   </div>
-                  <div id="profileBioEditor" ref=${profileBiographyEditorRef} className="rich-editor profile-rich-editor" contentEditable="true" suppressContentEditableWarning="true" onInput=${function (e) {
+                  <div id="profileBioEditor" ref=${profileBiographyEditorRef} className="rich-editor profile-rich-editor character-rich-text" contentEditable="true" suppressContentEditableWarning="true" onFocus=${refreshBiographyToolbarState} onKeyUp=${refreshBiographyToolbarState} onMouseUp=${refreshBiographyToolbarState} onInput=${function (e) {
                     var htmlValue = e.currentTarget.innerHTML;
                     profileBiographyLastSyncedRef.current = { characterId: draft.id, html: htmlValue };
                     updateDraftField("bioHtml", htmlValue);
@@ -3876,23 +3997,6 @@
       </div>`;
     }
 
-    function badgesPanel() {
-      return html`${panelHeader("Badge Manager")}
-      <div className="panel-body">
-        ${data.badges.map(function (b) {
-          return html`<div className="card" key=${b.id}>
-            <div className="row"><strong>${b.name}</strong><span className="hint">${b.position}</span></div>
-            <div className="split" style=${{ marginTop: 6 }}>
-              <div><label>Circular icon</label><input value=${b.icon} onInput=${function (e) { commit(function (next) { var t = next.badges.find(function (x) { return x.id === b.id; }); if (t) t.icon = e.target.value; }); }} /></div>
-              <div><label>Colour</label><input type="color" value=${b.color} onInput=${function (e) { commit(function (next) { var t = next.badges.find(function (x) { return x.id === b.id; }); if (t) t.color = e.target.value; }); }} /></div>
-              <div><label>Display priority</label><input type="number" value=${b.priority} onInput=${function (e) { commit(function (next) { var t = next.badges.find(function (x) { return x.id === b.id; }); if (t) t.priority = Number(e.target.value); }); }} /></div>
-              <div><label>Tooltip</label><input value=${b.tooltip} onInput=${function (e) { commit(function (next) { var t = next.badges.find(function (x) { return x.id === b.id; }); if (t) t.tooltip = e.target.value; }); }} /></div>
-            </div>
-          </div>`;
-        })}
-      </div>`;
-    }
-
     function overlaysPanel() {
       return html`${panelHeader("Overlay Manager")}
       <div className="panel-body">
@@ -3916,7 +4020,6 @@
         case "zones": return zonesPanel();
         case "relationships": return relationshipsPanel();
         case "tags": return tagsPanel();
-        case "badges": return badgesPanel();
         case "overlays": return overlaysPanel();
         default: return null;
       }

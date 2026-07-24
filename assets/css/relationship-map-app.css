@@ -576,8 +576,55 @@ h6 {
 .character-rich-text blockquote {
   margin: 0.45em 0;
   border-left: 3px solid var(--accent-red);
-  padding: 0.25em 0 0.25em 0.65em;
+  background: rgba(209, 13, 64, 0.08);
+  padding: 0.5em 0.7em;
   color: #d8d8e8;
+}
+
+.character-rich-text .bio-spoiler {
+  margin: 0.55em 0;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  background: #15151f;
+  overflow: hidden;
+}
+
+.character-rich-text .bio-spoiler summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.43rem 0.58rem;
+  color: #c9c9d4;
+  font-size: 0.8rem;
+  font-weight: 650;
+  background: #292934;
+  user-select: none;
+}
+
+.character-rich-text .bio-spoiler summary::-webkit-details-marker {
+  display: none;
+}
+
+.character-rich-text .bio-spoiler summary::before {
+  content: "\25B6";
+  display: inline-block;
+  width: 1.1em;
+  color: #ababba;
+}
+
+.character-rich-text .bio-spoiler[open] summary::before {
+  content: "\25BC";
+}
+
+.character-rich-text .bio-spoiler-content {
+  padding: 0.55rem 0.65rem;
+}
+
+.character-rich-text .bio-spoiler-content > :first-child {
+  margin-top: 0;
+}
+
+.character-rich-text .bio-spoiler-content > :last-child {
+  margin-bottom: 0;
 }
 
 .character-rich-text hr {
@@ -715,8 +762,78 @@ h6 {
 
 .rich-toolbar {
   display: flex;
-  gap: 0.4rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.28rem;
+  margin-bottom: 0.45rem;
+  padding: 0.32rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #12121d;
 }
+
+.rich-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 0.16rem;
+}
+
+.rich-toolbar-divider {
+  width: 1px;
+  height: 1.35rem;
+  margin: 0 0.08rem;
+  background: var(--line);
+}
+
+.rich-toolbar-button {
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #dcdce9;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 0.79rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rich-toolbar-button:hover {
+  background: #242435;
+  border-color: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.rich-toolbar-button.active {
+  background: var(--accent-red-soft);
+  border-color: rgba(209, 13, 64, 0.58);
+  color: #fff;
+}
+
+.rich-toolbar-button:focus-visible {
+  outline: 2px solid #ff88a8;
+  outline-offset: 1px;
+}
+
+.rich-toolbar-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+.toolbar-icon-bold { font-size: 0.93rem; font-weight: 800; }
+.toolbar-icon-italic { font-size: 0.93rem; font-style: italic; font-weight: 700; }
+.toolbar-icon-underline { font-size: 0.88rem; font-weight: 700; text-decoration: underline; }
+.toolbar-icon-heading { font-size: 0.67rem; font-weight: 800; letter-spacing: -0.04em; }
+.toolbar-icon-list { font-size: 0.68rem; letter-spacing: -0.1em; }
+.toolbar-icon-callout { font-size: 1.05rem; font-family: Georgia, serif; }
+.toolbar-icon-rule { font-size: 1.25rem; }
+.toolbar-icon-spoiler { font-size: 1rem; }
+.toolbar-icon-align-left { justify-content: flex-start; padding-left: 6px; font-size: 1rem; }
+.toolbar-icon-align-center { font-size: 1rem; }
+.toolbar-icon-align-right { justify-content: flex-end; padding-right: 6px; font-size: 1rem; }
 
 .rich-editor {
   border: 1px solid var(--line);
