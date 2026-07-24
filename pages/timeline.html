@@ -9,7 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="../assets/css/styles.css" />
 </head>
-<body>
+<body class="workspace-page">
   <div class="site-shell">
     <aside class="sidebar" id="sidebar">
       <div class="brand"><h1>Chronicle Codex</h1><p>GM Command Center</p></div>
@@ -27,31 +27,23 @@
       <div class="sidebar-footer"><p>Module</p><strong>Chronology</strong></div>
     </aside>
 
-    <main class="main-content">
+    <main class="main-content timeline-main-content">
       <header class="topbar">
         <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="sidebar">Menu</button>
-        <div class="topbar-title"><h2>Timeline</h2><p>Chronological campaign events with filters and story arc links.</p></div>
+        <div class="topbar-title"><h2>Timeline</h2><p>Master chronicle timeline aggregated from every character.</p></div>
       </header>
 
-      <section class="card">
-        <div class="section-heading"><h3>Event Timeline</h3><a href="#">Add Event</a></div>
-        <ul class="stack-list">
-          <li class="stack-item"><strong>1882</strong><p>Leslie Taylor born in Melbourne.</p></li>
-          <li class="stack-item"><strong>1921</strong><p>Taylor embraced into Kindred society.</p></li>
-          <li class="stack-item"><strong>Current Arc</strong><p>Conspiracy around illegal embraces escalates.</p></li>
-        </ul>
-      </section>
-
-      <section class="columns">
-        <article class="card"><h3>Filters</h3><p class="note">Filter by character, session, and story arc.</p></article>
-        <article class="card"><h3>Session Links</h3><p class="note">Jump from events directly into session records.</p></article>
-        <article class="card"><h3>Important Events</h3><p class="note">Pin major world-shaping moments.</p></article>
-      </section>
+      <div id="timelineApp" class="timeline-app-root"></div>
 
       <footer class="page-footer"><small>Chronicle Codex Dashboard</small><small id="yearStamp"></small></footer>
     </main>
   </div>
 
   <script src="../assets/js/common.js"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+  <script src="../assets/js/character-biography-shared.js"></script>
+  <script src="../assets/js/timeline-chronicle-react.js"></script>
 </body>
 </html>

@@ -8,8 +8,7 @@ const mainNav = [
   { key: "zones", label: "Zones", icon: "▭" },
   { key: "relationships", label: "Relationships", icon: "↔" },
   { key: "tags", label: "Tags", icon: "#" },
-  { key: "badges", label: "Badges", icon: "◎" },
-  { key: "overlays", label: "Overlays", icon: "◍" }
+  { key: "badges", label: "Badges", icon: "◎" }
 ];
 
 const bottomNav = [
@@ -70,7 +69,6 @@ function defaultState() {
       notes: "GM: Keep morally gray.",
       tags: ["Prince", "Power"],
       badges: ["Crown"],
-      overlays: [],
       x: 780,
       y: 140,
       portrait: portraits[13]
@@ -90,7 +88,6 @@ function defaultState() {
       notes: "GM: key to information control.",
       tags: ["Court"],
       badges: ["Advisor"],
-      overlays: [],
       x: 360,
       y: 140,
       portrait: portraits[19]
@@ -110,7 +107,6 @@ function defaultState() {
       notes: "GM: pressure point for coterie.",
       tags: ["Primogen"],
       badges: ["Council"],
-      overlays: [],
       x: 780,
       y: 340,
       portrait: portraits[20]
@@ -130,7 +126,6 @@ function defaultState() {
       notes: "GM: reveal clues through dreams.",
       tags: ["Mystic"],
       badges: ["Oracle"],
-      overlays: ["Missing"],
       x: 780,
       y: 610,
       portrait: portraits[22]
@@ -164,10 +159,6 @@ function defaultState() {
     badges: [
       { id: "b-crown", name: "Crown", position: "Top", icon: "♛", color: "#d10d40", priority: 1, tooltip: "Domain authority", visible: true },
       { id: "b-sire", name: "Sire", position: "Left", icon: "⇧", color: "#d14b7f", priority: 2, tooltip: "Sire relation", visible: true }
-    ],
-    overlays: [
-      { id: "o-missing", name: "Missing", icon: "◌", text: "MISSING", position: "Centre", size: 1, color: "#ff335f", opacity: 0.85, animation: "Pulse", visibleWhen: "status=Missing", enabled: true },
-      { id: "o-wanted", name: "Wanted", icon: "⚠", text: "WANTED", position: "Top", size: 1, color: "#d10d40", opacity: 0.9, animation: "None", visibleWhen: "tag=Hunted", enabled: false }
     ]
   };
 }
@@ -224,7 +215,14 @@ function App() {
       if (!raw) {
         return defaultState();
       }
-      return Object.assign(defaultState(), JSON.parse(raw));
+      const merged = Object.assign(defaultState(), JSON.parse(raw));
+      delete merged.overlays;
+      merged.characters = (merged.characters || []).map((character) => {
+        const nextCharacter = Object.assign({}, character);
+        delete nextCharacter.overlays;
+        return nextCharacter;
+      });
+      return merged;
     } catch (_e) {
       return defaultState();
     }
@@ -360,7 +358,6 @@ function App() {
         notes: "",
         tags: [],
         badges: [],
-        overlays: [],
         x: 900,
         y: 700,
         portrait: portraits[0]
@@ -839,31 +836,6 @@ function App() {
     );
   }
 
-  function OverlaysPanel() {
-    return (
-      <>
-        <PanelHeader title="Overlays" />
-        <div className="panel-body">
-          {map.overlays.map((o) => (
-            <div key={o.id} className="card">
-              <div className="row"><strong>{o.name}</strong><span className="hint">{o.visibleWhen}</span></div>
-              <div className="grid-2" style={{ marginTop: 6 }}>
-                <div><label>Icon</label><input value={o.icon} onChange={(e) => history.setState((next) => { const t = next.overlays.find((x) => x.id === o.id); if (t) t.icon = e.target.value; return next; })} /></div>
-                <div><label>Optional text</label><input value={o.text} onChange={(e) => history.setState((next) => { const t = next.overlays.find((x) => x.id === o.id); if (t) t.text = e.target.value; return next; })} /></div>
-                <div><label>Position</label><select value={o.position} onChange={(e) => history.setState((next) => { const t = next.overlays.find((x) => x.id === o.id); if (t) t.position = e.target.value; return next; })}><option>Top</option><option>Left</option><option>Right</option><option>Centre</option></select></div>
-                <div><label>Size</label><input type="range" min="0.5" max="2" step="0.1" value={o.size} onChange={(e) => history.setState((next) => { const t = next.overlays.find((x) => x.id === o.id); if (t) t.size = Number(e.target.value); return next; })} /></div>
-                <div><label>Colour</label><input type="color" value={o.color} onChange={(e) => history.setState((next) => { const t = next.overlays.find((x) => x.id === o.id); if (t) t.color = e.target.value; return next; })} /></div>
-                <div><label>Opacity</label><input type="range" min="0.1" max="1" step="0.05" value={o.opacity} onChange={(e) => history.setState((next) => { const t = next.overlays.find((x) => x.id === o.id); if (t) t.opacity = Number(e.target.value); return next; })} /></div>
-                <div><label>Animation</label><select value={o.animation} onChange={(e) => history.setState((next) => { const t = next.overlays.find((x) => x.id === o.id); if (t) t.animation = e.target.value; return next; })}><option>None</option><option>Pulse</option><option>Blink</option><option>Float</option></select></div>
-                <div><label>Visibility</label><select value={String(o.enabled)} onChange={(e) => history.setState((next) => { const t = next.overlays.find((x) => x.id === o.id); if (t) t.enabled = e.target.value === "true"; return next; })}><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </>
-    );
-  }
-
   function SimplePanel({ title, children }) {
     return (
       <>
@@ -887,8 +859,6 @@ function App() {
         return <TagsPanel />;
       case "badges":
         return <BadgesPanel />;
-      case "overlays":
-        return <OverlaysPanel />;
       case "collaborators":
         return <SimplePanel title="Collaborators"><div className="card">Shared chronicle participants, role controls, and presence indicators.</div></SimplePanel>;
       case "whatsnew":

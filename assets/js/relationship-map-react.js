@@ -5,6 +5,9 @@
   var useRef = React.useRef;
   var useState = React.useState;
   var html = htm.bind(React.createElement);
+  var sharedCharacters = window.CampaignAtlasCharactersShared || {};
+  var SharedBiographyWorkspace = sharedCharacters.CharacterBiographyWorkspace || null;
+  var CHARACTER_SYNC_CHANNEL = "campaign-atlas-characters";
 
   var STORAGE_KEY = "relationship-map-desktop-v1";
   var DB_NAME = "CampaignAtlas";
@@ -30,7 +33,6 @@
     delete: "../assets/Icons/delete.svg",
     copy: "../assets/Icons/copy.svg",
     export: "../assets/Icons/export.svg",
-    overlays: "../assets/Icons/Overlays.svg",
     dashboard: "../assets/Icons/Dashboard.svg"
   };
 
@@ -40,8 +42,7 @@
     { key: "characters", label: "Characters", iconId: "characters", icon: "◉" },
     { key: "zones", label: "Zones", iconId: "zones", icon: "▭" },
     { key: "relationships", label: "Relationships", iconId: "relationships", icon: "↔" },
-    { key: "tags", label: "Tags", iconId: "tag", icon: "#" },
-    { key: "overlays", label: "Overlays", iconId: "overlays", icon: "◍" }
+    { key: "tags", label: "Tags", iconId: "tag", icon: "#" }
   ];
 
   var SECT_OPTIONS = ["None", "Anarch", "Ashirra", "Camarilla", "Sabbat"];
@@ -70,6 +71,7 @@
 
   var RELATIONSHIP_TYPE_STYLE_OPTIONS = ["solid", "dashed", "dotted", "chain", "droplets"];
   var RELATIONSHIP_ROUTING_MODE_OPTIONS = ["auto", "straight", "curved"];
+  var CUSTOM_RELATIONSHIP_FALLBACK_LABEL = "Custom Relationship";
 
   var DEFAULT_RELATIONSHIP_CATEGORIES = [
     {
@@ -202,6 +204,37 @@
     });
   }
 
+  function relationshipOppositeAnchor(anchor) {
+    switch (String(anchor || "").toLowerCase()) {
+      case "top": return "bottom";
+      case "right": return "left";
+      case "bottom": return "top";
+      case "left": return "right";
+      default: return "right";
+    }
+  }
+
+  function relationshipAutoAnchor(fromCharacter, toCharacter) {
+    var fromX = Number(fromCharacter && fromCharacter.x) || 0;
+    var fromY = Number(fromCharacter && fromCharacter.y) || 0;
+    var toX = Number(toCharacter && toCharacter.x) || 0;
+    var toY = Number(toCharacter && toCharacter.y) || 0;
+    var dx = toX - fromX;
+    var dy = toY - fromY;
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      return dx >= 0 ? "right" : "left";
+    }
+    return dy >= 0 ? "bottom" : "top";
+  }
+
+  function relationshipResolvedAnchors(fromCharacter, toCharacter) {
+    var source = relationshipAutoAnchor(fromCharacter, toCharacter);
+    return {
+      sourceAnchor: source,
+      destinationAnchor: relationshipOppositeAnchor(source)
+    };
+  }
+
   function flattenRelationshipTypes(categories) {
     var map = {};
     (categories || []).forEach(function (category) {
@@ -240,6 +273,10 @@
     var typeLookup = flattenRelationshipTypes(availableCategories);
     return list.map(function (entry, index) {
       var current = entry && typeof entry === "object" ? clone(entry) : {};
+      delete current.sourceAnchor;
+      delete current.destinationAnchor;
+      delete current.fromAnchor;
+      delete current.toAnchor;
       var fallback = relationshipTypeDefaultsFromCategory(availableCategories, current.categoryId || current.category, current.typeId || current.type);
       if (current.typeId && typeLookup[current.typeId]) {
         var exact = typeLookup[current.typeId];
@@ -249,8 +286,6 @@
         id: current.id || ("rel-" + Date.now() + "-" + index),
         from: "",
         to: "",
-        fromAnchor: "right",
-        toAnchor: "left",
         description: "",
         gmNotes: "",
         hiddenFromCollaborators: false,
@@ -699,6 +734,9 @@
   }
 
   function characterBiographyHtml(character) {
+    if (sharedCharacters.characterBiographyHtml) {
+      return sharedCharacters.characterBiographyHtml(character);
+    }
     if (!character) {
       return "";
     }
@@ -1326,8 +1364,7 @@
       id: "app",
       title: source.title,
       relationshipCategories: clone(source.relationshipCategories || []),
-      tagGroups: clone(source.tagGroups || []),
-      overlays: clone(source.overlays || [])
+      tagGroups: clone(source.tagGroups || [])
     };
 
     var sessions = {
@@ -1450,7 +1487,6 @@
       state.title = storedSettings.title !== undefined ? storedSettings.title : state.title;
       state.relationshipCategories = clone(storedSettings.relationshipCategories || []);
       state.tagGroups = clone(storedSettings.tagGroups || []);
-      state.overlays = clone(storedSettings.overlays || []);
     }
     if (storedExtra && storedExtra.data && typeof storedExtra.data === "object") {
       state = Object.assign(state, clone(storedExtra.data));
@@ -1563,9 +1599,6 @@
       relationshipCategories: clone(DEFAULT_RELATIONSHIP_CATEGORIES),
       tagGroups: [
         { id: "tg1", name: "Politics", tags: [{ id: "t1", name: "Prince", color: "#d10d40", icon: "♛", description: "Ruling authority", visible: true }, { id: "t2", name: "Council", color: "#8b1e46", icon: "◎", description: "Council aligned", visible: true }] }
-      ],
-      overlays: [
-        { id: "o1", name: "Missing", icon: "◌", text: "MISSING", position: "Centre", size: 1, color: "#ff335f", opacity: 0.85, animation: "Pulse", visibleWhen: "status=Missing", enabled: true }
       ]
     };
   }
@@ -1575,6 +1608,7 @@
       var source = props && props.initialData ? props.initialData : initialState();
       var merged = Object.assign(initialState(), source);
       delete merged.badges;
+      delete merged.overlays;
       merged.characters = (merged.characters || []).map(normalizeCharacterRecord);
       merged.relationshipCategories = normalizeRelationshipCategories(merged.relationshipCategories);
       merged.relationships = normalizeRelationships(merged.relationships, merged.relationshipCategories);
@@ -1694,6 +1728,10 @@
     var relationshipTypeDraftsByCategory = _relationshipTypeDraftsByCategory[0];
     var setRelationshipTypeDraftsByCategory = _relationshipTypeDraftsByCategory[1];
 
+    var _relationshipResetDialogOpen = useState(false);
+    var relationshipResetDialogOpen = _relationshipResetDialogOpen[0];
+    var setRelationshipResetDialogOpen = _relationshipResetDialogOpen[1];
+
     var _zoneDraft = useState(null);
     var zoneDraft = _zoneDraft[0];
     var setZoneDraft = _zoneDraft[1];
@@ -1761,11 +1799,8 @@
     var previousPanelRef = useRef(activePanel);
     var profileReturnRef = useRef({ panel: "characters", characterView: "details" });
     var profilePortraitInputRef = useRef(null);
-    var profileBiographyEditorRef = useRef(null);
-    var profileBiographyLastSyncedRef = useRef(null);
-    var _biographyToolbarState = useState({});
-    var biographyToolbarState = _biographyToolbarState[0];
-    var setBiographyToolbarState = _biographyToolbarState[1];
+    var characterSyncChannelRef = useRef(null);
+    var characterSyncSourceRef = useRef("relationship-map-" + Date.now() + "-" + Math.floor(Math.random() * 100000));
     var storageWriteErrorRef = useRef(false);
     var portraitDragRef = useRef({ active: false, pointerId: null, lastX: 0, lastY: 0 });
     var portraitPinchRef = useRef({ active: false, startDistance: 0, startZoom: 1 });
@@ -1791,128 +1826,11 @@
     var zoneDraftRef = useRef(null);
     var zoneEditorPanelRef = useRef(null);
 
-    // contentEditable owns its live DOM and selection while the user types.
-    // Only replace its contents when the draft changed from another source (for
-    // example, when a different character is opened for editing).
-    useLayoutEffect(function () {
-      if (!profileEditMode || !characterDraft) {
-        profileBiographyLastSyncedRef.current = null;
-        return;
-      }
-      var editor = profileBiographyEditorRef.current;
-      var nextHtml = String(characterDraft.bioHtml || "");
-      var current = profileBiographyLastSyncedRef.current;
-      if (!editor || (current && current.characterId === characterDraft.id && current.html === nextHtml)) {
-        return;
-      }
-      if (editor.innerHTML !== nextHtml) {
-        editor.innerHTML = nextHtml;
-      }
-      profileBiographyLastSyncedRef.current = { characterId: characterDraft.id, html: nextHtml };
-    }, [profileEditMode, characterDraft && characterDraft.id, characterDraft && characterDraft.bioHtml]);
-
     useLayoutEffect(function () {
       if (zoneEditorOpen && zoneEditorPanelRef.current) {
         zoneEditorPanelRef.current.scrollIntoView({ block: "start", behavior: "smooth" });
       }
     }, [zoneEditorOpen, selectedZoneId]);
-
-    function syncProfileBiographyDraft() {
-      var editor = profileBiographyEditorRef.current;
-      if (!editor || !characterDraft) {
-        return;
-      }
-      var htmlValue = editor.innerHTML;
-      profileBiographyLastSyncedRef.current = { characterId: characterDraft.id, html: htmlValue };
-      updateDraftField("bioHtml", htmlValue);
-    }
-
-    function biographySelectionElement() {
-      var editor = profileBiographyEditorRef.current;
-      var selection = window.getSelection();
-      if (!editor || !selection || !selection.rangeCount || !editor.contains(selection.anchorNode)) {
-        return null;
-      }
-      var node = selection.anchorNode.nodeType === 1 ? selection.anchorNode : selection.anchorNode.parentElement;
-      return node;
-    }
-
-    function biographyAncestorTag(tagName) {
-      var editor = profileBiographyEditorRef.current;
-      var node = biographySelectionElement();
-      var expected = String(tagName).toUpperCase();
-      while (node && node !== editor) {
-        if (node.tagName === expected) {
-          return node;
-        }
-        node = node.parentElement;
-      }
-      return null;
-    }
-
-    function refreshBiographyToolbarState() {
-      var editor = profileBiographyEditorRef.current;
-      if (!editor || document.activeElement !== editor) {
-        return;
-      }
-      setBiographyToolbarState({
-        bold: document.queryCommandState("bold"),
-        italic: document.queryCommandState("italic"),
-        underline: document.queryCommandState("underline"),
-        h1: Boolean(biographyAncestorTag("h1")),
-        h2: Boolean(biographyAncestorTag("h2")),
-        bulletList: document.queryCommandState("insertUnorderedList"),
-        numberedList: document.queryCommandState("insertOrderedList"),
-        alignLeft: document.queryCommandState("justifyLeft"),
-        alignCenter: document.queryCommandState("justifyCenter"),
-        alignRight: document.queryCommandState("justifyRight"),
-        callout: Boolean(biographyAncestorTag("blockquote"))
-      });
-    }
-
-    function runBiographyCommand(command, value) {
-      var editor = profileBiographyEditorRef.current;
-      if (!editor) {
-        return;
-      }
-      editor.focus();
-      document.execCommand(command, false, value);
-      syncProfileBiographyDraft();
-      refreshBiographyToolbarState();
-    }
-
-    function toggleBiographyHeading(tagName) {
-      runBiographyCommand("formatBlock", biographyAncestorTag(tagName) ? "<p>" : "<" + tagName + ">");
-    }
-
-    function insertBiographySpoiler() {
-      var editor = profileBiographyEditorRef.current;
-      var selection = window.getSelection();
-      if (!editor || !selection || !selection.rangeCount || !editor.contains(selection.anchorNode)) {
-        return;
-      }
-      var range = selection.getRangeAt(0);
-      var spoiler = document.createElement("details");
-      spoiler.className = "bio-spoiler";
-      var summary = document.createElement("summary");
-      summary.textContent = "Spoiler";
-      var content = document.createElement("div");
-      content.className = "bio-spoiler-content";
-      if (range.collapsed) {
-        content.appendChild(document.createElement("br"));
-      } else {
-        content.appendChild(range.extractContents());
-      }
-      spoiler.appendChild(summary);
-      spoiler.appendChild(content);
-      range.insertNode(spoiler);
-      range.setStartAfter(spoiler);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      syncProfileBiographyDraft();
-      refreshBiographyToolbarState();
-    }
 
     function isEditableElement(element) {
       if (!element || element === document.body || element === document.documentElement) {
@@ -2372,28 +2290,155 @@
       });
     }
 
+    function hexToRgb(hexValue) {
+      var hex = safeHexColor(hexValue, "#000000").slice(1);
+      return {
+        r: parseInt(hex.slice(0, 2), 16),
+        g: parseInt(hex.slice(2, 4), 16),
+        b: parseInt(hex.slice(4, 6), 16)
+      };
+    }
+
+    function relationshipDistanceScore(currentRelationship, category, typeItem) {
+      var score = 0;
+      var relCategory = String(currentRelationship.category || "").toLowerCase();
+      var relType = String(currentRelationship.type || "").toLowerCase();
+      var relLabel = String(currentRelationship.displayLabel || "").toLowerCase();
+      var catName = String(category.name || "").toLowerCase();
+      var typeName = String(typeItem.name || "").toLowerCase();
+      var typeLabel = String(typeItem.label || "").toLowerCase();
+
+      if (relCategory && relCategory === catName) {
+        score += 45;
+      }
+      if (relType && (relType === typeName || relType === typeLabel)) {
+        score += 65;
+      }
+      if (relLabel && (relLabel === typeLabel || relLabel === typeName)) {
+        score += 30;
+      }
+      if (String(currentRelationship.style || "") === String(typeItem.style || "")) {
+        score += 20;
+      }
+      var relArrow = ["end", "both"].indexOf(String(currentRelationship.arrow || "none").toLowerCase()) >= 0;
+      if (relArrow === Boolean(typeItem.arrow)) {
+        score += 14;
+      }
+      if (Boolean(currentRelationship.animated) === Boolean(typeItem.animated)) {
+        score += 12;
+      }
+
+      var relWidth = Math.max(1, Number(currentRelationship.thickness) || 2);
+      var typeWidth = Math.max(1, Number(typeItem.width) || 2);
+      score += Math.max(0, 10 - Math.abs(relWidth - typeWidth) * 3);
+
+      var relRgb = hexToRgb(currentRelationship.color);
+      var typeRgb = hexToRgb(typeItem.color);
+      var distance = Math.sqrt(
+        Math.pow(relRgb.r - typeRgb.r, 2) +
+        Math.pow(relRgb.g - typeRgb.g, 2) +
+        Math.pow(relRgb.b - typeRgb.b, 2)
+      );
+      score += Math.max(0, 24 - distance / 12);
+
+      return score;
+    }
+
+    function closestDefaultRelationshipType(currentRelationship, defaultCategories) {
+      var exactById = null;
+      (defaultCategories || []).some(function (category) {
+        var match = (category.types || []).find(function (typeItem) {
+          return currentRelationship.typeId && typeItem.id === currentRelationship.typeId;
+        });
+        if (match) {
+          exactById = { category: category, type: match, score: 999 };
+          return true;
+        }
+        return false;
+      });
+      if (exactById) {
+        return exactById;
+      }
+
+      var best = null;
+      (defaultCategories || []).forEach(function (category) {
+        (category.types || []).forEach(function (typeItem) {
+          var score = relationshipDistanceScore(currentRelationship, category, typeItem);
+          if (!best || score > best.score) {
+            best = { category: category, type: typeItem, score: score };
+          }
+        });
+      });
+
+      return best && best.score >= 42 ? best : null;
+    }
+
+    function resetRelationshipDefaults() {
+      var defaults = normalizeRelationshipCategories(clone(DEFAULT_RELATIONSHIP_CATEGORIES));
+      var fallbackCategory = defaults[0] || { id: "", name: "", color: "#d10d40" };
+
+      commit(function (next) {
+        next.relationshipCategories = clone(defaults);
+        next.relationships = (next.relationships || []).map(function (relationship) {
+          var current = clone(relationship || {});
+          var match = closestDefaultRelationshipType(current, defaults);
+          if (match && match.category && match.type) {
+            var mapped = relationshipTypeDefaultsFromCategory(defaults, match.category.id, match.type.id);
+            return Object.assign({}, current, {
+              category: mapped.category,
+              categoryId: mapped.categoryId,
+              type: mapped.type,
+              typeId: mapped.typeId,
+              displayLabel: mapped.displayLabel,
+              color: mapped.color,
+              thickness: mapped.thickness,
+              style: mapped.style,
+              animated: mapped.animated,
+              arrow: mapped.arrow,
+              lineMeta: Object.assign(makeRelationshipTypeDecoration(), mapped.lineMeta || {}, current.lineMeta || {})
+            });
+          }
+
+          // Preserve unmatched relationships by marking them as custom while keeping line details.
+          return Object.assign({}, current, {
+            category: fallbackCategory.name,
+            categoryId: fallbackCategory.id,
+            type: CUSTOM_RELATIONSHIP_FALLBACK_LABEL,
+            typeId: "",
+            displayLabel: CUSTOM_RELATIONSHIP_FALLBACK_LABEL
+          });
+        });
+      });
+
+      setRelationshipTypeDraftsByCategory({});
+      setRelationshipCategoryCreate({ open: false, name: "", color: "#d10d40" });
+      setRelationshipCategoryEdit({ categoryId: null, name: "", color: "#d10d40" });
+      setRelationshipResetDialogOpen(false);
+      setRelationshipEditor(null);
+      setActivePanel("relationships");
+    }
+
     function openRelationshipEditorFor(relationship, isNew) {
       if (!relationship) {
         return;
       }
       var defaults = relationshipTypeDefaults(relationship.categoryId || relationship.category, relationship.typeId || relationship.type);
-      setRelationshipEditor(Object.assign({}, defaults, relationship, {
-        isNew: Boolean(isNew),
-        fromAnchor: relationship.fromAnchor || "right",
-        toAnchor: relationship.toAnchor || "left"
-      }));
+      var draftRelationship = clone(relationship);
+      delete draftRelationship.sourceAnchor;
+      delete draftRelationship.destinationAnchor;
+      delete draftRelationship.fromAnchor;
+      delete draftRelationship.toAnchor;
+      setRelationshipEditor(Object.assign({}, defaults, draftRelationship, { isNew: Boolean(isNew) }));
       setActivePanel("relationship-editor");
     }
 
-    function createRelationshipFromAnchors(fromId, toId, fromAnchor, toAnchor) {
+    function createRelationshipFromAnchors(fromId, toId) {
       var defaults = relationshipTypeDefaults();
       var id = makeRelationshipUiId("rel");
       var relationship = Object.assign({
         id: id,
         from: fromId,
         to: toId,
-        fromAnchor: fromAnchor,
-        toAnchor: toAnchor,
         description: "",
         gmNotes: "",
         hiddenFromCollaborators: false,
@@ -2417,7 +2462,7 @@
       event.preventDefault();
       event.stopPropagation();
       var start = pointOnCanvas(event.clientX, event.clientY);
-      setRelationshipPreview({ from: character.id, fromAnchor: anchor, x1: start.x, y1: start.y, x2: start.x, y2: start.y });
+      setRelationshipPreview({ from: character.id, x1: start.x, y1: start.y, x2: start.x, y2: start.y });
       setRelationshipDropTarget(null);
 
       function move(moveEvent) {
@@ -2445,7 +2490,7 @@
         var handle = target && target.closest ? target.closest("[data-relationship-anchor]") : null;
         var toId = handle && handle.getAttribute("data-character-id");
         if (toId && toId !== character.id) {
-          createRelationshipFromAnchors(character.id, toId, anchor, handle.getAttribute("data-relationship-anchor") || "left");
+          createRelationshipFromAnchors(character.id, toId);
         }
         setRelationshipPreview(null);
         setRelationshipDropTarget(null);
@@ -2478,6 +2523,73 @@
           }
         });
     }, [data]);
+
+    useEffect(function () {
+      if (typeof window === "undefined" || typeof window.BroadcastChannel !== "function") {
+        return;
+      }
+
+      var channel = new window.BroadcastChannel(CHARACTER_SYNC_CHANNEL);
+      characterSyncChannelRef.current = channel;
+
+      channel.onmessage = function (event) {
+        var message = event && event.data ? event.data : null;
+        if (!message || message.source === characterSyncSourceRef.current) {
+          return;
+        }
+
+        if (message.type === "character-updated" && message.character && message.character.id) {
+          var incoming = normalizeCharacterRecord(message.character);
+          setData(function (prev) {
+            var next = clone(prev);
+            var index = next.characters.findIndex(function (entry) { return entry.id === incoming.id; });
+            if (index < 0) {
+              return prev;
+            }
+            next.characters[index] = Object.assign({}, next.characters[index], incoming);
+            return next;
+          });
+
+          setCharacterDraft(function (current) {
+            if (!current || current.id !== incoming.id) {
+              return current;
+            }
+            var normalized = characterToDraft(incoming);
+            return Object.assign({}, current, normalized);
+          });
+          return;
+        }
+
+        if (message.type === "characters-snapshot" && Array.isArray(message.characters)) {
+          setData(function (prev) {
+            var next = clone(prev);
+            next.characters = message.characters.map(normalizeCharacterRecord);
+            if (Array.isArray(message.relationships)) {
+              next.relationships = normalizeRelationships(message.relationships, next.relationshipCategories);
+            }
+            return next;
+          });
+        }
+      };
+
+      return function () {
+        characterSyncChannelRef.current = null;
+        channel.close();
+      };
+    }, []);
+
+    useEffect(function () {
+      var channel = characterSyncChannelRef.current;
+      if (!channel) {
+        return;
+      }
+      channel.postMessage({
+        type: "characters-snapshot",
+        source: characterSyncSourceRef.current,
+        characters: clone(data.characters || []),
+        relationships: clone(data.relationships || [])
+      });
+    }, [data.characters, data.relationships]);
 
     useEffect(function () {
       if (activePanel === "characters" && previousPanelRef.current !== "characters") {
@@ -4533,46 +4645,22 @@
                 ${!profileEditMode ? html`<button className="profile-biography-edit-button" onClick=${startProfileEdit}>Edit</button>` : null}
               </div>
               ${profileEditMode
-                ? html`<div className="profile-biography-editor">
-                  <div className="rich-toolbar" role="toolbar" aria-label="Biography formatting">
-                    <div className="rich-toolbar-group">
-                      <button className=${"rich-toolbar-button toolbar-icon-bold" + (biographyToolbarState.bold ? " active" : "")} title="Bold" aria-label="Bold" aria-pressed=${Boolean(biographyToolbarState.bold)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("bold"); }}>B</button>
-                      <button className=${"rich-toolbar-button toolbar-icon-italic" + (biographyToolbarState.italic ? " active" : "")} title="Italic" aria-label="Italic" aria-pressed=${Boolean(biographyToolbarState.italic)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("italic"); }}>I</button>
-                      <button className=${"rich-toolbar-button toolbar-icon-underline" + (biographyToolbarState.underline ? " active" : "")} title="Underline" aria-label="Underline" aria-pressed=${Boolean(biographyToolbarState.underline)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("underline"); }}>U</button>
-                    </div>
-                    <div className="rich-toolbar-divider" aria-hidden="true"></div>
-                    <div className="rich-toolbar-group">
-                      <button className=${"rich-toolbar-button toolbar-icon-heading" + (biographyToolbarState.h1 ? " active" : "")} title="Heading 1" aria-label="Heading 1" aria-pressed=${Boolean(biographyToolbarState.h1)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { toggleBiographyHeading("h1"); }}>H1</button>
-                      <button className=${"rich-toolbar-button toolbar-icon-heading" + (biographyToolbarState.h2 ? " active" : "")} title="Heading 2" aria-label="Heading 2" aria-pressed=${Boolean(biographyToolbarState.h2)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { toggleBiographyHeading("h2"); }}>H2</button>
-                    </div>
-                    <div className="rich-toolbar-divider" aria-hidden="true"></div>
-                    <div className="rich-toolbar-group">
-                      <button className=${"rich-toolbar-button toolbar-icon-list" + (biographyToolbarState.bulletList ? " active" : "")} title="Bullet list" aria-label="Bullet list" aria-pressed=${Boolean(biographyToolbarState.bulletList)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("insertUnorderedList"); }}>•≡</button>
-                      <button className=${"rich-toolbar-button toolbar-icon-list" + (biographyToolbarState.numberedList ? " active" : "")} title="Numbered list" aria-label="Numbered list" aria-pressed=${Boolean(biographyToolbarState.numberedList)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("insertOrderedList"); }}>1≡</button>
-                    </div>
-                    <div className="rich-toolbar-divider" aria-hidden="true"></div>
-                    <div className="rich-toolbar-group">
-                      <button className=${"rich-toolbar-button toolbar-icon-align-left" + (biographyToolbarState.alignLeft ? " active" : "")} title="Align left" aria-label="Align left" aria-pressed=${Boolean(biographyToolbarState.alignLeft)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("justifyLeft"); }}>≡</button>
-                      <button className=${"rich-toolbar-button toolbar-icon-align-center" + (biographyToolbarState.alignCenter ? " active" : "")} title="Align centre" aria-label="Align centre" aria-pressed=${Boolean(biographyToolbarState.alignCenter)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("justifyCenter"); }}>≡</button>
-                      <button className=${"rich-toolbar-button toolbar-icon-align-right" + (biographyToolbarState.alignRight ? " active" : "")} title="Align right" aria-label="Align right" aria-pressed=${Boolean(biographyToolbarState.alignRight)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("justifyRight"); }}>≡</button>
-                    </div>
-                    <div className="rich-toolbar-divider" aria-hidden="true"></div>
-                    <div className="rich-toolbar-group">
-                      <button className=${"rich-toolbar-button toolbar-icon-callout" + (biographyToolbarState.callout ? " active" : "")} title="Callout block" aria-label="Callout block" aria-pressed=${Boolean(biographyToolbarState.callout)} onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("formatBlock", "<blockquote>"); }}>❝</button>
-                      <button className="rich-toolbar-button toolbar-icon-rule" title="Horizontal rule" aria-label="Horizontal rule" onMouseDown=${function (e) { e.preventDefault(); }} onClick=${function () { runBiographyCommand("insertHorizontalRule"); }}>―</button>
-                    </div>
-                    <div className="rich-toolbar-divider" aria-hidden="true"></div>
-                    <div className="rich-toolbar-group">
-                      <button className="rich-toolbar-button toolbar-icon-spoiler" title="Insert spoiler block" aria-label="Insert spoiler block" onMouseDown=${function (e) { e.preventDefault(); }} onClick=${insertBiographySpoiler}>◐</button>
-                    </div>
-                  </div>
-                  <div id="profileBioEditor" ref=${profileBiographyEditorRef} className="rich-editor profile-rich-editor character-rich-text" contentEditable="true" suppressContentEditableWarning="true" onFocus=${refreshBiographyToolbarState} onKeyUp=${refreshBiographyToolbarState} onMouseUp=${refreshBiographyToolbarState} onInput=${function (e) {
-                    var htmlValue = e.currentTarget.innerHTML;
-                    profileBiographyLastSyncedRef.current = { characterId: draft.id, html: htmlValue };
-                    updateDraftField("bioHtml", htmlValue);
-                  }}></div>
-                </div>`
-                : html`<div className="profile-biography-content character-rich-text" dangerouslySetInnerHTML=${{ __html: characterBiographyHtml(profileRecord) }}></div>`}
+                ? (SharedBiographyWorkspace
+                    ? html`<${SharedBiographyWorkspace}
+                        editable=${true}
+                        value=${String(draft.bioHtml || "")}
+                        onChange=${function (htmlValue) { updateDraftField("bioHtml", htmlValue); }}
+                        editorClassName="rich-editor profile-rich-editor character-rich-text"
+                        viewerClassName="profile-biography-content character-rich-text"
+                      />`
+                    : html`<div className="profile-biography-content character-rich-text" dangerouslySetInnerHTML=${{ __html: characterBiographyHtml(profileRecord) }}></div>`)
+                : (SharedBiographyWorkspace
+                    ? html`<${SharedBiographyWorkspace}
+                        editable=${false}
+                        value=${String(characterBiographyHtml(profileRecord) || "")}
+                        viewerClassName="profile-biography-content character-rich-text"
+                      />`
+                    : html`<div className="profile-biography-content character-rich-text" dangerouslySetInnerHTML=${{ __html: characterBiographyHtml(profileRecord) }}></div>`)}
             </article>
 
             <section className="profile-section">
@@ -4839,7 +4927,10 @@
 
       function update(field, value) {
         setRelationshipEditor(function (current) {
-          return current ? Object.assign({}, current, { [field]: value }) : current;
+          if (!current) {
+            return current;
+          }
+          return Object.assign({}, current, { [field]: value });
         });
       }
 
@@ -4859,10 +4950,15 @@
       }
 
       function save() {
+        var savedDraft = clone(draft);
+        delete savedDraft.sourceAnchor;
+        delete savedDraft.destinationAnchor;
+        delete savedDraft.fromAnchor;
+        delete savedDraft.toAnchor;
         commit(function (next) {
           var relationship = next.relationships.find(function (entry) { return entry.id === draft.id; });
           if (relationship) {
-            Object.assign(relationship, draft, { isNew: undefined });
+            Object.assign(relationship, savedDraft, { isNew: undefined });
           }
         });
         setRelationshipEditor(null);
@@ -4894,6 +4990,34 @@
           <div><span>To</span><strong>${to ? to.name : "Unknown"}</strong></div>
         </div>
 
+        <div className="relationship-editor-live-preview">
+          <span>Live Preview</span>
+          <svg viewBox="0 0 280 32" className="relationship-editor-preview-svg" aria-hidden="true">
+            <defs key="relationship-editor-preview-defs"><marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path></marker></defs>
+            ${(() => {
+              var draftResolvedAnchors = relationshipResolvedAnchors(from || { x: 18, y: 16, nodeSize: 1 }, to || { x: 262, y: 16, nodeSize: 1 });
+              return renderRelationshipStroke({
+                route: relationshipRouteSpec(
+                  relationshipAnchorPoint(from || { x: 18, y: 16, nodeSize: 1 }, draftResolvedAnchors.sourceAnchor),
+                  relationshipAnchorPoint(to || { x: 262, y: 16, nodeSize: 1 }, draftResolvedAnchors.destinationAnchor),
+                  draftResolvedAnchors.sourceAnchor,
+                  draftResolvedAnchors.destinationAnchor,
+                  draft.routingMode || "auto"
+                ),
+                style: draft.style,
+                color: draft.color,
+                width: Math.max(1, Number(draft.thickness) || 2),
+                opacity: Number(draft.opacity),
+                animated: Boolean(draft.animated),
+                markerEnd: draft.arrow === "end" || draft.arrow === "both" ? "url(#arrowHead)" : null,
+                markerStart: draft.arrow === "start" || draft.arrow === "both" ? "url(#arrowHead)" : null,
+                includeHitArea: false,
+                keyPrefix: "relationship-editor-preview"
+              });
+            })()}
+          </svg>
+        </div>
+
         <h4>Relationship Category</h4>
         <div className="relationship-category-buttons">
           ${data.relationshipCategories.map(function (category) {
@@ -4906,12 +5030,23 @@
         <div className="relationship-type-cards">
           ${availableTypes.map(function (typeItem) {
             var isActive = typeItem.id === draft.typeId;
-            var dashArray = typeItem.style === "dashed" ? "10 6" : (typeItem.style === "dotted" ? "2 6" : (typeItem.style === "chain" ? "14 4 2 4" : (typeItem.style === "droplets" ? "1 8" : "")));
+            var previewRoute = relationshipRouteSpec({ x: 4, y: 6 }, { x: 116, y: 6 }, "right", "left", "straight");
             return html`<button key=${"rel-type-option-" + typeItem.id} className=${"relationship-type-card" + (isActive ? " active" : "")} onClick=${function () { chooseType(selectedCategory, typeItem); }}>
               <span className="relationship-type-color" style=${{ backgroundColor: typeItem.color }}></span>
               <strong>${typeItem.name}</strong>
               <svg viewBox="0 0 120 12" className="relationship-type-preview" aria-hidden="true">
-                <line x1="4" y1="6" x2="116" y2="6" stroke=${typeItem.color} strokeWidth=${Math.max(1, typeItem.width)} strokeDasharray=${dashArray}></line>
+                <defs key=${"type-preview-defs-" + typeItem.id}><marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path></marker></defs>
+                ${renderRelationshipStroke({
+                  route: previewRoute,
+                  style: typeItem.style,
+                  color: typeItem.color,
+                  width: Math.max(1, typeItem.width),
+                  opacity: 1,
+                  animated: Boolean(typeItem.animated),
+                  markerEnd: typeItem.arrow ? "url(#arrowHead)" : null,
+                  includeHitArea: false,
+                  keyPrefix: "type-preview-card-" + typeItem.id
+                })}
               </svg>
             </button>`;
           })}
@@ -4945,11 +5080,44 @@
       </div>`;
     }
 
+    var RELATIONSHIP_CONNECTION_NODE_DIAMETER = 12;
+    var RELATIONSHIP_CONNECTION_NODE_OFFSET_X = -6;
+    var RELATIONSHIP_CONNECTION_NODE_OFFSET_Y = -6;
+
+    function relationshipNodeGeometry(character) {
+      var nodeSize = Math.max(0.7, Math.min(1.8, Number(character && character.nodeSize) || 1));
+      var shellDiameter = 74 * nodeSize;
+      return {
+        x: Number(character && character.x) || 0,
+        y: Number(character && character.y) || 0,
+        nodeSize: nodeSize,
+        shellDiameter: shellDiameter,
+        shellRadius: shellDiameter / 2,
+        nodeRadius: RELATIONSHIP_CONNECTION_NODE_DIAMETER / 2
+      };
+    }
+
+    function relationshipConnectionNodeLocalPoint(geometry, anchor) {
+      var offsetX = RELATIONSHIP_CONNECTION_NODE_OFFSET_X;
+      var offsetY = RELATIONSHIP_CONNECTION_NODE_OFFSET_Y;
+      var topBottomShiftX = 4;
+      var bottomShiftY = -2;
+      switch (String(anchor || "").toLowerCase()) {
+        case "top": return { x: geometry.shellRadius + offsetX + topBottomShiftX, y: offsetY };
+        case "right": return { x: geometry.shellDiameter + offsetX, y: geometry.shellRadius + offsetY };
+        case "bottom": return { x: geometry.shellRadius + offsetX + topBottomShiftX, y: geometry.shellDiameter + offsetY + bottomShiftY };
+        case "left": return { x: offsetX, y: geometry.shellRadius + offsetY };
+        default: return { x: geometry.shellRadius + offsetX, y: geometry.shellRadius + offsetY };
+      }
+    }
+
     function relationshipAnchorPoint(character, anchor) {
-      var radius = 42 * (Number(character.nodeSize) || 1);
-      var offsets = { top: [0, -radius], right: [radius, 0], bottom: [0, radius], left: [-radius, 0] };
-      var offset = offsets[anchor] || [0, 0];
-      return { x: character.x + offset[0], y: character.y + offset[1] };
+      var geometry = relationshipNodeGeometry(character);
+      var localPoint = relationshipConnectionNodeLocalPoint(geometry, anchor);
+      return {
+        x: geometry.x - geometry.shellRadius + localPoint.x,
+        y: geometry.y - geometry.shellRadius + localPoint.y
+      };
     }
 
     function relationshipAnchorVector(anchor) {
@@ -4969,6 +5137,8 @@
       };
       return {
         kind: "straight",
+        from: { x: fromPoint.x, y: fromPoint.y },
+        to: { x: toPoint.x, y: toPoint.y },
         d: "M " + fromPoint.x + " " + fromPoint.y + " L " + toPoint.x + " " + toPoint.y,
         labelPoint: mid
       };
@@ -5012,6 +5182,10 @@
 
       return {
         kind: "curved",
+        from: { x: fromPoint.x, y: fromPoint.y },
+        to: { x: toPoint.x, y: toPoint.y },
+        control1: control1,
+        control2: control2,
         d: "M " + fromPoint.x + " " + fromPoint.y + " C " + control1.x + " " + control1.y + ", " + control2.x + " " + control2.y + ", " + toPoint.x + " " + toPoint.y,
         labelPoint: label
       };
@@ -5043,9 +5217,170 @@
       return engine(fromPoint, toPoint, fromAnchor, toAnchor);
     }
 
+    function relationshipRouteSample(route, t) {
+      var clampedT = clamp(Number(t) || 0, 0, 1);
+      if (!route || route.kind === "straight") {
+        var fromPoint = route && route.from ? route.from : { x: 0, y: 0 };
+        var toPoint = route && route.to ? route.to : { x: 0, y: 0 };
+        var dx = toPoint.x - fromPoint.x;
+        var dy = toPoint.y - fromPoint.y;
+        return {
+          point: {
+            x: fromPoint.x + dx * clampedT,
+            y: fromPoint.y + dy * clampedT
+          },
+          tangent: { x: dx, y: dy }
+        };
+      }
+
+      var p0 = route.from;
+      var p1 = route.control1;
+      var p2 = route.control2;
+      var p3 = route.to;
+      var point = cubicBezierPoint(p0, p1, p2, p3, clampedT);
+      var mt = 1 - clampedT;
+      var tangent = {
+        x: (3 * mt * mt * (p1.x - p0.x)) + (6 * mt * clampedT * (p2.x - p1.x)) + (3 * clampedT * clampedT * (p3.x - p2.x)),
+        y: (3 * mt * mt * (p1.y - p0.y)) + (6 * mt * clampedT * (p2.y - p1.y)) + (3 * clampedT * clampedT * (p3.y - p2.y))
+      };
+      return { point: point, tangent: tangent };
+    }
+
+    function relationshipRouteArcTable(route, segments) {
+      var count = Math.max(8, Number(segments) || 32);
+      var entries = [];
+      var total = 0;
+      var first = relationshipRouteSample(route, 0).point;
+      entries.push({ t: 0, length: 0, point: first });
+      var previous = first;
+      for (var i = 1; i <= count; i += 1) {
+        var t = i / count;
+        var sample = relationshipRouteSample(route, t).point;
+        var segmentLength = Math.sqrt(Math.pow(sample.x - previous.x, 2) + Math.pow(sample.y - previous.y, 2));
+        total += segmentLength;
+        entries.push({ t: t, length: total, point: sample });
+        previous = sample;
+      }
+      return { entries: entries, total: total };
+    }
+
+    function relationshipRouteSampleAtDistance(route, arcTable, distance) {
+      var table = arcTable || relationshipRouteArcTable(route, 32);
+      var target = clamp(Number(distance) || 0, 0, table.total || 0);
+      var entries = table.entries;
+      if (!entries || entries.length < 2) {
+        return relationshipRouteSample(route, 0);
+      }
+      var right = entries[entries.length - 1];
+      var left = entries[0];
+      for (var i = 1; i < entries.length; i += 1) {
+        if (entries[i].length >= target) {
+          right = entries[i];
+          left = entries[i - 1];
+          break;
+        }
+      }
+      var span = right.length - left.length;
+      var ratio = span <= 0 ? 0 : (target - left.length) / span;
+      var t = left.t + (right.t - left.t) * ratio;
+      return relationshipRouteSample(route, t);
+    }
+
+    function relationshipDashArray(styleName) {
+      switch (String(styleName || "").toLowerCase()) {
+        case "dashed": return "10 6";
+        case "dotted": return "2 6";
+        default: return "";
+      }
+    }
+
+    function relationshipPatternStep(styleName, lineWidth) {
+      var width = Math.max(1, Number(lineWidth) || 2);
+      if (styleName === "chain") {
+        return Math.max(6, width * 2.2);
+      }
+      if (styleName === "droplets") {
+        return Math.max(8, width * 3.2);
+      }
+      return 0;
+    }
+
+    function relationshipPatternShape(styleName, index, color, lineWidth, opacity, animated) {
+      var width = Math.max(1, Number(lineWidth) || 2);
+      if (styleName === "chain") {
+        var linkWidth = Math.max(8, width * 3.6);
+        var linkHeight = Math.max(3.8, width * 1.35);
+        return html`<g className=${animated ? "relationship-pattern-shape animated" : "relationship-pattern-shape"} opacity=${opacity}>
+          <rect x=${-linkWidth / 2} y=${-linkHeight / 2} width=${linkWidth} height=${linkHeight} rx=${linkHeight / 2} ry=${linkHeight / 2} fill="none" stroke=${color} strokeWidth=${Math.max(1, width * 0.55)}></rect>
+        </g>`;
+      }
+      if (styleName === "droplets") {
+        var sizeFactors = [1.0, 0.82, 1.12, 0.9];
+        var factor = sizeFactors[index % sizeFactors.length];
+        var radius = Math.max(2.2, width * 0.9) * factor;
+        var dropletPath = "M 0 " + (-radius) +
+          " C " + (radius * 0.68) + " " + (-radius * 0.44) + ", " + (radius * 0.98) + " " + (radius * 0.34) + ", 0 " + (radius * 1.08) +
+          " C " + (-radius * 0.98) + " " + (radius * 0.34) + ", " + (-radius * 0.68) + " " + (-radius * 0.44) + ", 0 " + (-radius) + " Z";
+        return html`<g className=${animated ? "relationship-pattern-shape animated" : "relationship-pattern-shape"} opacity=${opacity}>
+          <path d=${dropletPath} fill=${color}></path>
+        </g>`;
+      }
+      return null;
+    }
+
+    function renderRelationshipStroke(options) {
+      var opts = options && typeof options === "object" ? options : {};
+      var route = opts.route;
+      if (!route || !route.d) {
+        return null;
+      }
+
+      var styleName = String(opts.style || "solid").toLowerCase();
+      var color = safeHexColor(opts.color, "#d10d40");
+      var opacity = Number.isFinite(Number(opts.opacity)) ? Number(opts.opacity) : 1;
+      var lineWidth = Math.max(1, Number(opts.width) || 2);
+      var markerEnd = opts.markerEnd || null;
+      var markerStart = opts.markerStart || null;
+      var animated = Boolean(opts.animated);
+      var keyPrefix = String(opts.keyPrefix || "rel");
+      var onDoubleClick = typeof opts.onDoubleClick === "function" ? opts.onDoubleClick : null;
+      var includeHitArea = opts.includeHitArea !== false;
+
+      var elements = [];
+      if (includeHitArea) {
+        elements.push(html`<path key=${keyPrefix + "-hit"} className="relationship-line-hit" d=${route.d} stroke=${color} strokeWidth=${Math.max(lineWidth, 10)} strokeOpacity="0" fill="none" onDoubleClick=${onDoubleClick}></path>`);
+      }
+
+      if (styleName === "chain" || styleName === "droplets") {
+        elements.push(html`<path key=${keyPrefix + "-carrier"} className=${animated ? "relationship-line relationship-line-carrier animated" : "relationship-line relationship-line-carrier"} d=${route.d} stroke=${color} strokeWidth=${lineWidth} strokeOpacity="0" opacity=${opacity} markerEnd=${markerEnd} markerStart=${markerStart} fill="none"></path>`);
+        var arcTable = relationshipRouteArcTable(route, styleName === "chain" ? 38 : 34);
+        var step = relationshipPatternStep(styleName, lineWidth);
+        var inset = Math.max(2, lineWidth * 1.25);
+        var travel = Math.max(0, arcTable.total - inset * 2);
+        var count = step > 0 ? Math.max(1, Math.floor(travel / step)) : 0;
+        for (var i = 0; i <= count; i += 1) {
+          var distance = inset + i * step;
+          var sample = relationshipRouteSampleAtDistance(route, arcTable, distance);
+          var tangent = sample.tangent || { x: 1, y: 0 };
+          var angle = Math.atan2(tangent.y || 0, tangent.x || 0) * 180 / Math.PI;
+          var rotate = styleName === "droplets" ? angle + 90 : angle;
+          var shape = relationshipPatternShape(styleName, i, color, lineWidth, opacity, animated);
+          if (!shape) {
+            continue;
+          }
+          elements.push(html`<g key=${keyPrefix + "-pattern-" + i} className=${animated ? "relationship-pattern relationship-pattern-animated" : "relationship-pattern"} transform=${"translate(" + sample.point.x + " " + sample.point.y + ") rotate(" + rotate + ")"}>${shape}</g>`);
+        }
+      } else {
+        elements.push(html`<path key=${keyPrefix + "-stroke"} className=${animated ? "relationship-line animated" : "relationship-line"} d=${route.d} stroke=${color} strokeWidth=${lineWidth} strokeDasharray=${relationshipDashArray(styleName)} opacity=${opacity} markerEnd=${markerEnd} markerStart=${markerStart} fill="none"></path>`);
+      }
+
+      return elements;
+    }
+
     function relationshipsPanel() {
       return html`${panelHeader("Relationship Manager")}
       <div className="panel-body relationship-manager-body">
+        <div className="relationship-manager-scroll">
         <div className="tag-group-create-root relationship-category-create-root">
           <button onClick=${openRelationshipCategoryCreate}>+ New Category</button>
           <div className=${"tag-inline-editor-shell" + (relationshipCategoryCreate.open ? " expanded" : "") }>
@@ -5114,13 +5449,24 @@
 
                 <div className="relationship-type-list">
                   ${(category.types || []).map(function (typeItem) {
-                    var dashArray = typeItem.style === "dashed" ? "10 6" : (typeItem.style === "dotted" ? "2 6" : (typeItem.style === "chain" ? "14 4 2 4" : (typeItem.style === "droplets" ? "1 8" : "")));
+                    var miniRoute = relationshipRouteSpec({ x: 2, y: 5 }, { x: 94, y: 5 }, "right", "left", "straight");
                     return html`<article className="tag-row relationship-type-row" key=${typeItem.id}>
                       <div className="tag-row-main">
                         <span className="relationship-category-chip" style=${{ backgroundColor: typeItem.color }}></span>
                         <span className="tag-row-name">${typeItem.name}</span>
                         <svg viewBox="0 0 96 10" className="relationship-type-mini-preview" aria-hidden="true">
-                          <line x1="2" y1="5" x2="94" y2="5" stroke=${typeItem.color} strokeWidth=${Math.max(1, typeItem.width)} strokeDasharray=${dashArray}></line>
+                          <defs key=${"type-mini-defs-" + typeItem.id}><marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path></marker></defs>
+                          ${renderRelationshipStroke({
+                            route: miniRoute,
+                            style: typeItem.style,
+                            color: typeItem.color,
+                            width: Math.max(1, typeItem.width),
+                            opacity: 1,
+                            animated: Boolean(typeItem.animated),
+                            markerEnd: typeItem.arrow ? "url(#arrowHead)" : null,
+                            includeHitArea: false,
+                            keyPrefix: "type-preview-mini-" + typeItem.id
+                          })}
                         </svg>
                       </div>
                       <div className="tag-row-actions">
@@ -5165,7 +5511,18 @@
 
                     <label>Preview</label>
                     <svg viewBox="0 0 280 20" className="relationship-type-editor-preview" aria-hidden="true">
-                      <line x1="8" y1="10" x2="272" y2="10" stroke=${typeDraft.color} strokeWidth=${Math.max(1, Number(typeDraft.width) || 2)} strokeDasharray=${typeDraft.style === "dashed" ? "10 6" : (typeDraft.style === "dotted" ? "2 6" : (typeDraft.style === "chain" ? "14 4 2 4" : (typeDraft.style === "droplets" ? "1 8" : "")))}></line>
+                      <defs key=${"type-editor-defs"}><marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path></marker></defs>
+                      ${renderRelationshipStroke({
+                        route: relationshipRouteSpec({ x: 8, y: 10 }, { x: 272, y: 10 }, "right", "left", "straight"),
+                        style: typeDraft.style,
+                        color: typeDraft.color,
+                        width: Math.max(1, Number(typeDraft.width) || 2),
+                        opacity: 1,
+                        animated: Boolean(typeDraft.animated),
+                        markerEnd: typeDraft.arrow ? "url(#arrowHead)" : null,
+                        includeHitArea: false,
+                        keyPrefix: "type-preview-editor-" + category.id
+                      })}
                     </svg>
 
                     <div className="tag-inline-editor-actions">
@@ -5178,6 +5535,18 @@
             </div>
           </section>`;
         })}
+        </div>
+
+        <footer className="relationship-manager-footer">
+          <div className="relationship-reset-card">
+            <h4>Reset Relationship Defaults</h4>
+            <p>Restore the built-in Campaign Atlas relationship categories and relationship types.</p>
+            <button type="button" className="destructive relationship-reset-button" onClick=${function () { setRelationshipResetDialogOpen(true); }}>
+              <span className="relationship-reset-button-icon" aria-hidden="true">${Icon({ icon: CAMPAIGN_ATLAS_ICON_ASSETS.delete, size: 14, className: "relationship-reset-icon-glyph" })}</span>
+              <span>Reset to Defaults</span>
+            </button>
+          </div>
+        </footer>
       </div>`;
     }
 
@@ -5323,20 +5692,25 @@
       </div>`;
     }
 
-    function overlaysPanel() {
-      return html`${panelHeader("Overlay Manager")}
-      <div className="panel-body">
-        ${data.overlays.map(function (o) {
-          return html`<div className="card" key=${o.id}>
-            <div className="row"><strong>${o.name}</strong><span className="hint">${o.visibleWhen}</span></div>
-            <div className="split" style=${{ marginTop: 6 }}>
-              <div><label>Icon</label><input value=${o.icon} onInput=${function (e) { commit(function (next) { var t = next.overlays.find(function (x) { return x.id === o.id; }); if (t) t.icon = e.target.value; }); }} /></div>
-              <div><label>Optional text</label><input value=${o.text} onInput=${function (e) { commit(function (next) { var t = next.overlays.find(function (x) { return x.id === o.id; }); if (t) t.text = e.target.value; }); }} /></div>
-              <div><label>Position</label><select value=${o.position} onChange=${function (e) { commit(function (next) { var t = next.overlays.find(function (x) { return x.id === o.id; }); if (t) t.position = e.target.value; }); }}><option>Top</option><option>Left</option><option>Right</option><option>Centre</option></select></div>
-              <div><label>Animation</label><select value=${o.animation} onChange=${function (e) { commit(function (next) { var t = next.overlays.find(function (x) { return x.id === o.id; }); if (t) t.animation = e.target.value; }); }}><option>None</option><option>Pulse</option><option>Blink</option><option>Float</option></select></div>
-            </div>
-          </div>`;
-        })}
+    function renderRelationshipResetDialog() {
+      if (!relationshipResetDialogOpen) {
+        return null;
+      }
+      return html`<div className="tag-edit-dialog-backdrop" onClick=${function () { setRelationshipResetDialogOpen(false); }}>
+        <div className="tag-edit-dialog relationship-reset-dialog" onClick=${function (event) { event.stopPropagation(); }}>
+          <header className="tag-edit-dialog-header">
+            <h3>Reset Relationship Defaults?</h3>
+          </header>
+          <div className="tag-edit-dialog-body">
+            <p>This will restore the default Campaign Atlas relationship categories and relationship types.</p>
+            <p>Any custom categories or relationship types you have created will be permanently removed.</p>
+            <p>Existing relationships between characters will NOT be deleted, but any relationship using a removed custom type will be reassigned to its closest matching default type where possible. If no suitable default exists, it will be marked as "Custom Relationship" so no data is lost.</p>
+          </div>
+          <footer className="tag-edit-dialog-actions relationship-reset-dialog-actions">
+            <button type="button" onClick=${function () { setRelationshipResetDialogOpen(false); }}>Cancel</button>
+            <button type="button" className="destructive" onClick=${resetRelationshipDefaults}>Reset to Defaults</button>
+          </footer>
+        </div>
       </div>`;
     }
 
@@ -5347,7 +5721,6 @@
         case "relationships": return relationshipsPanel();
         case "relationship-editor": return relationshipEditorPanel();
         case "tags": return tagsPanel();
-        case "overlays": return overlaysPanel();
         default: return null;
       }
     }
@@ -5413,25 +5786,36 @@
                 ${zoneDraft ? html`<div className="zone zone-drawing-preview" style=${{ left: Math.min(zoneDraft.x, zoneDraft.x + zoneDraft.width), top: Math.min(zoneDraft.y, zoneDraft.y + zoneDraft.height), width: Math.abs(zoneDraft.width), height: Math.abs(zoneDraft.height) }}><span className="zone-title">Drawing Zone</span></div>` : null}
               </div>
               <svg className="link-layer" viewBox="0 0 2000 1400" preserveAspectRatio="none">
-                <defs><marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#d10d40"></path></marker></defs>
+                <defs key="map-arrow-defs"><marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path></marker></defs>
                 ${data.relationships.filter(function (r) { return r.visible; }).map(function (r) {
                   var from = data.characters.find(function (c) { return c.id === r.from; });
                   var to = data.characters.find(function (c) { return c.id === r.to; });
                   if (!from || !to) {
                     return null;
                   }
-                  var fromPoint = relationshipAnchorPoint(from, r.fromAnchor || "right");
-                  var toPoint = relationshipAnchorPoint(to, r.toAnchor || "left");
-                  var route = relationshipRouteSpec(fromPoint, toPoint, r.fromAnchor || "right", r.toAnchor || "left", r.routingMode || "auto");
+                  var resolvedAnchors = relationshipResolvedAnchors(from, to);
+                  var fromPoint = relationshipAnchorPoint(from, resolvedAnchors.sourceAnchor);
+                  var toPoint = relationshipAnchorPoint(to, resolvedAnchors.destinationAnchor);
+                  var route = relationshipRouteSpec(fromPoint, toPoint, resolvedAnchors.sourceAnchor, resolvedAnchors.destinationAnchor, r.routingMode || "auto");
                   var mx = route.labelPoint.x;
                   var my = route.labelPoint.y;
-                  var dash = r.style === "dashed" ? "10 6" : (r.style === "dotted" ? "2 6" : (r.style === "chain" ? "14 4 2 4" : (r.style === "droplets" ? "1 8" : "")));
                   var markerEnd = r.arrow === "end" || r.arrow === "both" ? "url(#arrowHead)" : null;
                   var markerStart = r.arrow === "start" || r.arrow === "both" ? "url(#arrowHead)" : null;
                   var lineWidth = Math.max(1, Number(r.thickness) || 2);
                   return html`<g key=${r.id}>
-                    <path className="relationship-line-hit" d=${route.d} stroke=${r.color} strokeWidth=${Math.max(lineWidth, 10)} strokeOpacity="0" fill="none" onDoubleClick=${function (event) { event.stopPropagation(); openRelationshipEditorFor(Object.assign({}, r), false); }}></path>
-                    <path className=${r.animated ? "relationship-line animated" : "relationship-line"} d=${route.d} stroke=${r.color} strokeWidth=${lineWidth} strokeDasharray=${dash} opacity=${r.opacity} markerEnd=${markerEnd} markerStart=${markerStart} fill="none"></path>
+                    ${renderRelationshipStroke({
+                      route: route,
+                      style: r.style,
+                      color: r.color,
+                      width: lineWidth,
+                      opacity: Number(r.opacity),
+                      animated: Boolean(r.animated),
+                      markerEnd: markerEnd,
+                      markerStart: markerStart,
+                      includeHitArea: true,
+                      keyPrefix: "relationship-" + r.id,
+                      onDoubleClick: function (event) { event.stopPropagation(); openRelationshipEditorFor(Object.assign({}, r), false); }
+                    })}
                     <rect x=${mx - 24} y=${my - 11} width="48" height="18" rx="5" fill="rgba(10,10,15,0.9)" stroke="rgba(255,255,255,0.15)"></rect>
                     <text x=${mx} y=${my + 2} fill=${r.labelColor || "#ffffff"} fontSize="11" textAnchor="middle">${r.displayLabel || r.type}</text>
                   </g>`;
@@ -5441,12 +5825,13 @@
 
               <div className="node-layer">
                 ${characterList().filter(function (c) { return !c.hidden; }).map(function (c) {
-                  var nodeSize = Math.max(0.7, Math.min(1.8, Number(c.nodeSize) || 1));
+                  var geometry = relationshipNodeGeometry(c);
+                  var nodeSize = geometry.nodeSize;
                   var outlineColor = c.outlineColor || "#d10d40";
                   var shape = c.nodeShape === "rounded" ? "square" : (c.nodeShape || "circle");
                   var radius = shape === "circle" ? "50%" : "8px";
                   var clip = shape === "hexagon" ? "polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0 50%)" : "none";
-                  var portraitDiameter = 74 * nodeSize;
+                  var portraitDiameter = geometry.shellDiameter;
                   var nodeBadges = characterNodeBadges(c, portraitDiameter);
                   var isSelectedNode = selected.indexOf(c.id) >= 0;
                   var isDropCharacter = relationshipDropTarget && relationshipDropTarget.characterId === c.id;
@@ -5464,8 +5849,9 @@
                       ${renderNodeBadgeAnchors(nodeBadges)}
                       <div className=${"relationship-handle-layer" + layerStateClass }>
                         ${["top", "right", "bottom", "left"].map(function (anchor) {
+                          var localPoint = relationshipConnectionNodeLocalPoint(geometry, anchor);
                           var isDropAnchor = Boolean(isDropCharacter && relationshipDropTarget && relationshipDropTarget.anchor === anchor);
-                          return html`<span key=${anchor} className=${"relationship-handle relationship-handle-" + anchor + (isDropAnchor ? " drop-target" : "")} data-relationship-anchor=${anchor} data-character-id=${c.id} onPointerDown=${function (event) { beginRelationshipDrag(event, c, anchor); }}></span>`;
+                          return html`<span key=${anchor} className=${"relationship-handle relationship-handle-" + anchor + (isDropAnchor ? " drop-target" : "")} style=${{ left: localPoint.x, top: localPoint.y }} data-relationship-anchor=${anchor} data-character-id=${c.id} onPointerDown=${function (event) { beginRelationshipDrag(event, c, anchor); }}></span>`;
                         })}
                       </div>
                     </div>
@@ -5493,6 +5879,7 @@
       </div>` : null}
 
       ${renderTagEditDialog()}
+      ${renderRelationshipResetDialog()}
 
       <input ref=${profilePortraitInputRef} type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/gif" hidden onChange=${onProfilePortraitSelected} />
       ${renderPortraitWorkflowModal()}

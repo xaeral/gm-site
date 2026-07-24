@@ -8,8 +8,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="../assets/css/styles.css" />
+  <link rel="stylesheet" href="../assets/css/relationship-map-app.css" />
 </head>
-<body>
+<body class="workspace-page">
   <div class="site-shell">
     <aside class="sidebar" id="sidebar">
       <div class="brand">
@@ -35,7 +36,7 @@
       </div>
     </aside>
 
-    <main class="main-content">
+    <main class="main-content relationship-main-content characters-main-content">
       <header class="topbar">
         <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="sidebar">Menu</button>
         <div class="topbar-title">
@@ -44,36 +45,7 @@
         </div>
       </header>
 
-      <section class="search-panel card">
-        <label for="characterSearch">Search Characters</label>
-        <div class="search-row">
-          <input id="characterSearch" type="search" placeholder="Search by name, clan, sect, or tag..." autocomplete="off" />
-          <button type="button">Filters</button>
-          <button type="button">Sort</button>
-        </div>
-      </section>
-
-      <section class="columns">
-        <article class="card">
-          <h3>Character Cards</h3>
-          <ul class="stack-list">
-            <li class="stack-item"><strong>Prince Taylor</strong><p>Brujah, Camarilla, 2 relationships</p></li>
-            <li class="stack-item"><strong>Seneschal Alexandra</strong><p>Toreador, Camarilla, 1 relationship</p></li>
-            <li class="stack-item"><strong>Dr Amelia Rhodes</strong><p>Malkavian, Missing, 1 relationship</p></li>
-          </ul>
-        </article>
-
-        <article class="card">
-          <h3>Profile Sections</h3>
-          <ul class="stack-list">
-            <li class="stack-item"><strong>Biography</strong><p>Long-form character background and voice notes.</p></li>
-            <li class="stack-item"><strong>Relationships</strong><p>Directional ties, status, and categories.</p></li>
-            <li class="stack-item"><strong>Timeline</strong><p>Chronological events tied to sessions.</p></li>
-            <li class="stack-item"><strong>Notes and Secrets</strong><p>GM-only details and reveal flags.</p></li>
-            <li class="stack-item"><strong>Images</strong><p>Portrait gallery and handout references.</p></li>
-          </ul>
-        </article>
-      </section>
+      <div id="charactersDatabaseApp" class="characters-app-root"></div>
 
       <footer class="page-footer">
         <small>Chronicle Codex Dashboard</small>
@@ -83,5 +55,10 @@
   </div>
 
   <script src="../assets/js/common.js"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+  <script src="../assets/js/character-biography-shared.js"></script>
+  <script src="../assets/js/characters-database-react.js"></script>
 </body>
 </html>
