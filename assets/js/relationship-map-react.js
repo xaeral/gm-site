@@ -1,5 +1,6 @@
 (function () {
   var useEffect = React.useEffect;
+  var useLayoutEffect = React.useLayoutEffect;
   var useMemo = React.useMemo;
   var useRef = React.useRef;
   var useState = React.useState;
@@ -799,23 +800,18 @@
     return mapped.map(function (entry) { return entry.event; });
   }
 
-  function timelineEventsForDisplay(events) {
-    var mapped = (events || []).map(function (event, sourceIndex) {
-      var normalized = normalizeTimelineEvent(event);
-      return {
-        sourceIndex: sourceIndex,
-        event: normalized,
-        hasDate: Boolean(normalized.date),
-        dateValue: normalized.date ? Date.parse(normalized.date + "T00:00:00") : Number.POSITIVE_INFINITY
-      };
-    });
-
-    mapped.sort(function (a, b) {
+  function sortTimelineDisplayEntries(entries) {
+    return entries.sort(function (a, b) {
       if (a.hasDate && b.hasDate) {
         if (a.dateValue !== b.dateValue) {
           return a.dateValue - b.dateValue;
         }
-        return a.sourceIndex - b.sourceIndex;
+        // Lifecycle events have a deliberate order only when they share a day.
+        // User events retain their existing relative order between them.
+        if (a.sortPriority !== b.sortPriority) {
+          return a.sortPriority - b.sortPriority;
+        }
+        return a.sequence - b.sequence;
       }
       if (a.hasDate && !b.hasDate) {
         return -1;
@@ -823,10 +819,60 @@
       if (!a.hasDate && b.hasDate) {
         return 1;
       }
-      return a.sourceIndex - b.sourceIndex;
+      return a.sequence - b.sequence;
+    });
+  }
+
+  function timelineEventsForDisplay(events, dateOfBirth, dateOfDeath) {
+    // Merge persisted events and virtual lifecycle events before this one sort.
+    var merged = (events || []).map(function (event, sourceIndex) {
+      var normalized = normalizeTimelineEvent(event);
+      return {
+        sourceIndex: sourceIndex,
+        event: normalized,
+        isSystem: false,
+        sequence: sourceIndex,
+        sortPriority: 1,
+        hasDate: Boolean(normalized.date),
+        dateValue: normalized.date ? Date.parse(normalized.date + "T00:00:00") : Number.POSITIVE_INFINITY
+      };
     });
 
-    return mapped;
+    // Lifecycle entries are derived only for this display collection; they are
+    // never added to the character's persisted timeline array.
+    var manualTitles = merged.reduce(function (titles, entry) {
+      var title = entry.event.title.trim().toLowerCase();
+      if (title) {
+        titles[title] = true;
+      }
+      return titles;
+    }, {});
+    [
+      { id: "birth", title: "Birth", date: normalizeIsoDate(dateOfBirth) },
+      { id: "death", title: "Death", date: normalizeIsoDate(dateOfDeath) }
+    ].forEach(function (systemEvent, systemIndex) {
+      if (!systemEvent.date || manualTitles[systemEvent.title.toLowerCase()]) {
+        return;
+      }
+      merged.push({
+        sourceIndex: "system-" + systemEvent.id,
+        event: { date: systemEvent.date, title: systemEvent.title, description: "" },
+        isSystem: true,
+        sequence: (events || []).length + systemIndex,
+        sortPriority: systemEvent.id === "birth" ? 0 : 2,
+        hasDate: true,
+        dateValue: Date.parse(systemEvent.date + "T00:00:00")
+      });
+    });
+
+    return sortTimelineDisplayEntries(merged);
+  }
+
+  function timelineEventLabel(event) {
+    var normalized = normalizeTimelineEvent(event);
+    var title = normalized.title.trim() || "Untitled Event";
+    var year = normalized.date ? normalized.date.slice(0, 4) : "";
+    return year ? "(" + year + ") " + title : title;
   }
 
   function normalizeCharacterRecord(character) {
@@ -1469,6 +1515,8 @@
     var previousPanelRef = useRef(activePanel);
     var profileReturnRef = useRef({ panel: "characters", characterView: "details" });
     var profilePortraitInputRef = useRef(null);
+    var profileBiographyEditorRef = useRef(null);
+    var profileBiographyLastSyncedRef = useRef(null);
     var storageWriteErrorRef = useRef(false);
     var portraitDragRef = useRef({ active: false, pointerId: null, lastX: 0, lastY: 0 });
     var portraitPinchRef = useRef({ active: false, startDistance: 0, startZoom: 1 });
@@ -1488,6 +1536,26 @@
       priorBodyUserSelect: "",
       priorBodyWebkitUserSelect: ""
     });
+
+    // contentEditable owns its live DOM and selection while the user types.
+    // Only replace its contents when the draft changed from another source (for
+    // example, when a different character is opened for editing).
+    useLayoutEffect(function () {
+      if (!profileEditMode || !characterDraft) {
+        profileBiographyLastSyncedRef.current = null;
+        return;
+      }
+      var editor = profileBiographyEditorRef.current;
+      var nextHtml = String(characterDraft.bioHtml || "");
+      var current = profileBiographyLastSyncedRef.current;
+      if (!editor || (current && current.characterId === characterDraft.id && current.html === nextHtml)) {
+        return;
+      }
+      if (editor.innerHTML !== nextHtml) {
+        editor.innerHTML = nextHtml;
+      }
+      profileBiographyLastSyncedRef.current = { characterId: characterDraft.id, html: nextHtml };
+    }, [profileEditMode, characterDraft && characterDraft.id, characterDraft && characterDraft.bioHtml]);
 
     function isEditableElement(element) {
       if (!element || element === document.body || element === document.documentElement) {
@@ -3361,6 +3429,9 @@
         dateOfBirth: normalizeIsoDate(draft.dateOfBirth),
         dateOfDeath: normalizeIsoDate(draft.dateOfDeath)
       } : normalizeCharacterRecord(focused);
+      var timelineDisplayEvents = profileEditMode
+        ? timelineEventsForDisplay(draft.timelineEvents || [], draft.dateOfBirth, draft.dateOfDeath)
+        : timelineEventsForDisplay(profileRecord.timeline || [], profileRecord.dateOfBirth, profileRecord.dateOfDeath);
 
       function sidebarField(label, key, multiline, inputType) {
         var value = profileRecord[key] || "";
@@ -3441,7 +3512,11 @@
                     <button onClick=${function () { document.execCommand("insertUnorderedList", false); }}>Bullets</button>
                     <button onClick=${function () { document.execCommand("insertOrderedList", false); }}>Numbers</button>
                   </div>
-                  <div id="profileBioEditor" className="rich-editor profile-rich-editor" contentEditable="true" suppressContentEditableWarning="true" onInput=${function (e) { updateDraftField("bioHtml", e.currentTarget.innerHTML); }} dangerouslySetInnerHTML=${{ __html: draft.bioHtml }}></div>
+                  <div id="profileBioEditor" ref=${profileBiographyEditorRef} className="rich-editor profile-rich-editor" contentEditable="true" suppressContentEditableWarning="true" onInput=${function (e) {
+                    var htmlValue = e.currentTarget.innerHTML;
+                    profileBiographyLastSyncedRef.current = { characterId: draft.id, html: htmlValue };
+                    updateDraftField("bioHtml", htmlValue);
+                  }}></div>
                 </div>`
                 : html`<div className="profile-biography-content character-rich-text" dangerouslySetInnerHTML=${{ __html: characterBiographyHtml(profileRecord) }}></div>`}
             </article>
@@ -3463,24 +3538,33 @@
                 <div className="timeline-log-toolbar">
                   <button onClick=${addTimelineEvent}>Add Event</button>
                 </div>
-                ${(draft.timelineEvents || []).length ? timelineEventsForDisplay(draft.timelineEvents || []).map(function (entry) {
+                ${timelineDisplayEvents.length ? timelineDisplayEvents.map(function (entry) {
                   var sourceIndex = entry.sourceIndex;
                   var item = normalizeTimelineEvent(entry.event);
+                  var isSystem = entry.isSystem;
                   var isExpanded = timelineExpandedIndex === sourceIndex;
-                  var label = item.title && item.title.trim() ? item.title.trim() : "Untitled Event";
-                  return html`<article className=${"timeline-log-item" + (isExpanded ? " expanded" : "")} key=${"timeline-event-" + sourceIndex}>
-                    <div className="timeline-log-head">
+                  var label = timelineEventLabel(item);
+                  return html`<article className=${"timeline-log-item expandable" + (isSystem ? " timeline-system-item" : "") + (isExpanded ? " expanded" : "")} key=${"timeline-event-" + sourceIndex}>
+                    ${isSystem ? html`<div className="timeline-log-head">
                       <div className="timeline-log-main" onClick=${function () { setTimelineExpandedIndex(isExpanded ? null : sourceIndex); }}>
+                        <p className="timeline-log-title-row"><span className="timeline-log-caret">${isExpanded ? "▼" : "▶"}</span><strong>${label}</strong><span className="timeline-system-badge">System Event</span></p>
+                        ${isExpanded ? html`<p className="timeline-log-date">${formatDisplayDate(item.date)}</p>` : null}
+                      </div>
+                      <div className="timeline-log-actions"><span className="timeline-system-readonly">Read-only</span></div>
+                    </div>` : html`<div className="timeline-log-head" onClick=${function () { setTimelineExpandedIndex(isExpanded ? null : sourceIndex); }}>
+                      <div className="timeline-log-main">
                         <p className="timeline-log-title-row"><span className="timeline-log-caret">${isExpanded ? "▼" : "▶"}</span><strong>${label}</strong></p>
-                        <p className="timeline-log-date">${item.date ? formatDisplayDate(item.date) : "Unknown Date"}</p>
-                        ${item.description ? html`<p className="timeline-log-description">${item.description}</p>` : null}
+                        ${isExpanded ? html`<p className="timeline-log-date">${item.date ? formatDisplayDate(item.date) : "Unknown Date"}</p>` : null}
+                        ${isExpanded ? (item.description
+                          ? html`<p className="timeline-log-description">${item.description}</p>`
+                          : html`<p className="timeline-log-description hint">No description provided.</p>`) : null}
                       </div>
-                      <div className="timeline-log-actions">
-                        <button className="timeline-action-button" onClick=${function () { setTimelineExpandedIndex(isExpanded ? null : sourceIndex); }}>${isExpanded ? "Close" : "Edit"}</button>
-                        <button className="timeline-action-button" onClick=${function () { removeTimelineEvent(sourceIndex); }}>Delete</button>
-                      </div>
-                    </div>
-                    ${isExpanded ? html`<div className="timeline-log-editor">
+                      ${isExpanded ? html`<div className="timeline-log-actions">
+                        <button className="timeline-action-button" onClick=${function (e) { e.stopPropagation(); setTimelineExpandedIndex(null); }}>Close</button>
+                        <button className="timeline-action-button" onClick=${function (e) { e.stopPropagation(); removeTimelineEvent(sourceIndex); }}>Delete</button>
+                      </div>` : null}
+                    </div>`}
+                    ${isExpanded && !isSystem ? html`<div className="timeline-log-editor">
                       <label>Date</label>
                       <input type="date" value=${item.date || ""} onInput=${function (e) { updateTimelineEvent(sourceIndex, "date", e.target.value); }} />
                       <label>Event Title</label>
@@ -3494,13 +3578,31 @@
                   </article>`;
                 }) : html`<p className="hint">No timeline events yet. Add your first event.</p>`}
               </div>` : html`<div className="timeline-log">
-                ${(profileRecord.timeline || []).length ? timelineEventsForDisplay(profileRecord.timeline || []).map(function (entry) {
+                ${timelineDisplayEvents.length ? timelineDisplayEvents.map(function (entry) {
                   var sourceIndex = entry.sourceIndex;
                   var item = normalizeTimelineEvent(entry.event);
+                  var isSystem = entry.isSystem;
                   var isExpanded = timelineExpandedIndex === sourceIndex;
-                  var label = item.title && item.title.trim() ? item.title.trim() : "Untitled Event";
-                  return html`<article className=${"timeline-log-item timeline-readonly-item expandable" + (isExpanded ? " expanded" : "")} key=${"timeline-readonly-" + sourceIndex}>
-                    <div className="timeline-log-head" onClick=${function () { setTimelineExpandedIndex(isExpanded ? null : sourceIndex); }}>
+                  var label = timelineEventLabel(item);
+                  return html`<article className=${"timeline-log-item timeline-readonly-item expandable" + (isSystem ? " timeline-system-item" : "") + (isExpanded ? " expanded" : "")} key=${"timeline-readonly-" + sourceIndex}>
+                    ${isSystem ? html`<div className="timeline-log-head">
+                      <div
+                        className="timeline-log-main"
+                        role="button"
+                        tabIndex="0"
+                        onClick=${function () { setTimelineExpandedIndex(isExpanded ? null : sourceIndex); }}
+                        onKeyDown=${function (e) {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setTimelineExpandedIndex(isExpanded ? null : sourceIndex);
+                          }
+                        }}
+                      >
+                        <p className="timeline-log-title-row"><span className="timeline-log-caret">${isExpanded ? "▼" : "▶"}</span><strong>${label}</strong><span className="timeline-system-badge">System Event</span></p>
+                        ${isExpanded ? html`<p className="timeline-log-date">${formatDisplayDate(item.date)}</p>` : null}
+                      </div>
+                      <div className="timeline-log-actions"><span className="timeline-system-readonly">Read-only</span></div>
+                    </div>` : html`<div className="timeline-log-head" onClick=${function () { setTimelineExpandedIndex(isExpanded ? null : sourceIndex); }}>
                       <div
                         className="timeline-log-main"
                         role="button"
@@ -3513,18 +3615,12 @@
                         }}
                       >
                         <p className="timeline-log-title-row"><span className="timeline-log-caret">${isExpanded ? "▼" : "▶"}</span><strong>${label}</strong></p>
-                        <p className="timeline-log-date">${item.date ? formatDisplayDate(item.date) : "Unknown Date"}</p>
-                        ${!isExpanded && item.description ? html`<p className="timeline-log-description">${item.description}</p>` : null}
+                        ${isExpanded ? html`<p className="timeline-log-date">${item.date ? formatDisplayDate(item.date) : "Unknown Date"}</p>` : null}
+                        ${isExpanded ? (item.description
+                          ? html`<p className="timeline-log-description">${item.description}</p>`
+                          : html`<p className="timeline-log-description hint">No description provided.</p>`) : null}
                       </div>
-                      <div className="timeline-log-actions">
-                        <button className="timeline-action-button" onClick=${function (e) { e.stopPropagation(); setTimelineExpandedIndex(isExpanded ? null : sourceIndex); }}>${isExpanded ? "Collapse" : "Expand"}</button>
-                      </div>
-                    </div>
-                    ${isExpanded ? html`<div className="timeline-log-details">
-                      ${item.description
-                        ? html`<p className="timeline-log-detail-value timeline-log-detail-description">${item.description}</p>`
-                        : html`<p className="timeline-log-detail-value hint">No description provided.</p>`}
-                    </div>` : null}
+                    </div>`}
                   </article>`;
                 }) : html`<p className="hint">No timeline entries yet.</p>`}
               </div>`}

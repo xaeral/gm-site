@@ -2231,6 +2231,30 @@ h6 {
   font-size: 0.9rem;
 }
 
+.timeline-system-item {
+  border-color: rgba(134, 176, 207, 0.38);
+  background: #101923;
+}
+
+.timeline-system-badge,
+.timeline-system-readonly {
+  border: 1px solid rgba(134, 176, 207, 0.5);
+  border-radius: 999px;
+  color: #b9d9ef;
+  font-size: 0.63rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.16rem 0.34rem;
+}
+
+.timeline-system-readonly {
+  display: inline-block;
+  margin-top: 0.1rem;
+  color: var(--text-muted);
+  border-color: var(--line);
+  font-weight: 400;
+}
+
 .timeline-log-caret {
   font-size: 0.72rem;
   color: #d8d8e8;
