@@ -7,6 +7,7 @@
   var html = htm.bind(React.createElement);
   var sharedCharacters = window.CampaignAtlasCharactersShared || {};
   var SharedBiographyWorkspace = sharedCharacters.CharacterBiographyWorkspace || null;
+  var SharedCharacterProfileWorkspace = sharedCharacters.CharacterProfileWorkspace || null;
   var CHARACTER_SYNC_CHANNEL = "campaign-atlas-characters";
 
   var STORAGE_KEY = "relationship-map-desktop-v1";
@@ -751,6 +752,9 @@
   }
 
   function parseDossierEntries(rawText) {
+    if (sharedCharacters.parseDossierEntries) {
+      return sharedCharacters.parseDossierEntries(rawText);
+    }
     var text = String(rawText || "").replace(/\r\n?/g, "\n").trim();
     if (!text) {
       return [];
@@ -842,6 +846,9 @@
   }
 
   function dossierEntryGroup(options) {
+    if (sharedCharacters.dossierEntryGroup) {
+      return sharedCharacters.dossierEntryGroup(options);
+    }
     var opts = options && typeof options === "object" ? options : {};
     var rootKey = opts.key;
     var title = opts.title || "";
@@ -4538,6 +4545,46 @@
     function characterProfileView() {
       if (!focused) {
         return html`<section className="character-profile-page"><div className="profile-empty">No character selected.</div></section>`;
+      }
+
+      if (SharedCharacterProfileWorkspace) {
+        return html`<${SharedCharacterProfileWorkspace}
+          character=${focused}
+          characters=${data.characters}
+          relationships=${data.relationships}
+          editable=${true}
+          startInEdit=${profileEditMode}
+          onRequestClose=${returnFromCharacterProfile}
+          onOpenStoryNote=${function (note) {
+            var focus = encodeURIComponent(String((note && note.focusText) || (note && note.title) || ""));
+            window.location.href = "gm-notes.html?focus=" + focus;
+          }}
+          onSave=${function (updatedCharacter) {
+            commit(function (next) {
+              var target = next.characters.find(function (entry) { return entry.id === focused.id; });
+              if (!target) {
+                return;
+              }
+              var normalized = normalizeCharacterRecord(updatedCharacter || {});
+              Object.assign(target, normalized);
+              target.name = String(target.name || "").trim() || "Unnamed Character";
+              target.clan = normalizeClanValue(target.clan);
+              target.sect = normalizeSectValue(target.sect);
+              target.storytellerNotes = String(target.storytellerNotes || "");
+              target.gmOnlyInformation = String(target.gmOnlyInformation || "");
+              target.gmNotes = String(target.storytellerNotes || "");
+              target.timeline = sortTimelineEvents((timelineEventsFromAny(target.timeline) || []).map(normalizeTimelineEvent));
+              target.bioHtml = String(target.bioHtml || "");
+              target.bio = richHtmlToText(target.bioHtml);
+              target.tags = (Array.isArray(target.tags) ? target.tags : String(target.tags || "").split(","))
+                .map(function (tag) { return String(tag || "").trim(); })
+                .filter(function (tag) { return tag.length > 0; });
+            });
+            setProfileEditMode(false);
+            setCharacterDraft(null);
+            setTimelineExpandedIndex(null);
+          }}
+        />`;
       }
 
       var linked = data.relationships.filter(function (r) { return r.from === focused.id || r.to === focused.id; });

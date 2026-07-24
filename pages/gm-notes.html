@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="../assets/css/styles.css" />
+  <link rel="stylesheet" href="../assets/css/relationship-map-app.css" />
 </head>
 <body>
   <div class="site-shell">
@@ -30,59 +31,21 @@
       </nav>
 
       <div class="sidebar-footer">
-        <p>Document Source</p>
-        <strong>Published Google Doc</strong>
+        <p>Campaign Notebook</p>
+        <strong>Notebook Store</strong>
       </div>
     </aside>
 
-    <main class="main-content">
+    <main class="main-content gm-notes-main-content">
       <header class="topbar">
         <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="sidebar">Menu</button>
         <div class="topbar-title">
           <h2>GM Notes</h2>
-          <p>Dedicated reading panel for campaign prep and in-session reference.</p>
+          <p>Campaign notebook for long-form notes, references, and linked story material.</p>
         </div>
       </header>
 
-      <section class="card embed-wrapper">
-        <div class="section-heading">
-          <h3>Published Notes</h3>
-          <a href="https://docs.google.com/document/d/e/2PACX-1vQS4U5rszkiEDIlirKhNGFb8nbmhQSYmHJrbwPSNvkU9P5HHdXHrDJG_i95k_ey2kSCkzh2Fjlf00vP/pub?embedded=true" target="_blank" rel="noopener noreferrer">Open in new tab</a>
-        </div>
-        <p class="note">The panel below is served through your local dashboard proxy to keep notes in-site.</p>
-        <div id="notesContent" class="notes-content" aria-live="polite">Loading notes...</div>
-        <details class="embed-fallback">
-          <summary>Try raw embedded source</summary>
-          <iframe
-            class="embedded-frame"
-            title="GM Notes"
-            src="/integrations/gdocs"
-            loading="lazy">
-          </iframe>
-        </details>
-      </section>
-
-      <section class="card writeback-card">
-        <div class="section-heading">
-          <h3>Write to Google Notes</h3>
-        </div>
-        <p class="note">The published document is read-only. Use your editable Google Doc link below, draft in the scratchpad, then copy and paste into Google Docs.</p>
-        <label for="editableDocUrl">Editable Google Doc URL</label>
-        <input id="editableDocUrl" type="url" value="https://docs.google.com/document/d/19F099MPiCUjggg-EI1INKBKQqRRpswrvCszTIH4KnN0/edit?tab=t.0" placeholder="https://docs.google.com/document/d/.../edit" autocomplete="off" />
-        <div class="writeback-actions">
-          <button id="saveDocUrlBtn" type="button">Save URL</button>
-          <button id="openEditableDocBtn" type="button">Open Editable Doc</button>
-        </div>
-
-        <label for="gmScratchpad">GM Scratchpad</label>
-        <textarea id="gmScratchpad" rows="12" placeholder="Draft session notes, updates, and prep text here..."></textarea>
-        <div class="writeback-actions">
-          <button id="saveScratchBtn" type="button">Save Draft</button>
-          <button id="copyScratchBtn" type="button">Copy Draft</button>
-          <button id="clearScratchBtn" type="button">Clear Draft</button>
-        </div>
-        <p id="scratchStatus" class="status-text" aria-live="polite"></p>
-      </section>
+      <div id="gmNotebookApp" class="gm-notebook-app-root" aria-live="polite">Loading notebook...</div>
 
       <footer class="page-footer">
         <small>Chronicle Codex Dashboard</small>
@@ -92,6 +55,12 @@
   </div>
 
   <script src="../assets/js/common.js"></script>
+  <script src="../assets/js/data.js"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+  <script src="../assets/js/gm-notebook-shared.js"></script>
+  <script src="../assets/js/character-biography-shared.js"></script>
   <script src="../assets/js/gm-notes.js"></script>
 </body>
 </html>

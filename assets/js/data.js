@@ -55,7 +55,7 @@ window.GMData = {
 
   searchable: [
     { type: "Page", title: "Home", description: "Campaign dashboard and activity overview", href: "index.html" },
-    { type: "Page", title: "GM Notes", description: "Published Google Doc panel", href: "pages/gm-notes.html" },
+    { type: "Page", title: "GM Notes", description: "Campaign notebook and live note hub", href: "pages/gm-notes.html" },
     { type: "Page", title: "Relationship Map", description: "Dedicated relationship workspace", href: "pages/relationship-map.html" },
     { type: "Page", title: "Characters", description: "Searchable NPC database", href: "pages/characters.html" },
     { type: "Page", title: "Locations", description: "Location records and linked notes", href: "pages/locations.html" },

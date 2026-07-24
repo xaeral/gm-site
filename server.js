@@ -28,6 +28,21 @@ app.use(
 );
 
 app.use(
+  "/integrations/gdocs-content",
+  createProxyMiddleware({
+    target: "https://docs.google.com",
+    changeOrigin: true,
+    secure: true,
+    pathRewrite: () => gDocPath,
+    onProxyRes(proxyRes) {
+      delete proxyRes.headers["x-frame-options"];
+      delete proxyRes.headers["content-security-policy"];
+      delete proxyRes.headers["content-security-policy-report-only"];
+    }
+  })
+);
+
+app.use(
   "/integrations/vrelations",
   createProxyMiddleware({
     target: "https://v-relations.com",

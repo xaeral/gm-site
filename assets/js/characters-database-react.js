@@ -10,36 +10,18 @@
   var html = htm.bind(React.createElement);
 
   var shared = window.CampaignAtlasCharactersShared || {};
-  if (!shared.readCampaignAtlasState || !shared.CharacterBiographyWorkspace) {
+  if (!shared.readCampaignAtlasState || !shared.CharacterBiographyWorkspace || !shared.CharacterProfileWorkspace || !shared.CharacterProfilePortrait) {
     return;
   }
 
-  var CharacterBiographyWorkspace = shared.CharacterBiographyWorkspace;
+  var CharacterProfileWorkspace = shared.CharacterProfileWorkspace;
+  var CharacterProfilePortrait = shared.CharacterProfilePortrait;
   var CHANNEL_NAME = "campaign-atlas-characters";
   var sourceId = "characters-page-" + Date.now() + "-" + Math.floor(Math.random() * 100000);
-  var FALLBACK_PORTRAIT_DATA_URI = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E%3Crect width='80' height='80' fill='%2313131a'/%3E%3Ccircle cx='40' cy='30' r='14' fill='%23d10d40' fill-opacity='0.6'/%3E%3Crect x='20' y='48' width='40' height='22' rx='11' fill='%23d10d40' fill-opacity='0.4'/%3E%3C/svg%3E";
 
   function normalizeString(value, fallback) {
     var next = String(value || "").trim();
     return next || String(fallback || "");
-  }
-
-  function portraitSrc(character) {
-    var portraitValue = character && character.portrait;
-    if (portraitValue && typeof portraitValue === "object") {
-      portraitValue = portraitValue.image || portraitValue.src || "Default.png";
-    }
-    var raw = normalizeString(portraitValue, "Default.png");
-    if (!raw) {
-      return FALLBACK_PORTRAIT_DATA_URI;
-    }
-    if (raw === "Default.png") {
-      return FALLBACK_PORTRAIT_DATA_URI;
-    }
-    if (/^data:image\//i.test(raw) || /^https?:\/\//i.test(raw) || raw.indexOf("blob:") === 0) {
-      return raw;
-    }
-    return "../Relationship map/" + encodeURIComponent(raw);
   }
 
   function relationshipCountFor(characterId, relationships) {
@@ -67,6 +49,15 @@
     return selected.length + " Selected";
   }
 
+  function initialSelectedCharacterId() {
+    try {
+      var params = new URLSearchParams(window.location.search || "");
+      return params.get("character") || params.get("selected") || null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
   function App() {
     var _records = useState([]);
     var characters = _records[0];
@@ -76,7 +67,7 @@
     var relationships = _relationships[0];
     var setRelationships = _relationships[1];
 
-    var _selectedId = useState(null);
+    var _selectedId = useState(initialSelectedCharacterId());
     var selectedId = _selectedId[0];
     var setSelectedId = _selectedId[1];
 
@@ -508,7 +499,7 @@
       }
     }
 
-    function updateSelectedBiography(nextHtml) {
+    function saveSelectedCharacter(updatedCharacter) {
       if (!selectedCharacter) {
         return;
       }
@@ -517,9 +508,15 @@
           if (entry.id !== selectedCharacter.id) {
             return entry;
           }
-          var nextCharacter = Object.assign({}, entry, {
-            bioHtml: nextHtml,
-            bio: String(nextHtml || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+          var candidate = Object.assign({}, shared.clone(updatedCharacter || {}));
+          // Relationship Map remains the portrait authority unless portrait editing is explicitly enabled here.
+          delete candidate.portrait;
+          delete candidate.portraitUploadSource;
+          delete candidate.portraitScale;
+          delete candidate.portraitOffsetX;
+          delete candidate.portraitOffsetY;
+          var nextCharacter = Object.assign({}, entry, candidate, {
+            portrait: shared.clone(entry.portrait)
           });
           persistCharacterUpdate(nextCharacter);
           return nextCharacter;
@@ -559,11 +556,9 @@
                     className: "character-db-list-item" + (isActive ? " active" : ""),
                     onClick: function () { setSelectedId(entry.id); }
                   },
-                  React.createElement("img", {
-                    className: "character-db-list-portrait",
-                    src: portraitSrc(entry),
-                    alt: entry.name || "Character portrait",
-                    onError: function (event) { event.currentTarget.src = FALLBACK_PORTRAIT_DATA_URI; }
+                  React.createElement(CharacterProfilePortrait, {
+                    record: entry,
+                    className: "character-db-list-portrait-frame"
                   }),
                   React.createElement(
                     "span",
@@ -579,29 +574,18 @@
 
           <article className="character-db-profile-panel card">
             ${selectedCharacter
-              ? html`<div className="character-db-profile-content">
-                  <div className="character-db-profile-head">
-                    <img className="character-db-profile-portrait" src=${portraitSrc(selectedCharacter)} alt=${selectedCharacter.name || "Character portrait"} onError=${function (event) { event.currentTarget.src = FALLBACK_PORTRAIT_DATA_URI; }} />
-                    <div>
-                      <h3>${selectedCharacter.name || "Unnamed Character"}</h3>
-                      <p>${normalizeString(selectedCharacter.clan, "None")} - ${normalizeString(selectedCharacter.sect, "None")}</p>
-                      <small>${selectedCharacter.generation ? "Generation " + selectedCharacter.generation : "Generation unknown"}</small>
-                    </div>
-                  </div>
-                  <section className="profile-biography">
-                    <div className="profile-biography-head">
-                      <h3>Biography</h3>
-                    </div>
-                    <${CharacterBiographyWorkspace}
-                      editable=${true}
-                      value=${String(shared.characterBiographyHtml(selectedCharacter) || "")}
-                      onChange=${updateSelectedBiography}
-                      editorClassName="rich-editor profile-rich-editor character-rich-text"
-                      viewerClassName="profile-biography-content character-rich-text"
-                    />
-                  </section>
-                </div>`
-              : html`<div className="character-db-empty"><h3>Select a Character</h3><p>Choose a character from the list to open their shared biography workspace.</p></div>`}
+              ? html`<${CharacterProfileWorkspace}
+                  character=${selectedCharacter}
+                  characters=${characters}
+                  relationships=${relationships}
+                  editable=${true}
+                  onSave=${saveSelectedCharacter}
+                  onOpenStoryNote=${function (note) {
+                    var focus = encodeURIComponent(String((note && note.focusText) || (note && note.title) || ""));
+                    window.location.href = "gm-notes.html?focus=" + focus;
+                  }}
+                />`
+              : html`<div className="character-db-empty"><h3>Select a Character</h3><p>Choose a character from the list to open the complete shared profile workspace.</p></div>`}
           </article>
         </section>
       </div>
