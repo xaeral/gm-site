@@ -11,11 +11,14 @@
   var html = window.htm ? window.htm.bind(ReactRef.createElement) : null;
 
   var DB_NAME = "CampaignAtlas";
-  var DB_VERSION = 3;
+  var DB_VERSION = 4;
   var STORE_CHARACTERS = "characters";
   var STORE_RELATIONSHIPS = "relationships";
   var STORE_LOCATIONS = "locations";
   var STORE_TIMELINE = "timeline";
+  var STORE_ZONES = "zones";
+  var STORE_SESSIONS = "sessions";
+  var STORE_SETTINGS = "settings";
   var LOCATION_SYNC_CHANNEL = "campaign-atlas-locations";
   var locationSanitizePromise = null;
   var PORTRAIT_BLOB_MARKER = "__campaignAtlasPortraitBlob__";
@@ -161,6 +164,15 @@
         }
         if (!db.objectStoreNames.contains(STORE_TIMELINE)) {
           db.createObjectStore(STORE_TIMELINE, { keyPath: "id" });
+        }
+        if (!db.objectStoreNames.contains(STORE_ZONES)) {
+          db.createObjectStore(STORE_ZONES, { keyPath: "id" });
+        }
+        if (!db.objectStoreNames.contains(STORE_SESSIONS)) {
+          db.createObjectStore(STORE_SESSIONS, { keyPath: "id" });
+        }
+        if (!db.objectStoreNames.contains(STORE_SETTINGS)) {
+          db.createObjectStore(STORE_SETTINGS, { keyPath: "id" });
         }
       };
       request.onsuccess = function () { resolve(request.result); };
@@ -500,6 +512,30 @@
     characterStore.put(nextCharacter);
     timelineStore.put({ id: nextCharacter.id, events: timelineEvents });
 
+    await transactionToPromise(transaction);
+  }
+
+  async function deleteCharacterFromCampaignAtlas(characterId) {
+    if (!characterId) {
+      return;
+    }
+    var db = await openCampaignAtlasDb();
+    var transaction = db.transaction([STORE_CHARACTERS, STORE_TIMELINE], "readwrite");
+    transaction.objectStore(STORE_CHARACTERS).delete(String(characterId));
+    transaction.objectStore(STORE_TIMELINE).delete(String(characterId));
+    await transactionToPromise(transaction);
+  }
+
+  async function saveRelationships(relationships) {
+    var db = await openCampaignAtlasDb();
+    var transaction = db.transaction([STORE_RELATIONSHIPS], "readwrite");
+    var store = transaction.objectStore(STORE_RELATIONSHIPS);
+    store.clear();
+    (Array.isArray(relationships) ? relationships : []).forEach(function (relationship) {
+      if (relationship && relationship.id) {
+        store.put(clone(relationship));
+      }
+    });
     await transactionToPromise(transaction);
   }
 
@@ -1780,6 +1816,8 @@
     deleteLocationRecord: deleteLocationRecord,
     subscribeLocationRecordChanges: subscribeLocationRecordChanges,
     saveCharacterToCampaignAtlas: saveCharacterToCampaignAtlas,
+    deleteCharacterFromCampaignAtlas: deleteCharacterFromCampaignAtlas,
+    saveRelationships: saveRelationships,
     CharacterBiographyWorkspace: CharacterBiographyWorkspace,
     CharacterProfilePortrait: CharacterProfilePortrait,
     CharacterProfileWorkspace: CharacterProfileWorkspace

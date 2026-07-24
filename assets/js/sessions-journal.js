@@ -35,6 +35,15 @@
     });
   }
 
+  function stableHash(value) {
+    var text = String(value || "");
+    var hash = 0;
+    for (var i = 0; i < text.length; i += 1) {
+      hash = (hash * 31 + text.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash).toString(36);
+  }
+
   function formatDateDisplay(value) {
     var date = String(value || "").trim();
     if (!date) {
@@ -236,8 +245,8 @@
                 <button type="button" onClick=${function () { onRemove(index); }}>Remove</button>
               </div>
               <div className="chronicle-modal-grid session-review-grid">
-                <label>Campaign Year
-                  <input type="text" value=${event.year || ""} onInput=${function (entry) { onChangeEvent(index, "year", entry.target.value); }} />
+                <label>Event Date <span className="required-mark" aria-hidden="true">*</span>
+                  <input type="date" required=${true} value=${event.date || ""} onInput=${function (entry) { onChangeEvent(index, "date", entry.target.value); }} />
                 </label>
                 <label>Associated Location
                   <select value=${event.locationId || ""} onChange=${function (entry) { onChangeEvent(index, "locationId", entry.target.value); }}>
@@ -253,7 +262,7 @@
                 <label className="chronicle-span-2">Event Description
                   <textarea rows="3" value=${event.description || ""} onInput=${function (entry) { onChangeEvent(index, "description", entry.target.value); }}></textarea>
                 </label>
-                <label className="chronicle-span-2">Affected Characters
+                <label className="chronicle-span-2">Associated Character(s)
                   <select multiple value=${event.characterIds || []} onChange=${function (entry) {
                     var selected = Array.from(entry.target.selectedOptions || []).map(function (opt) { return opt.value; });
                     onChangeEvent(index, "characterIds", selected);
@@ -264,6 +273,8 @@
                   </select>
                 </label>
               </div>
+              ${event.accepted && !event.date ? html`<p className="hint session-review-warning">Event Date is required before this event can be added to the Timeline.</p>` : null}
+              ${event.accepted && !(event.characterIds || []).length ? html`<p className="hint session-review-warning">Select at least one Associated Character so this event can be linked into the Timeline.</p>` : null}
             </section>`;
           }) : html`<p className="hint">No timeline events detected.</p>`}
         </div>
@@ -532,10 +543,10 @@
             return raw.toLowerCase().indexOf(option.label.toLowerCase()) >= 0;
           });
           timelineDetected.push({
-            id: "detected-" + index + "-" + chunkIndex + "-" + Date.now(),
+            id: "detected-" + index + "-" + chunkIndex + "-" + stableHash(raw),
             rawText: raw,
             accepted: true,
-            year: String(new Date().getFullYear()),
+            date: normalizeString(sessionDraft.datePlayed, ""),
             title: raw.length > 90 ? raw.slice(0, 90) : raw,
             description: raw,
             characterIds: eventCharacterIds,
@@ -578,7 +589,10 @@
     }
 
     async function applyTimelineToCharacters(sessionPayload, acceptedEvents) {
-      if (!acceptedEvents.length) {
+      var validEvents = (acceptedEvents || []).filter(function (event) {
+        return event && normalizeString(event.date, "") && (event.characterIds || []).length;
+      });
+      if (!validEvents.length) {
         return;
       }
       var atlas = await shared.readCampaignAtlasState();
@@ -587,7 +601,9 @@
         characterById[character.id] = clone(character);
       });
 
-      acceptedEvents.forEach(function (event) {
+      var changedIds = {};
+
+      validEvents.forEach(function (event) {
         (event.characterIds || []).forEach(function (characterId) {
           var character = characterById[characterId];
           if (!character) {
@@ -602,7 +618,8 @@
             return;
           }
           timeline.push({
-            date: String(event.year || "") + "-01-01",
+            id: "tl-" + sourceId,
+            date: normalizeString(event.date, sessionPayload.datePlayed || ""),
             title: event.title || event.rawText || "Session Event",
             description: event.description || event.rawText || "",
             location: event.locationId || "",
@@ -611,14 +628,25 @@
           });
           character.timeline = timeline;
           characterById[characterId] = character;
+          changedIds[characterId] = true;
         });
       });
 
-      var writes = Object.keys(characterById).map(function (id) {
-        var character = characterById[id];
+      var changedCharacters = Object.keys(changedIds).map(function (id) { return characterById[id]; });
+      if (!changedCharacters.length) {
+        return;
+      }
+      await Promise.all(changedCharacters.map(function (character) {
         return shared.saveCharacterToCampaignAtlas(character);
-      });
-      await Promise.all(writes);
+      }));
+
+      if (typeof window.BroadcastChannel === "function") {
+        var channel = new window.BroadcastChannel("campaign-atlas-characters");
+        changedCharacters.forEach(function (character) {
+          channel.postMessage({ type: "character-updated", source: "session-journal", character: clone(character) });
+        });
+        channel.close();
+      }
     }
 
     async function commitSaveFromReview(currentDraft, detected, reviewList) {
@@ -629,7 +657,7 @@
       payload.timelineEvents = accepted.map(function (entry) {
         return {
           id: entry.id,
-          year: entry.year,
+          date: entry.date,
           title: entry.title,
           description: entry.description,
           characterIds: entry.characterIds || [],
@@ -662,6 +690,15 @@
 
     async function confirmTimelineReview() {
       if (!draft) {
+        return;
+      }
+      var accepted = (reviewEvents || []).filter(function (entry) { return entry && entry.accepted; });
+      if (accepted.some(function (entry) { return !normalizeString(entry.date, ""); })) {
+        window.alert("Every accepted event needs an Event Date before it can be added to the Timeline.");
+        return;
+      }
+      if (accepted.some(function (entry) { return !(entry.characterIds || []).length; })) {
+        window.alert("Every accepted event needs at least one Associated Character before it can be added to the Timeline.");
         return;
       }
       var detected = parseInlineReferences(draft);
@@ -816,13 +853,11 @@
       <div className="gm-notebook-workspace">
         <aside className="gm-notebook-explorer session-explorer">
           <div className="gm-notebook-explorer-head">
-            <div>
-              <h3>Session Explorer</h3>
-              <p>${explorerSessions.length} visible sessions</p>
-            </div>
+            <h3>Session Explorer</h3>
+            <p>${explorerSessions.length} Session${explorerSessions.length === 1 ? "" : "s"}</p>
           </div>
           <div className="gm-notebook-explorer-controls">
-            <input type="search" placeholder="Search sessions..." value=${explorerSearch} onInput=${function (event) { setExplorerSearch(event.target.value); }} />
+            <input type="search" placeholder="Search Sessions" value=${explorerSearch} onInput=${function (event) { setExplorerSearch(event.target.value); }} />
           </div>
           <div className="session-explorer-list">
             ${explorerSessions.length ? explorerSessions.map(function (session, index) {
@@ -832,7 +867,7 @@
                 <span>${session.title || "Untitled Session"}</span>
                 <p>${formatDateDisplay(session.datePlayed)}</p>
               </button>`;
-            }) : html`<p className="hint">No sessions match current search and filters.</p>`}
+            }) : html`<p className="hint">${(state.sessions || []).length ? "No sessions match current search and filters." : "No sessions yet."}</p>`}
           </div>
         </aside>
 
@@ -902,7 +937,11 @@
                 </div>
               </div>` : null}
             </section>
-          ` : html`<div className="profile-empty">Select or create a session to begin journaling.</div>`}
+          ` : ((state.sessions || []).length ? html`<div className="profile-empty">Select or create a session to begin journaling.</div>` : html`<div className="session-empty-state">
+              <h3>No sessions have been recorded yet.</h3>
+              <p>Start your campaign's record by logging your first session.</p>
+              <button type="button" className="session-empty-create" onClick=${createSession}>+ Create Session</button>
+            </div>`)}
         </section>
       </div>
 

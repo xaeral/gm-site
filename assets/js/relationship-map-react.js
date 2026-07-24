@@ -12,14 +12,14 @@
 
   var STORAGE_KEY = "relationship-map-desktop-v1";
   var DB_NAME = "CampaignAtlas";
-  var DB_VERSION = 3;
+  var DB_VERSION = 4;
   var STORE_CHARACTERS = "characters";
   var STORE_RELATIONSHIPS = "relationships";
   var STORE_ZONES = "zones";
   var STORE_TIMELINE = "timeline";
   var STORE_SESSIONS = "sessions";
   var STORE_SETTINGS = "settings";
-  var PORTRAIT_BLOB_MARKER = "__campaignAtlasPortraitBlob__";
+  var STORE_LOCATIONS = "locations";
   var dbPromise = null;
   var persistenceQueue = Promise.resolve();
 
@@ -329,33 +329,6 @@
     "Thin-Blood": "Thin-blood.svg"
   };
 
-  var PORTRAITS = [
-    "Default.png",
-    "1780709100325-54052ee (1).png",
-    "1780709267968-5aax98r (1).png",
-    "1780754470878-s7n7jsu (1).png",
-    "1780754503028-h6q4gws (1).png",
-    "1780754562384-hxr6tn0 (1).png",
-    "1780754760055-mat9tpj (1).png",
-    "1780754785859-pu527z7 (1).png",
-    "1780754801988-fzprr7b (1).png",
-    "1780754816552-arbc9jq (1).png",
-    "1780754831038-vvlzr12 (1).png",
-    "1780754845739-ljgbg80 (1).png",
-    "1780754861548-qefj4o6 (1).png",
-    "1780754883935-gvf9kvw (1).png",
-    "1780754903809-mwu505a (1).png",
-    "1780754917541-b280c8m (1).png",
-    "1780754931273-rt4bjj8 (1).png",
-    "1780754949457-qlc2y8o (1).png",
-    "1780754964069-hu4ckuu (1).png",
-    "1781360687819-4zdtrbu (1).jpg",
-    "1781360688508-m6a94gv (1).jpg",
-    "1781360689686-pn1xijl (1).jpg",
-    "1781988264167-6mujx9h (1).png",
-    "1784677430587-k4v44gh (1).jpg"
-  ];
-
   var PORTRAIT_EDITOR_SIZE = 320;
 
   function clamp(value, min, max) {
@@ -536,6 +509,9 @@
   }
 
   function renderPortraitSource(portrait) {
+    if (sharedCharacters.renderPortraitSource) {
+      return sharedCharacters.renderPortraitSource(portrait);
+    }
     if (!portrait) {
       return imgPath(DEFAULT_PORTRAIT);
     }
@@ -576,6 +552,9 @@
   }
 
   function canonicalPortraitFromRecord(record) {
+    if (sharedCharacters.canonicalPortraitFromRecord) {
+      return sharedCharacters.canonicalPortraitFromRecord(record);
+    }
     var sourceRecord = record && typeof record === "object" ? record : {};
     var portraitObject = (sourceRecord.portrait && typeof sourceRecord.portrait === "object") ? sourceRecord.portrait : null;
 
@@ -660,6 +639,9 @@
   }
 
   function portraitState(record) {
+    if (sharedCharacters.portraitState) {
+      return sharedCharacters.portraitState(record);
+    }
     if (!record) {
       return {
         source: DEFAULT_PORTRAIT,
@@ -685,6 +667,9 @@
   }
 
   function portraitMediaStyle(record, frameSize) {
+    if (sharedCharacters.portraitMediaStyle) {
+      return sharedCharacters.portraitMediaStyle(record);
+    }
     var state = portraitState(record);
     var model = portraitRenderModel({
       imageWidth: state.imageWidth,
@@ -1256,6 +1241,9 @@
           if (!db.objectStoreNames.contains(STORE_SETTINGS)) {
             db.createObjectStore(STORE_SETTINGS, { keyPath: "id" });
           }
+          if (!db.objectStoreNames.contains(STORE_LOCATIONS)) {
+            db.createObjectStore(STORE_LOCATIONS, { keyPath: "id" });
+          }
 
           if (event.oldVersion < 3 && db.objectStoreNames.contains("locations") && transaction) {
             var legacyLocationStore = transaction.objectStore("locations");
@@ -1293,110 +1281,45 @@
     return dbPromise;
   }
 
-  function isDataImageUrl(value) {
-    return typeof value === "string" && /^data:image\//i.test(value);
-  }
+  var lastPersistedCharacterIds = null;
 
-  function dataUrlToBlob(dataUrl) {
-    var parts = String(dataUrl || "").split(",");
-    if (parts.length < 2) {
-      return null;
-    }
-    var mimeMatch = parts[0].match(/^data:([^;]+);base64$/i);
-    if (!mimeMatch) {
-      return null;
-    }
-    try {
-      var binary = window.atob(parts[1]);
-      var length = binary.length;
-      var bytes = new Uint8Array(length);
-      for (var i = 0; i < length; i += 1) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-      return new Blob([bytes], { type: mimeMatch[1] || "application/octet-stream" });
-    } catch (_error) {
-      return null;
-    }
-  }
+  async function persistCharactersAndRelationships(state) {
+    var characters = Array.isArray(state.characters) ? state.characters : [];
+    var relationships = Array.isArray(state.relationships) ? state.relationships : [];
 
-  function blobToDataUrl(blob) {
-    return new Promise(function (resolve, reject) {
-      if (!(blob instanceof Blob)) {
-        resolve("");
-        return;
-      }
-      var reader = new FileReader();
-      reader.onload = function (event) {
-        resolve(String(event && event.target && event.target.result ? event.target.result : ""));
-      };
-      reader.onerror = function () {
-        reject(reader.error || new Error("Failed to read portrait blob."));
-      };
-      reader.readAsDataURL(blob);
-    });
-  }
-
-  async function serializeCharacterForStorage(character) {
-    var record = clone(character || {});
-    var portraitObject = record && record.portrait && typeof record.portrait === "object" ? clone(record.portrait) : null;
-    var portraitImage = portraitObject && typeof portraitObject.image === "string"
-      ? portraitObject.image
-      : (typeof record.portrait === "string" ? record.portrait : "");
-
-    if (isDataImageUrl(portraitImage)) {
-      var blob = dataUrlToBlob(portraitImage);
-      if (blob) {
-        if (portraitObject) {
-          portraitObject.image = PORTRAIT_BLOB_MARKER;
-          record.portrait = portraitObject;
-        } else {
-          record.portrait = PORTRAIT_BLOB_MARKER;
-        }
-        record.__portraitBlob = blob;
-      }
-    }
-
-    return record;
-  }
-
-  async function deserializeCharacterFromStorage(character) {
-    var record = Object.assign({}, character || {});
-    if (record.portrait && typeof record.portrait === "object") {
-      record.portrait = Object.assign({}, record.portrait);
-    }
-    var blob = record.__portraitBlob;
-    delete record.__portraitBlob;
-
-    if (blob instanceof Blob) {
-      var dataUrl = await blobToDataUrl(blob);
-      if (record.portrait && typeof record.portrait === "object" && record.portrait.image === PORTRAIT_BLOB_MARKER) {
-        record.portrait.image = dataUrl;
-      } else if (record.portrait === PORTRAIT_BLOB_MARKER) {
-        record.portrait = dataUrl;
-      }
-    } else if (record.portrait && typeof record.portrait === "object" && record.portrait.image === PORTRAIT_BLOB_MARKER) {
-      record.portrait.image = DEFAULT_PORTRAIT;
-    } else if (record.portrait === PORTRAIT_BLOB_MARKER) {
-      record.portrait = DEFAULT_PORTRAIT;
-    }
-
-    return record;
-  }
-
-  async function stateToDbPayload(state) {
-    var source = state && typeof state === "object" ? state : initialState();
-    var characters = await Promise.all((source.characters || []).map(serializeCharacterForStorage));
-
-    var timelines = characters.map(function (character) {
-      return {
-        id: character.id,
-        events: clone(character.timeline || [])
-      };
-    });
-
+    var currentIds = {};
     characters.forEach(function (character) {
-      delete character.timeline;
+      if (character && character.id) {
+        currentIds[character.id] = true;
+      }
     });
+
+    if (lastPersistedCharacterIds) {
+      var removedIds = Object.keys(lastPersistedCharacterIds).filter(function (id) { return !currentIds[id]; });
+      await Promise.all(removedIds.map(function (id) {
+        return sharedCharacters.deleteCharacterFromCampaignAtlas(id);
+      }));
+    }
+
+    await Promise.all(characters.map(function (character) {
+      return sharedCharacters.saveCharacterToCampaignAtlas(clone(character));
+    }));
+    await sharedCharacters.saveRelationships(clone(relationships));
+
+    lastPersistedCharacterIds = currentIds;
+  }
+
+  async function persistStateToIndexedDb(state) {
+    var source = state && typeof state === "object" ? state : initialState();
+
+    await persistCharactersAndRelationships(source);
+
+    var db = await openCampaignAtlasDb();
+    var transaction = db.transaction([STORE_ZONES, STORE_SESSIONS, STORE_SETTINGS], "readwrite");
+
+    var zoneStore = transaction.objectStore(STORE_ZONES);
+    var sessionsStore = transaction.objectStore(STORE_SESSIONS);
+    var settingsStore = transaction.objectStore(STORE_SETTINGS);
 
     var settings = {
       id: "app",
@@ -1419,101 +1342,50 @@
       extra[key] = clone(source[key]);
     });
 
-    return {
-      characters: characters,
-      relationships: clone(source.relationships || []),
-      zones: clone(source.zones || []),
-      timeline: timelines,
-      sessions: sessions,
-      settings: settings,
-      extra: { id: "extra", data: extra }
-    };
-  }
-
-  async function persistStateToIndexedDb(state) {
-    var db = await openCampaignAtlasDb();
-    var payload = await stateToDbPayload(state);
-    var transaction = db.transaction(
-      [STORE_CHARACTERS, STORE_RELATIONSHIPS, STORE_ZONES, STORE_TIMELINE, STORE_SESSIONS, STORE_SETTINGS],
-      "readwrite"
-    );
-
-    var characterStore = transaction.objectStore(STORE_CHARACTERS);
-    var relationshipStore = transaction.objectStore(STORE_RELATIONSHIPS);
-    var zoneStore = transaction.objectStore(STORE_ZONES);
-    var timelineStore = transaction.objectStore(STORE_TIMELINE);
-    var sessionsStore = transaction.objectStore(STORE_SESSIONS);
-    var settingsStore = transaction.objectStore(STORE_SETTINGS);
-
-    characterStore.clear();
-    relationshipStore.clear();
     zoneStore.clear();
-    timelineStore.clear();
-    sessionsStore.clear();
-    settingsStore.clear();
-
-    payload.characters.forEach(function (item) { characterStore.put(item); });
-    payload.relationships.forEach(function (item) { relationshipStore.put(item); });
-    payload.zones.forEach(function (item) { zoneStore.put(item); });
-    payload.timeline.forEach(function (item) { timelineStore.put(item); });
-    sessionsStore.put(payload.sessions);
-    settingsStore.put(payload.settings);
-    settingsStore.put(payload.extra);
+    (source.zones || []).forEach(function (item) { zoneStore.put(clone(item)); });
+    sessionsStore.put(sessions);
+    settingsStore.put(settings);
+    settingsStore.put({ id: "extra", data: extra });
 
     await transactionToPromise(transaction);
   }
 
   async function readStateFromIndexedDb() {
     var db = await openCampaignAtlasDb();
-    var transaction = db.transaction(
-      [STORE_CHARACTERS, STORE_RELATIONSHIPS, STORE_ZONES, STORE_TIMELINE, STORE_SESSIONS, STORE_SETTINGS],
-      "readonly"
-    );
+    var transaction = db.transaction([STORE_ZONES, STORE_SESSIONS, STORE_SETTINGS], "readonly");
 
-    var charactersReq = transaction.objectStore(STORE_CHARACTERS).getAll();
-    var relationshipsReq = transaction.objectStore(STORE_RELATIONSHIPS).getAll();
     var zonesReq = transaction.objectStore(STORE_ZONES).getAll();
-    var timelineReq = transaction.objectStore(STORE_TIMELINE).getAll();
     var sessionsReq = transaction.objectStore(STORE_SESSIONS).get("current");
     var settingsReq = transaction.objectStore(STORE_SETTINGS).get("app");
     var extraReq = transaction.objectStore(STORE_SETTINGS).get("extra");
 
-    var storedCharactersRawPromise = requestToPromise(charactersReq);
-    var storedRelationshipsPromise = requestToPromise(relationshipsReq);
     var storedZonesPromise = requestToPromise(zonesReq);
-    var storedTimelinePromise = requestToPromise(timelineReq);
     var storedSessionPromise = requestToPromise(sessionsReq);
     var storedSettingsPromise = requestToPromise(settingsReq);
     var storedExtraPromise = requestToPromise(extraReq);
 
     await transactionToPromise(transaction);
 
-    var storedCharactersRaw = await storedCharactersRawPromise;
-    var storedRelationships = await storedRelationshipsPromise;
     var storedZones = await storedZonesPromise;
-    var storedTimeline = await storedTimelinePromise;
     var storedSession = await storedSessionPromise;
     var storedSettings = await storedSettingsPromise;
     var storedExtra = await storedExtraPromise;
 
+    var atlas = await sharedCharacters.readCampaignAtlasState();
+
     var state = initialState();
-    var timelineByCharacter = {};
-    (storedTimeline || []).forEach(function (entry) {
-      timelineByCharacter[entry.id] = clone(entry.events || []);
-    });
+    state.characters = (atlas.characters || []).map(normalizeCharacterRecord);
+    state.relationships = clone(atlas.relationships || []);
 
-    var storedCharacters = await Promise.all((storedCharactersRaw || []).map(deserializeCharacterFromStorage));
-    state.characters = storedCharacters.map(function (character) {
-      var next = Object.assign({}, character);
-      if (timelineByCharacter[next.id] !== undefined) {
-        next.timeline = clone(timelineByCharacter[next.id]);
+    var currentIds = {};
+    state.characters.forEach(function (character) {
+      if (character && character.id) {
+        currentIds[character.id] = true;
       }
-      return normalizeCharacterRecord(next);
     });
+    lastPersistedCharacterIds = currentIds;
 
-    if (storedRelationships && storedRelationships.length) {
-      state.relationships = clone(storedRelationships);
-    }
     if (storedZones && storedZones.length) {
       state.zones = clone(storedZones);
     }
@@ -1619,21 +1491,9 @@
       title: "Melbourne by Night",
       session: "Session 18 - Red Ledger",
       notes: ["Prep Elysium confrontation", "Track coterie influence"],
-      characters: [
-        { id: "prince", name: "Prince Taylor", clan: "Brujah", sect: "Camarilla", status: "Active", concept: "Domain monarch", generation: "9", sire: "Helena Arkwright", predatorType: "Extortionist", ambition: "Keep Melbourne stable", desire: "Expose conspirators", convictions: "Order before mercy", touchstones: "Old Parliament House keeper", bio: "A feared prince balancing authority and survival.", timeline: "1882 born\n1921 embraced", gmNotes: "Never make him one-note.", tags: ["Prince", "Power"], x: 760, y: 150, portrait: PORTRAITS[13] },
-        { id: "alexandra", name: "Seneschal Alexandra", clan: "Toreador", sect: "Camarilla", status: "Active", concept: "Court architect", generation: "10", sire: "Armand de Vries", predatorType: "Siren", ambition: "Preserve influence", desire: "Control court narratives", convictions: "Beauty is leverage", touchstones: "Opera house director", bio: "Elegant strategist and social engineer.", timeline: "1898 embraced", gmNotes: "Information broker.", tags: ["Court"], x: 320, y: 160, portrait: PORTRAITS[19] },
-        { id: "whitlock", name: "Primogen James Whitlock", clan: "Ventrue", sect: "Camarilla", status: "Active", concept: "Industrial baron", generation: "8", sire: "Edmund Vale", predatorType: "Scene Queen", ambition: "Expand authority", desire: "Contain rivals", convictions: "Power rewards discipline", touchstones: "Family legal counsel", bio: "Old money, older loyalties.", timeline: "1864 embraced", gmNotes: "Political pressure point.", tags: ["Primogen"], x: 760, y: 360, portrait: PORTRAITS[20] },
-        { id: "amelia", name: "Dr Amelia Rhodes", clan: "Malkavian", sect: "Anarch", status: "Missing", concept: "Prophetic surgeon", generation: "11", sire: "Nico Bell", predatorType: "Bagger", ambition: "Decode prophecy", desire: "Find witness", convictions: "Truth over comfort", touchstones: "Emergency ward mentor", bio: "Brilliant mind haunted by visions.", timeline: "1999 embraced", gmNotes: "Use as mystery anchor.", tags: ["Mystic"], x: 760, y: 610, portrait: PORTRAITS[22] }
-      ],
-      zones: [
-        { id: "zone-council", name: "Primogen Council", x: 480, y: 230, width: 1000, height: 220, color: "#d10d40", opacity: 0.16, borderThickness: 2, description: "Inner political ring", lock: false, hidden: false },
-        { id: "zone-coterie", name: "Player Coterie", x: 520, y: 770, width: 860, height: 250, color: "#8b1e46", opacity: 0.2, borderThickness: 2, description: "Player operations", lock: false, hidden: false }
-      ],
-      relationships: [
-        { id: "r1", from: "alexandra", to: "prince", category: "Romantic Relations", type: "Partner", color: "#ff6fae", thickness: 2, style: "solid", arrow: "none", labelColor: "#ffffff", opacity: 1, visible: true },
-        { id: "r2", from: "whitlock", to: "prince", category: "Vampire Relations", type: "Sire", color: "#d10d40", thickness: 2, style: "solid", arrow: "end", labelColor: "#ffffff", opacity: 1, visible: true },
-        { id: "r3", from: "amelia", to: "whitlock", category: "Vampire Relations", type: "Sire", color: "#d10d40", thickness: 2, style: "solid", arrow: "end", labelColor: "#ffffff", opacity: 1, visible: true }
-      ],
+      characters: [],
+      zones: [],
+      relationships: [],
       relationshipCategories: clone(DEFAULT_RELATIONSHIP_CATEGORIES),
       tagGroups: [
         { id: "tg1", name: "Politics", tags: [{ id: "t1", name: "Prince", color: "#d10d40", icon: "♛", description: "Ruling authority", visible: true }, { id: "t2", name: "Council", color: "#8b1e46", icon: "◎", description: "Council aligned", visible: true }] }

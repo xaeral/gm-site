@@ -65,5 +65,5 @@ app.get("/", (_req, res) => {
 app.use(express.static(__dirname));
 
 app.listen(PORT, () => {
-  console.log(`GM Dashboard running at http://localhost:${PORT}`);
+  console.log(`Chronicle Codex running at http://localhost:${PORT}`);
 });

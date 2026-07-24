@@ -113,7 +113,7 @@ $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add($prefix)
 $listener.Start()
 
-Write-Host "GM Dashboard local proxy running at $prefix"
+Write-Host "Chronicle Codex local proxy running at $prefix"
 Write-Host "Press Ctrl+C to stop."
 
 try {
