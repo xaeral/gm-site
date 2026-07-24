@@ -4,9 +4,11 @@
   }
 
   var DB_NAME = "ChronicleNotebook";
-  var DB_VERSION = 1;
+  var DB_VERSION = 2;
   var STORE_FOLDERS = "folders";
-  var STORE_NOTES = "notes";
+  var STORE_NOTE_META = "noteMetadata";
+  var STORE_NOTE_BODY = "noteBodies";
+  var STORE_NOTE_LEGACY = "notes";
   var DEFAULT_FOLDER_DEFS = [
     { id: "campaign-notes", title: "Campaign Notes", kind: "system", order: 0, collapsed: false },
     { id: "session-notes", title: "Session Notes", kind: "system", order: 1, collapsed: false },
@@ -44,12 +46,40 @@
       var request = window.indexedDB.open(DB_NAME, DB_VERSION);
       request.onupgradeneeded = function (event) {
         var db = event.target.result;
+        var legacyNotesStore = null;
+
         if (!db.objectStoreNames.contains(STORE_FOLDERS)) {
           db.createObjectStore(STORE_FOLDERS, { keyPath: "id" });
         }
-        if (!db.objectStoreNames.contains(STORE_NOTES)) {
-          db.createObjectStore(STORE_NOTES, { keyPath: "id" });
+        if (!db.objectStoreNames.contains(STORE_NOTE_META)) {
+          db.createObjectStore(STORE_NOTE_META, { keyPath: "id" });
         }
+        if (!db.objectStoreNames.contains(STORE_NOTE_BODY)) {
+          db.createObjectStore(STORE_NOTE_BODY, { keyPath: "id" });
+        }
+        if (db.objectStoreNames.contains(STORE_NOTE_LEGACY)) {
+          legacyNotesStore = event.target.transaction.objectStore(STORE_NOTE_LEGACY);
+        }
+
+        if (!legacyNotesStore) {
+          return;
+        }
+
+        var metaStore = event.target.transaction.objectStore(STORE_NOTE_META);
+        var bodyStore = event.target.transaction.objectStore(STORE_NOTE_BODY);
+        var cursorRequest = legacyNotesStore.openCursor();
+        cursorRequest.onsuccess = function (cursorEvent) {
+          var cursor = cursorEvent.target.result;
+          if (!cursor) {
+            return;
+          }
+          var source = cursor.value || {};
+          var normalizedMeta = normalizeNoteMetadata(source, source.folderId);
+          var normalizedBody = normalizeNoteContent(source);
+          metaStore.put(normalizedMeta);
+          bodyStore.put(normalizedBody);
+          cursor.continue();
+        };
       };
       request.onsuccess = function () { resolve(request.result); };
       request.onerror = function () { reject(request.error || new Error("Unable to open ChronicleNotebook IndexedDB.")); };
@@ -62,6 +92,18 @@
       return orderDiff;
     }
     return String(a.title || "").localeCompare(String(b.title || ""));
+  }
+
+  function previewFromHtml(html) {
+    var parser = new DOMParser();
+    var doc = parser.parseFromString(String(html || ""), "text/html");
+    doc.querySelectorAll("script, style, noscript").forEach(function (el) { el.remove(); });
+    var text = (doc.body && doc.body.textContent) ? doc.body.textContent : "";
+    text = text.replace(/\s+/g, " ").trim();
+    if (!text) {
+      return "";
+    }
+    return text.length > 180 ? text.slice(0, 177) + "..." : text;
   }
 
   function normalizeFolder(folder, index) {
@@ -78,69 +120,88 @@
     };
   }
 
-  function normalizeNote(note, folderId) {
+  function normalizeNoteMetadata(note, folderId) {
     var source = note && typeof note === "object" ? note : {};
     var now = new Date().toISOString();
-    var timelineEvents = Array.isArray(source.timelineEvents) ? source.timelineEvents.slice() : [];
+    var previewText = String(source.previewText || source.preview || "").trim();
+    if (!previewText && source.bodyHtml) {
+      previewText = previewFromHtml(source.bodyHtml);
+    }
+    var characterIds = Array.isArray(source.characterIds) ? source.characterIds.map(String) : [];
+    var locationIds = Array.isArray(source.locationIds) ? source.locationIds.map(String) : [];
+    var tags = Array.isArray(source.tags) ? source.tags.map(String) : [];
+    var timelineEvents = Array.isArray(source.timelineEvents) ? clone(source.timelineEvents) : [];
     return {
       id: String(source.id || "note-" + Date.now() + "-" + Math.floor(Math.random() * 100000)),
       folderId: String(source.folderId || folderId || "campaign-notes"),
       title: String(source.title || "Untitled Note"),
-      bodyHtml: String(source.bodyHtml || source.body || "<p></p>"),
       sessionLabel: String(source.sessionLabel || ""),
-      characterIds: Array.isArray(source.characterIds) ? source.characterIds.map(String) : [],
-      locationIds: Array.isArray(source.locationIds) ? source.locationIds.map(String) : [],
-      tags: Array.isArray(source.tags) ? source.tags.map(String) : [],
+      characterIds: characterIds,
+      locationIds: locationIds,
+      tags: tags,
       pinned: Boolean(source.pinned),
       archived: Boolean(source.archived),
-      attachments: Array.isArray(source.attachments) ? clone(source.attachments) : [],
-      timelineEvents: timelineEvents.map(function (event) {
-        return {
-          id: String(event.id || "timeline-link-" + Date.now()),
-          characterId: String(event.characterId || ""),
-          year: String(event.year || ""),
-          title: String(event.title || ""),
-          description: String(event.description || "")
-        };
+      previewText: previewText,
+      searchText: buildSearchText({
+        title: source.title,
+        previewText: previewText,
+        sessionLabel: source.sessionLabel,
+        tags: tags,
+        characterIds: characterIds,
+        locationIds: locationIds,
+        timelineEvents: timelineEvents,
+        folderId: source.folderId || folderId || "campaign-notes"
       }),
+      timelineEvents: timelineEvents,
       createdAt: String(source.createdAt || now),
       updatedAt: String(source.updatedAt || now)
     };
   }
 
-  function stripHtml(html) {
-    var parser = new DOMParser();
-    var doc = parser.parseFromString(String(html || ""), "text/html");
-    doc.querySelectorAll("script, style, noscript").forEach(function (el) { el.remove(); });
-    var text = (doc.body && doc.body.textContent) ? doc.body.textContent : "";
-    return text.replace(/\s+/g, " ").trim();
+  function normalizeNoteContent(note) {
+    var source = note && typeof note === "object" ? note : {};
+    var now = new Date().toISOString();
+    return {
+      id: String(source.id || "note-" + Date.now() + "-" + Math.floor(Math.random() * 100000)),
+      bodyHtml: String(source.bodyHtml || source.body || "<p></p>"),
+      attachments: Array.isArray(source.attachments) ? clone(source.attachments) : [],
+      timelineEvents: Array.isArray(source.timelineEvents) ? clone(source.timelineEvents) : [],
+      createdAt: String(source.createdAt || now),
+      updatedAt: String(source.updatedAt || now)
+    };
   }
 
-  function noteSearchText(note, folderTitle) {
+  function buildSearchText(note) {
     var source = note || {};
-    var textParts = [
+    return [
       String(source.title || ""),
-      stripHtml(source.bodyHtml || ""),
+      String(source.previewText || ""),
       String(source.sessionLabel || ""),
-      String(folderTitle || ""),
-      (Array.isArray(source.tags) ? source.tags.join(" ") : ""),
-      (Array.isArray(source.characterIds) ? source.characterIds.join(" ") : ""),
-      (Array.isArray(source.locationIds) ? source.locationIds.join(" ") : ""),
-      (Array.isArray(source.timelineEvents)
+      String(source.folderTitle || source.folderId || ""),
+      Array.isArray(source.tags) ? source.tags.join(" ") : "",
+      Array.isArray(source.characterIds) ? source.characterIds.join(" ") : "",
+      Array.isArray(source.locationIds) ? source.locationIds.join(" ") : "",
+      Array.isArray(source.timelineEvents)
         ? source.timelineEvents.map(function (event) {
             return [event.characterId, event.year, event.title, event.description].join(" ");
           }).join(" ")
-        : "")
-    ];
-    return textParts.join(" ").toLowerCase();
+        : ""
+    ].join(" ").toLowerCase();
   }
 
   function notePreview(note) {
-    var text = stripHtml(note.bodyHtml || "");
+    if (!note) {
+      return "No preview available.";
+    }
+    var preview = String(note.previewText || "").trim();
+    if (preview) {
+      return preview;
+    }
+    var text = String(note.bodyHtml || "").trim();
     if (!text) {
       return "No preview available.";
     }
-    return text.length > 180 ? text.slice(0, 177) + "..." : text;
+    return previewFromHtml(text) || "No preview available.";
   }
 
   async function ensureSeedData(db) {
@@ -158,12 +219,12 @@
   async function readNotebookState() {
     var db = await openNotebookDb();
     await ensureSeedData(db);
-    var txn = db.transaction([STORE_FOLDERS, STORE_NOTES], "readonly");
+    var txn = db.transaction([STORE_FOLDERS, STORE_NOTE_META], "readonly");
     var foldersPromise = requestToPromise(txn.objectStore(STORE_FOLDERS).getAll());
-    var notesPromise = requestToPromise(txn.objectStore(STORE_NOTES).getAll());
+    var notesPromise = requestToPromise(txn.objectStore(STORE_NOTE_META).getAll());
     await transactionToPromise(txn);
     var folders = (await foldersPromise || []).map(normalizeFolder).sort(sortByOrderThenName);
-    var notes = (await notesPromise || []).map(function (note) { return normalizeNote(note); }).sort(function (a, b) {
+    var notes = (await notesPromise || []).map(function (note) { return normalizeNoteMetadata(note); }).sort(function (a, b) {
       if (a.pinned !== b.pinned) {
         return a.pinned ? -1 : 1;
       }
@@ -175,6 +236,37 @@
     };
   }
 
+  async function readNoteMetadata(noteId) {
+    if (!noteId) {
+      return null;
+    }
+    var db = await openNotebookDb();
+    var txn = db.transaction([STORE_NOTE_META], "readonly");
+    var note = await requestToPromise(txn.objectStore(STORE_NOTE_META).get(String(noteId)));
+    await transactionToPromise(txn);
+    return note ? normalizeNoteMetadata(note) : null;
+  }
+
+  async function readNoteContent(noteId) {
+    if (!noteId) {
+      return null;
+    }
+    var db = await openNotebookDb();
+    var txn = db.transaction([STORE_NOTE_BODY], "readonly");
+    var content = await requestToPromise(txn.objectStore(STORE_NOTE_BODY).get(String(noteId)));
+    await transactionToPromise(txn);
+    return content ? normalizeNoteContent(content) : null;
+  }
+
+  async function readNoteById(noteId) {
+    var meta = await readNoteMetadata(noteId);
+    if (!meta) {
+      return null;
+    }
+    var content = await readNoteContent(noteId);
+    return Object.assign({}, meta, content || {});
+  }
+
   async function saveFolder(folder) {
     var db = await openNotebookDb();
     var txn = db.transaction([STORE_FOLDERS], "readwrite");
@@ -184,32 +276,41 @@
 
   async function saveNote(note, folderId) {
     var db = await openNotebookDb();
-    var txn = db.transaction([STORE_NOTES], "readwrite");
-    var normalized = normalizeNote(note, folderId);
-    normalized.updatedAt = new Date().toISOString();
-    if (!normalized.createdAt) {
-      normalized.createdAt = normalized.updatedAt;
+    var txn = db.transaction([STORE_NOTE_META, STORE_NOTE_BODY], "readwrite");
+    var normalizedMeta = normalizeNoteMetadata(note, folderId);
+    var normalizedBody = normalizeNoteContent(note);
+    normalizedMeta.updatedAt = new Date().toISOString();
+    normalizedBody.updatedAt = normalizedMeta.updatedAt;
+    if (!normalizedMeta.createdAt) {
+      normalizedMeta.createdAt = normalizedMeta.updatedAt;
     }
-    txn.objectStore(STORE_NOTES).put(normalized);
+    if (!normalizedBody.createdAt) {
+      normalizedBody.createdAt = normalizedBody.updatedAt;
+    }
+    normalizedMeta.previewText = previewFromHtml(normalizedBody.bodyHtml || "");
+    normalizedMeta.searchText = buildSearchText(normalizedMeta);
+    txn.objectStore(STORE_NOTE_META).put(normalizedMeta);
+    txn.objectStore(STORE_NOTE_BODY).put(normalizedBody);
     await transactionToPromise(txn);
-    return normalized;
+    return Object.assign({}, normalizedMeta, normalizedBody);
   }
 
   async function deleteNote(noteId) {
     var db = await openNotebookDb();
-    var txn = db.transaction([STORE_NOTES], "readwrite");
-    txn.objectStore(STORE_NOTES).delete(String(noteId));
+    var txn = db.transaction([STORE_NOTE_META, STORE_NOTE_BODY], "readwrite");
+    var key = String(noteId);
+    txn.objectStore(STORE_NOTE_META).delete(key);
+    txn.objectStore(STORE_NOTE_BODY).delete(key);
     await transactionToPromise(txn);
   }
 
   async function moveNote(noteId, folderId) {
-    var state = await readNotebookState();
-    var note = state.notes.find(function (entry) { return entry.id === noteId; });
-    if (!note) {
+    var meta = await readNoteMetadata(noteId);
+    if (!meta) {
       return null;
     }
-    note.folderId = String(folderId || "campaign-notes");
-    return saveNote(note);
+    meta.folderId = String(folderId || "campaign-notes");
+    return saveNote(meta, meta.folderId);
   }
 
   function getFolderById(state, folderId) {
@@ -218,7 +319,11 @@
 
   function getNoteSearchText(note, state) {
     var folder = getFolderById(state || {}, note.folderId);
-    return noteSearchText(note, folder && folder.title);
+    var source = Object.assign({}, note || {});
+    if (folder && folder.title) {
+      source.folderTitle = folder.title;
+    }
+    return buildSearchText(source);
   }
 
   function filterNotes(notes, state, filters, searchTerm) {
@@ -261,21 +366,26 @@
   }
 
   async function createNote(folderId) {
-    var note = normalizeNote({
+    var now = new Date().toISOString();
+    var note = {
+      id: "note-" + Date.now() + "-" + Math.floor(Math.random() * 1000),
       folderId: folderId || "campaign-notes",
       title: "Untitled Note",
-      bodyHtml: "<p></p>",
       sessionLabel: "",
       characterIds: [],
       locationIds: [],
       tags: [],
       pinned: false,
       archived: false,
+      previewText: "",
+      timelineEvents: [],
+      bodyHtml: "<p></p>",
       attachments: [],
-      timelineEvents: []
-    }, folderId || "campaign-notes");
+      createdAt: now,
+      updatedAt: now
+    };
     await saveNote(note, folderId);
-    return note;
+    return normalizeNoteMetadata(note, folderId);
   }
 
   function getDefaultFolderId() {
@@ -289,6 +399,9 @@
     clone: clone,
     openNotebookDb: openNotebookDb,
     readNotebookState: readNotebookState,
+    readNoteMetadata: readNoteMetadata,
+    readNoteContent: readNoteContent,
+    readNoteById: readNoteById,
     saveFolder: saveFolder,
     saveNote: saveNote,
     deleteNote: deleteNote,
@@ -296,10 +409,10 @@
     createFolder: createFolder,
     createNote: createNote,
     notePreview: notePreview,
-    stripHtml: stripHtml,
     getFolderById: getFolderById,
     getNoteSearchText: getNoteSearchText,
     filterNotes: filterNotes,
-    getDefaultFolderId: getDefaultFolderId
+    getDefaultFolderId: getDefaultFolderId,
+    previewFromHtml: previewFromHtml
   };
 })();

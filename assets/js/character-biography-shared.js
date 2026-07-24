@@ -167,17 +167,17 @@
       return "";
     }
     if (character.bioHtml && String(character.bioHtml).trim()) {
-      return String(character.bioHtml);
+      return String(character.bioHtml).replace(/<img(?![^>]*\bloading=)/gi, '<img loading="lazy" decoding="async"');
     }
     var plainText = String(character.bio || "").trim();
     if (!plainText) {
       return "<p>No biography added yet.</p>";
     }
-    return "<p>" + plainText
+    return ("<p>" + plainText
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/\n/g, "<br>") + "</p>";
+      .replace(/\n/g, "<br>") + "</p>").replace(/<img(?![^>]*\bloading=)/gi, '<img loading="lazy" decoding="async"');
   }
 
   function applyCharacterTimeline(characters, timelineEntries) {

@@ -144,6 +144,8 @@
 
     var editorRef = useRef(null);
     var saveTimerRef = useRef(null);
+    var noteBodyCacheRef = useRef({});
+    var prefetchRunnerRef = useRef(null);
 
     useEffect(function () {
       var cancelled = false;
@@ -193,12 +195,65 @@
       if (!selectedNoteId) {
         return;
       }
-      var note = (state.notes || []).find(function (entry) { return entry.id === selectedNoteId; });
-      if (note) {
-        setDraft(clone(note));
-      }
       setMentionState(null);
-    }, [selectedNoteId, state.notes.length]);
+      var cachedNote = noteBodyCacheRef.current[selectedNoteId];
+      if (cachedNote) {
+        setDraft(clone(cachedNote));
+        return;
+      }
+      setDraft(null);
+      var cancelled = false;
+      notebook.readNoteById(selectedNoteId).then(function (note) {
+        if (cancelled || !note || note.id !== selectedNoteId) {
+          return;
+        }
+        noteBodyCacheRef.current[note.id] = clone(note);
+        setDraft(clone(note));
+      });
+      return function () {
+        cancelled = true;
+      };
+    }, [selectedNoteId]);
+
+    useEffect(function () {
+      if (!state.notes || !state.notes.length) {
+        return;
+      }
+      var ids = state.notes.map(function (note) { return note.id; }).filter(function (id) {
+        return !noteBodyCacheRef.current[id];
+      });
+      if (!ids.length) {
+        return;
+      }
+
+      var cancelled = false;
+      var schedule = window.requestIdleCallback
+        ? function (callback) { return window.requestIdleCallback(callback, { timeout: 1200 }); }
+        : function (callback) { return window.setTimeout(callback, 0); };
+
+      function pump(queue) {
+        if (cancelled || !queue.length) {
+          return;
+        }
+        var batch = queue.splice(0, 4);
+        Promise.all(batch.map(function (id) {
+          return notebook.readNoteById(id).then(function (note) {
+            if (note) {
+              noteBodyCacheRef.current[id] = clone(note);
+            }
+          }).catch(function () { return null; });
+        })).then(function () {
+          if (!cancelled && queue.length) {
+            schedule(function () { pump(queue); });
+          }
+        });
+      }
+
+      schedule(function () { pump(ids.slice()); });
+      return function () {
+        cancelled = true;
+      };
+    }, [state.notes.length]);
 
     useEffect(function () {
       if (!draft) {
@@ -211,19 +266,36 @@
         saveTimerRef.current = null;
         notebook.saveNote(draft, draft.folderId).then(function (savedNote) {
           setState(function (current) {
+            var nextSummary = {
+              id: savedNote.id,
+              folderId: savedNote.folderId,
+              title: savedNote.title,
+              sessionLabel: savedNote.sessionLabel,
+              characterIds: savedNote.characterIds || [],
+              locationIds: savedNote.locationIds || [],
+              tags: savedNote.tags || [],
+              pinned: Boolean(savedNote.pinned),
+              archived: Boolean(savedNote.archived),
+              previewText: savedNote.previewText || "",
+              searchText: savedNote.searchText || "",
+              timelineEvents: savedNote.timelineEvents || [],
+              createdAt: savedNote.createdAt,
+              updatedAt: savedNote.updatedAt
+            };
             var found = false;
             var notes = (current.notes || []).map(function (note) {
               if (note.id === savedNote.id) {
                 found = true;
-                return savedNote;
+                return nextSummary;
               }
               return note;
             });
             if (!found) {
-              notes.push(savedNote);
+              notes.push(nextSummary);
             }
             return { folders: current.folders, notes: notes };
           });
+          noteBodyCacheRef.current[savedNote.id] = clone(savedNote);
           setStatus("Draft saved.");
         });
       }, 250);
@@ -322,6 +394,7 @@
       var note = await notebook.createNote(folderId || notebook.getDefaultFolderId());
       var nextState = await notebook.readNotebookState();
       setState({ folders: nextState.folders || [], notes: nextState.notes || [] });
+      noteBodyCacheRef.current[note.id] = null;
       setSelectedNoteId(note.id);
       setStatus("New note created.");
     }
@@ -541,7 +614,7 @@
               </div>
               ${folder.collapsed ? null : html`<div className="notebook-note-stack">
                 ${folderNotes.length ? folderNotes.map(function (note) {
-                  var noteText = stripHtml(note.bodyHtml || "");
+                  var noteText = note.previewText || "No preview available.";
                   return html`<button
                     type="button"
                     key=${note.id}
@@ -674,7 +747,7 @@
               </div>` : null}
             </section>
           </div>
-        ` : html`<div className="profile-empty">No note selected.</div>`}
+        ` : selectedNoteId ? html`<div className="profile-empty">Loading note content...</div>` : html`<div className="profile-empty">No note selected.</div>`}
       </section>
 
       <datalist id="notebook-sessions">
