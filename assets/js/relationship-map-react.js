@@ -68,6 +68,205 @@
     "Thin-Blood"
   ];
 
+  var RELATIONSHIP_TYPE_STYLE_OPTIONS = ["solid", "dashed", "dotted", "chain", "droplets"];
+  var RELATIONSHIP_ROUTING_MODE_OPTIONS = ["auto", "straight", "curved"];
+
+  var DEFAULT_RELATIONSHIP_CATEGORIES = [
+    {
+      id: "cat-vampire-relations",
+      name: "Vampire Relations",
+      color: "#7a3db8",
+      types: [
+        { id: "type-sire", name: "Sire", label: "Sire", color: "#7a3db8", width: 2, style: "solid", animated: false, arrow: true },
+        { id: "type-touchstone", name: "Touchstone", label: "Touchstone", color: "#d4af37", width: 2, style: "solid", animated: false, arrow: true },
+        { id: "type-blood-bond", name: "Blood Bond", label: "Blood Bond", color: "#b80f2a", width: 2, style: "chain", animated: false, arrow: true },
+        { id: "type-coterie", name: "Coterie", label: "Coterie", color: "#7a3db8", width: 1, style: "solid", animated: false, arrow: false },
+        { id: "type-blood-source-of", name: "Blood Source Of", label: "Blood Source Of", color: "#d10d40", width: 3, style: "droplets", animated: true, arrow: false }
+      ]
+    },
+    {
+      id: "cat-blood-relations",
+      name: "Blood Relations",
+      color: "#f28c28",
+      types: [
+        { id: "type-parent", name: "Parent", label: "Parent", color: "#f28c28", width: 2, style: "solid", animated: false, arrow: false },
+        { id: "type-child", name: "Child", label: "Child", color: "#f28c28", width: 2, style: "solid", animated: false, arrow: true },
+        { id: "type-sibling", name: "Sibling", label: "Sibling", color: "#ffbf00", width: 2, style: "solid", animated: false, arrow: false },
+        { id: "type-relative", name: "Relative", label: "Relative", color: "#f28c28", width: 1, style: "dotted", animated: false, arrow: false }
+      ]
+    },
+    {
+      id: "cat-social-relations",
+      name: "Social Relations",
+      color: "#2e6ddf",
+      types: [
+        { id: "type-knows-each-other", name: "Knows each other", label: "Knows each other", color: "#8a8f99", width: 1, style: "solid", animated: false, arrow: false },
+        { id: "type-friend", name: "Friend", label: "Friend", color: "#2e6ddf", width: 2, style: "solid", animated: false, arrow: false },
+        { id: "type-enemy", name: "Enemy", label: "Enemy", color: "#d10d40", width: 2, style: "dashed", animated: false, arrow: false },
+        { id: "type-rival", name: "Rival", label: "Rival", color: "#ff7f50", width: 2, style: "dashed", animated: false, arrow: false }
+      ]
+    },
+    {
+      id: "cat-romantic-relations",
+      name: "Romantic Relations",
+      color: "#ff6fae",
+      types: [
+        { id: "type-partner", name: "Partner", label: "Partner", color: "#ff6fae", width: 2, style: "solid", animated: true, arrow: false },
+        { id: "type-ex", name: "Ex", label: "Ex", color: "#d100b9", width: 2, style: "dashed", animated: false, arrow: false },
+        { id: "type-crush-on", name: "Crush On", label: "Crush On", color: "#ffb6d8", width: 2, style: "dotted", animated: true, arrow: true }
+      ]
+    },
+    {
+      id: "cat-psychological-leverage",
+      name: "Psychological & Leverage",
+      color: "#7a3db8",
+      types: [
+        { id: "type-fears", name: "Fears", label: "Fears", color: "#7a3db8", width: 2, style: "dotted", animated: true, arrow: true },
+        { id: "type-suspicious-of", name: "Suspicious Of", label: "Suspicious", color: "#8f5ae6", width: 2, style: "dotted", animated: false, arrow: true },
+        { id: "type-knows-secret-of", name: "Knows Secret Of", label: "Knows Secret", color: "#4b0082", width: 2, style: "solid", animated: false, arrow: true },
+        { id: "type-manipulates", name: "Manipulates", label: "Manipulates", color: "#d10d40", width: 2, style: "dashed", animated: true, arrow: false },
+        { id: "type-owes-debt", name: "Owes Debt", label: "Owes debt", color: "#f28c28", width: 1, style: "solid", animated: false, arrow: true },
+        { id: "type-protective-of", name: "Protective Of", label: "Protective", color: "#2e6ddf", width: 2, style: "solid", animated: false, arrow: true },
+        { id: "type-obsessed-with", name: "Obsessed With", label: "Obsessed", color: "#ff6fae", width: 2, style: "dashed", animated: true, arrow: false },
+        { id: "type-admires", name: "Admires", label: "Admires", color: "#2e6ddf", width: 2, style: "solid", animated: false, arrow: true }
+      ]
+    },
+    {
+      id: "cat-political-relations",
+      name: "Political Relations",
+      color: "#2f9d56",
+      types: [
+        { id: "type-ally", name: "Ally", label: "Ally", color: "#2f9d56", width: 2, style: "solid", animated: false, arrow: false },
+        { id: "type-influence", name: "Influence", label: "Influence", color: "#d4af37", width: 1, style: "dashed", animated: false, arrow: true },
+        { id: "type-blackmailing", name: "Blackmailing", label: "Blackmailing", color: "#d10d40", width: 2, style: "dashed", animated: true, arrow: true }
+      ]
+    }
+  ];
+
+  function makeRelationshipUiId(prefix) {
+    return String(prefix || "id") + "-" + Date.now() + "-" + Math.floor(Math.random() * 1000);
+  }
+
+  function makeRelationshipTypeDecoration() {
+    return {
+      svgPattern: "",
+      animatedFlow: false,
+      arrowheads: "single",
+      icons: [],
+      curved: false,
+      strength: 1,
+      conditionalColor: "",
+      customLabelTemplate: "",
+      visibilityFilter: ""
+    };
+  }
+
+  function normalizeRelationshipType(typeInput, categoryColor) {
+    var source = typeInput && typeof typeInput === "object" ? typeInput : { name: String(typeInput || "Connection") };
+    var typeName = String(source.name || source.type || "Connection").trim() || "Connection";
+    var rawStyle = String(source.style || "solid").toLowerCase();
+    var normalizedStyle = RELATIONSHIP_TYPE_STYLE_OPTIONS.indexOf(rawStyle) >= 0 ? rawStyle : "solid";
+    var label = String(source.label || source.displayLabel || typeName).trim() || typeName;
+    var color = safeHexColor(source.color, safeHexColor(categoryColor, "#d10d40"));
+    var width = Math.max(1, Math.min(8, Number(source.width) || Number(source.thickness) || 2));
+    var arrow = typeof source.arrow === "boolean" ? source.arrow : (String(source.arrow || "").toLowerCase() === "end");
+    var decoration = Object.assign(makeRelationshipTypeDecoration(), source.decoration || {});
+    return {
+      id: String(source.id || makeRelationshipUiId("rel-type")).trim(),
+      name: typeName,
+      label: label,
+      color: color,
+      width: width,
+      style: normalizedStyle,
+      animated: Boolean(source.animated),
+      arrow: Boolean(arrow),
+      decoration: decoration
+    };
+  }
+
+  function normalizeRelationshipCategories(rawCategories) {
+    var source = Array.isArray(rawCategories) && rawCategories.length ? rawCategories : DEFAULT_RELATIONSHIP_CATEGORIES;
+    return source.map(function (entry, index) {
+      var category = entry && typeof entry === "object" ? entry : {};
+      var name = String(category.name || "Category " + (index + 1)).trim() || ("Category " + (index + 1));
+      var color = safeHexColor(category.color, "#d10d40");
+      var types = Array.isArray(category.types) && category.types.length
+        ? category.types.map(function (typeItem) { return normalizeRelationshipType(typeItem, color); })
+        : [normalizeRelationshipType({ name: "Connection", label: "Connection", color: color }, color)];
+      return {
+        id: String(category.id || makeRelationshipUiId("rel-cat")).trim(),
+        name: name,
+        color: color,
+        types: types
+      };
+    });
+  }
+
+  function flattenRelationshipTypes(categories) {
+    var map = {};
+    (categories || []).forEach(function (category) {
+      (category.types || []).forEach(function (typeItem) {
+        map[typeItem.id] = { category: category, type: typeItem };
+      });
+    });
+    return map;
+  }
+
+  function relationshipTypeDefaultsFromCategory(categories, categoryRef, typeRef) {
+    var available = normalizeRelationshipCategories(categories);
+    var category = available.find(function (entry) { return entry.id === categoryRef || entry.name === categoryRef; }) || available[0];
+    var type = (category.types || []).find(function (entry) {
+      return entry.id === typeRef || entry.name === typeRef || entry.label === typeRef;
+    }) || category.types[0] || normalizeRelationshipType({ name: "Connection" }, category.color);
+    return {
+      category: category.name,
+      categoryId: category.id,
+      type: type.name,
+      typeId: type.id,
+      displayLabel: type.label,
+      color: safeHexColor(type.color, category.color),
+      thickness: Math.max(1, Math.min(8, Number(type.width) || 2)),
+      style: type.style || "solid",
+      animated: Boolean(type.animated),
+      arrow: type.arrow ? "end" : "none",
+      routingMode: "auto",
+      lineMeta: Object.assign(makeRelationshipTypeDecoration(), type.decoration || {})
+    };
+  }
+
+  function normalizeRelationships(rawRelationships, categories) {
+    var list = Array.isArray(rawRelationships) ? rawRelationships : [];
+    var availableCategories = normalizeRelationshipCategories(categories);
+    var typeLookup = flattenRelationshipTypes(availableCategories);
+    return list.map(function (entry, index) {
+      var current = entry && typeof entry === "object" ? clone(entry) : {};
+      var fallback = relationshipTypeDefaultsFromCategory(availableCategories, current.categoryId || current.category, current.typeId || current.type);
+      if (current.typeId && typeLookup[current.typeId]) {
+        var exact = typeLookup[current.typeId];
+        fallback = relationshipTypeDefaultsFromCategory(availableCategories, exact.category.id, exact.type.id);
+      }
+      return Object.assign({
+        id: current.id || ("rel-" + Date.now() + "-" + index),
+        from: "",
+        to: "",
+        fromAnchor: "right",
+        toAnchor: "left",
+        description: "",
+        gmNotes: "",
+        hiddenFromCollaborators: false,
+        visible: true,
+        opacity: 1
+      }, fallback, current, {
+        color: safeHexColor(current.color, fallback.color),
+        thickness: Math.max(1, Math.min(8, Number(current.thickness) || Number(current.width) || fallback.thickness)),
+        style: RELATIONSHIP_TYPE_STYLE_OPTIONS.indexOf(String(current.style || fallback.style).toLowerCase()) >= 0 ? String(current.style || fallback.style).toLowerCase() : "solid",
+        arrow: ["start", "end", "both", "none"].indexOf(String(current.arrow || fallback.arrow).toLowerCase()) >= 0 ? String(current.arrow || fallback.arrow).toLowerCase() : "none",
+        routingMode: RELATIONSHIP_ROUTING_MODE_OPTIONS.indexOf(String(current.routingMode || fallback.routingMode || "auto").toLowerCase()) >= 0 ? String(current.routingMode || fallback.routingMode || "auto").toLowerCase() : "auto",
+        lineMeta: Object.assign(makeRelationshipTypeDecoration(), fallback.lineMeta || {}, current.lineMeta || {})
+      });
+    });
+  }
+
   var SECT_ICON_FILES = {
     "Anarch": "Anarch.svg",
     "Ashirra": "Ashirra.svg",
@@ -1357,14 +1556,11 @@
         { id: "zone-coterie", name: "Player Coterie", x: 520, y: 770, width: 860, height: 250, color: "#8b1e46", opacity: 0.2, borderThickness: 2, description: "Player operations", lock: false, hidden: false }
       ],
       relationships: [
-        { id: "r1", from: "alexandra", to: "prince", category: "Romantic", type: "Partner", color: "#d14b7f", thickness: 2, style: "dashed", arrow: "none", labelColor: "#ffffff", opacity: 1, visible: true },
+        { id: "r1", from: "alexandra", to: "prince", category: "Romantic Relations", type: "Partner", color: "#ff6fae", thickness: 2, style: "solid", arrow: "none", labelColor: "#ffffff", opacity: 1, visible: true },
         { id: "r2", from: "whitlock", to: "prince", category: "Vampire Relations", type: "Sire", color: "#d10d40", thickness: 2, style: "solid", arrow: "end", labelColor: "#ffffff", opacity: 1, visible: true },
         { id: "r3", from: "amelia", to: "whitlock", category: "Vampire Relations", type: "Sire", color: "#d10d40", thickness: 2, style: "solid", arrow: "end", labelColor: "#ffffff", opacity: 1, visible: true }
       ],
-      relationshipCategories: [
-        { id: "cat-vamp", name: "Vampire Relations", color: "#d10d40", types: ["Sire", "Childe"] },
-        { id: "cat-rom", name: "Romantic", color: "#d14b7f", types: ["Partner", "Former Lover"] }
-      ],
+      relationshipCategories: clone(DEFAULT_RELATIONSHIP_CATEGORIES),
       tagGroups: [
         { id: "tg1", name: "Politics", tags: [{ id: "t1", name: "Prince", color: "#d10d40", icon: "♛", description: "Ruling authority", visible: true }, { id: "t2", name: "Council", color: "#8b1e46", icon: "◎", description: "Council aligned", visible: true }] }
       ],
@@ -1380,6 +1576,8 @@
       var merged = Object.assign(initialState(), source);
       delete merged.badges;
       merged.characters = (merged.characters || []).map(normalizeCharacterRecord);
+      merged.relationshipCategories = normalizeRelationshipCategories(merged.relationshipCategories);
+      merged.relationships = normalizeRelationships(merged.relationships, merged.relationshipCategories);
       return merged;
     }, [props && props.initialData]);
 
@@ -1467,6 +1665,34 @@
     var _drawingZone = useState(false);
     var drawingZone = _drawingZone[0];
     var setDrawingZone = _drawingZone[1];
+
+    var _relationshipPreview = useState(null);
+    var relationshipPreview = _relationshipPreview[0];
+    var setRelationshipPreview = _relationshipPreview[1];
+
+    var _relationshipDropTarget = useState(null);
+    var relationshipDropTarget = _relationshipDropTarget[0];
+    var setRelationshipDropTarget = _relationshipDropTarget[1];
+
+    var _relationshipEditor = useState(null);
+    var relationshipEditor = _relationshipEditor[0];
+    var setRelationshipEditor = _relationshipEditor[1];
+
+    var _relationshipCategoryExpanded = useState({});
+    var relationshipCategoryExpanded = _relationshipCategoryExpanded[0];
+    var setRelationshipCategoryExpanded = _relationshipCategoryExpanded[1];
+
+    var _relationshipCategoryCreate = useState({ open: false, name: "", color: "#d10d40" });
+    var relationshipCategoryCreate = _relationshipCategoryCreate[0];
+    var setRelationshipCategoryCreate = _relationshipCategoryCreate[1];
+
+    var _relationshipCategoryEdit = useState({ categoryId: null, name: "", color: "#d10d40" });
+    var relationshipCategoryEdit = _relationshipCategoryEdit[0];
+    var setRelationshipCategoryEdit = _relationshipCategoryEdit[1];
+
+    var _relationshipTypeDraftsByCategory = useState({});
+    var relationshipTypeDraftsByCategory = _relationshipTypeDraftsByCategory[0];
+    var setRelationshipTypeDraftsByCategory = _relationshipTypeDraftsByCategory[1];
 
     var _zoneDraft = useState(null);
     var zoneDraft = _zoneDraft[0];
@@ -1879,42 +2105,354 @@
       setDrawingZone(false);
     }
 
-    function completeConnection() {
-      if (selected.length !== 2) {
-        return;
-      }
-      var from = selected[0];
-      var to = selected[1];
-      if (from === to) {
-        return;
-      }
-      var existing = data.relationships.find(function (r) {
-        return (r.from === from && r.to === to) || (r.from === to && r.to === from);
-      });
-      if (existing) {
-        setActivePanel("relationships");
-        return;
-      }
+    function relationshipTypeDefaults(categoryRef, typeRef) {
+      return relationshipTypeDefaultsFromCategory(data.relationshipCategories, categoryRef, typeRef);
+    }
 
-      var defaultCategory = data.relationshipCategories[0] || { name: "General", color: "#d10d40" };
-      var defaultType = defaultCategory.types && defaultCategory.types[0] ? defaultCategory.types[0] : "Connection";
+    function relationshipLineStyleName(style) {
+      var value = String(style || "solid").toLowerCase();
+      return RELATIONSHIP_TYPE_STYLE_OPTIONS.indexOf(value) >= 0 ? value : "solid";
+    }
+
+    function makeRelationshipTypeDraft(seed) {
+      var source = seed && typeof seed === "object" ? seed : {};
+      return {
+        open: Boolean(source.open),
+        mode: source.mode || "create",
+        typeId: source.typeId || null,
+        originalName: String(source.originalName || ""),
+        name: String(source.name || ""),
+        label: String(source.label || ""),
+        color: safeHexColor(source.color, "#d10d40"),
+        style: relationshipLineStyleName(source.style || "solid"),
+        width: Math.max(1, Math.min(8, Number(source.width) || 2)),
+        animated: Boolean(source.animated),
+        arrow: Boolean(source.arrow)
+      };
+    }
+
+    function toggleRelationshipCategory(categoryId) {
+      setRelationshipCategoryExpanded(function (prev) {
+        var current = Object.prototype.hasOwnProperty.call(prev, categoryId) ? prev[categoryId] : true;
+        return Object.assign({}, prev, { [categoryId]: !current });
+      });
+    }
+
+    function openRelationshipCategoryCreate() {
+      setRelationshipCategoryCreate({ open: true, name: "", color: "#d10d40" });
+    }
+
+    function cancelRelationshipCategoryCreate() {
+      setRelationshipCategoryCreate({ open: false, name: "", color: "#d10d40" });
+    }
+
+    function saveRelationshipCategoryCreate() {
+      var name = String(relationshipCategoryCreate.name || "").trim();
+      if (!name) {
+        return;
+      }
+      var categoryId = makeRelationshipUiId("rel-cat");
+      var color = safeHexColor(relationshipCategoryCreate.color, "#d10d40");
       commit(function (next) {
-        next.relationships.push({
-          id: "r-" + Date.now(),
-          from: from,
-          to: to,
-          category: defaultCategory.name,
-          type: defaultType,
-          color: defaultCategory.color,
-          thickness: 2,
-          style: "solid",
-          arrow: "none",
-          labelColor: "#ffffff",
-          opacity: 1,
-          visible: true
+        next.relationshipCategories.push({
+          id: categoryId,
+          name: name,
+          color: color,
+          types: [normalizeRelationshipType({ name: "Connection", label: "Connection", color: color }, color)]
         });
       });
-      setActivePanel("relationships");
+      setRelationshipCategoryExpanded(function (prev) { return Object.assign({}, prev, { [categoryId]: true }); });
+      cancelRelationshipCategoryCreate();
+    }
+
+    function openRelationshipCategoryEdit(category) {
+      setRelationshipCategoryEdit({
+        categoryId: category.id,
+        name: category.name || "",
+        color: safeHexColor(category.color, "#d10d40")
+      });
+    }
+
+    function cancelRelationshipCategoryEdit() {
+      setRelationshipCategoryEdit({ categoryId: null, name: "", color: "#d10d40" });
+    }
+
+    function saveRelationshipCategoryEdit() {
+      var categoryId = relationshipCategoryEdit.categoryId;
+      var nextName = String(relationshipCategoryEdit.name || "").trim();
+      if (!categoryId || !nextName) {
+        cancelRelationshipCategoryEdit();
+        return;
+      }
+      var nextColor = safeHexColor(relationshipCategoryEdit.color, "#d10d40");
+      commit(function (next) {
+        var target = next.relationshipCategories.find(function (entry) { return entry.id === categoryId; });
+        if (!target) {
+          return;
+        }
+        var previousName = target.name;
+        target.name = nextName;
+        target.color = nextColor;
+        target.types = (target.types || []).map(function (typeItem) {
+          return Object.assign({}, typeItem, {
+            color: safeHexColor(typeItem.color, nextColor)
+          });
+        });
+        next.relationships.forEach(function (relationship) {
+          if (relationship.categoryId === categoryId || relationship.category === previousName) {
+            relationship.categoryId = categoryId;
+            relationship.category = nextName;
+          }
+        });
+      });
+      cancelRelationshipCategoryEdit();
+    }
+
+    function deleteRelationshipCategory(categoryId) {
+      var category = (data.relationshipCategories || []).find(function (entry) { return entry.id === categoryId; });
+      if (!category) {
+        return;
+      }
+      var confirmDelete = window.confirm("Delete category '" + category.name + "' and all relationships that use its types?");
+      if (!confirmDelete) {
+        return;
+      }
+      var typeIds = (category.types || []).map(function (typeItem) { return typeItem.id; });
+      commit(function (next) {
+        next.relationshipCategories = next.relationshipCategories.filter(function (entry) { return entry.id !== categoryId; });
+        next.relationships = next.relationships.filter(function (relationship) {
+          return relationship.categoryId !== categoryId && typeIds.indexOf(relationship.typeId) < 0;
+        });
+      });
+      setRelationshipTypeDraftsByCategory(function (prev) {
+        if (!Object.prototype.hasOwnProperty.call(prev, categoryId)) {
+          return prev;
+        }
+        var next = Object.assign({}, prev);
+        delete next[categoryId];
+        return next;
+      });
+      if (relationshipCategoryEdit.categoryId === categoryId) {
+        cancelRelationshipCategoryEdit();
+      }
+    }
+
+    function openRelationshipTypeCreate(categoryId, categoryColor) {
+      setRelationshipTypeDraftsByCategory(function (prev) {
+        return Object.assign({}, prev, {
+          [categoryId]: makeRelationshipTypeDraft({ open: true, mode: "create", color: safeHexColor(categoryColor, "#d10d40") })
+        });
+      });
+    }
+
+    function openRelationshipTypeEdit(categoryId, typeItem) {
+      setRelationshipTypeDraftsByCategory(function (prev) {
+        return Object.assign({}, prev, {
+          [categoryId]: makeRelationshipTypeDraft({
+            open: true,
+            mode: "edit",
+            typeId: typeItem.id,
+            originalName: typeItem.name,
+            name: typeItem.name,
+            label: typeItem.label,
+            color: typeItem.color,
+            style: typeItem.style,
+            width: typeItem.width,
+            animated: typeItem.animated,
+            arrow: typeItem.arrow
+          })
+        });
+      });
+    }
+
+    function cancelRelationshipTypeDraft(categoryId) {
+      setRelationshipTypeDraftsByCategory(function (prev) {
+        if (!Object.prototype.hasOwnProperty.call(prev, categoryId)) {
+          return prev;
+        }
+        var next = Object.assign({}, prev);
+        next[categoryId] = makeRelationshipTypeDraft({ open: false });
+        return next;
+      });
+    }
+
+    function updateRelationshipTypeDraft(categoryId, field, value) {
+      setRelationshipTypeDraftsByCategory(function (prev) {
+        var current = makeRelationshipTypeDraft(prev[categoryId] || { open: true });
+        var next = Object.assign({}, current, { [field]: value, open: true });
+        if (field === "color") {
+          next.color = safeHexColor(value, current.color);
+        }
+        if (field === "style") {
+          next.style = relationshipLineStyleName(value);
+        }
+        if (field === "width") {
+          next.width = Math.max(1, Math.min(8, Number(value) || 1));
+        }
+        return Object.assign({}, prev, { [categoryId]: next });
+      });
+    }
+
+    function saveRelationshipTypeDraft(category) {
+      var categoryId = category.id;
+      var draft = makeRelationshipTypeDraft(relationshipTypeDraftsByCategory[categoryId] || {});
+      var typeName = String(draft.name || "").trim();
+      if (!draft.open || !typeName) {
+        return;
+      }
+      var displayLabel = String(draft.label || "").trim() || typeName;
+      var normalized = normalizeRelationshipType({
+        id: draft.typeId || makeRelationshipUiId("rel-type"),
+        name: typeName,
+        label: displayLabel,
+        color: draft.color,
+        width: draft.width,
+        style: draft.style,
+        animated: draft.animated,
+        arrow: draft.arrow
+      }, category.color);
+
+      var shouldUpdateExisting = draft.mode === "edit" ? window.confirm("Update existing relationships using this type?") : true;
+      commit(function (next) {
+        var targetCategory = next.relationshipCategories.find(function (entry) { return entry.id === categoryId; });
+        if (!targetCategory) {
+          return;
+        }
+        targetCategory.types = targetCategory.types || [];
+        if (draft.mode === "edit") {
+          var index = targetCategory.types.findIndex(function (typeItem) { return typeItem.id === draft.typeId; });
+          if (index >= 0) {
+            targetCategory.types[index] = normalized;
+          }
+        } else {
+          targetCategory.types.push(normalized);
+        }
+
+        if (shouldUpdateExisting) {
+          var defaults = relationshipTypeDefaultsFromCategory(next.relationshipCategories, categoryId, normalized.id);
+          next.relationships.forEach(function (relationship) {
+            var sameType = relationship.typeId === normalized.id || (relationship.categoryId === categoryId && relationship.type === draft.originalName);
+            if (!sameType) {
+              return;
+            }
+            relationship.categoryId = defaults.categoryId;
+            relationship.category = defaults.category;
+            relationship.typeId = defaults.typeId;
+            relationship.type = defaults.type;
+            relationship.displayLabel = defaults.displayLabel;
+            relationship.color = defaults.color;
+            relationship.thickness = defaults.thickness;
+            relationship.style = defaults.style;
+            relationship.animated = defaults.animated;
+            relationship.arrow = defaults.arrow;
+            relationship.lineMeta = Object.assign(makeRelationshipTypeDecoration(), defaults.lineMeta || {});
+          });
+        }
+      });
+
+      cancelRelationshipTypeDraft(categoryId);
+    }
+
+    function deleteRelationshipType(category, typeItem) {
+      var categoryId = category.id;
+      var typeId = typeItem.id;
+      var confirmDelete = window.confirm("Delete relationship type '" + typeItem.name + "'?");
+      if (!confirmDelete) {
+        return;
+      }
+      commit(function (next) {
+        var targetCategory = next.relationshipCategories.find(function (entry) { return entry.id === categoryId; });
+        if (!targetCategory) {
+          return;
+        }
+        targetCategory.types = (targetCategory.types || []).filter(function (entry) { return entry.id !== typeId; });
+        next.relationships = next.relationships.filter(function (relationship) {
+          return relationship.typeId !== typeId;
+        });
+      });
+    }
+
+    function openRelationshipEditorFor(relationship, isNew) {
+      if (!relationship) {
+        return;
+      }
+      var defaults = relationshipTypeDefaults(relationship.categoryId || relationship.category, relationship.typeId || relationship.type);
+      setRelationshipEditor(Object.assign({}, defaults, relationship, {
+        isNew: Boolean(isNew),
+        fromAnchor: relationship.fromAnchor || "right",
+        toAnchor: relationship.toAnchor || "left"
+      }));
+      setActivePanel("relationship-editor");
+    }
+
+    function createRelationshipFromAnchors(fromId, toId, fromAnchor, toAnchor) {
+      var defaults = relationshipTypeDefaults();
+      var id = makeRelationshipUiId("rel");
+      var relationship = Object.assign({
+        id: id,
+        from: fromId,
+        to: toId,
+        fromAnchor: fromAnchor,
+        toAnchor: toAnchor,
+        description: "",
+        gmNotes: "",
+        hiddenFromCollaborators: false,
+        visible: true,
+        opacity: 1,
+        labelColor: "#ffffff"
+      }, defaults);
+      commit(function (next) {
+        next.relationships.push(clone(relationship));
+      });
+      openRelationshipEditorFor(Object.assign({}, relationship), true);
+    }
+
+    function beginRelationshipDrag(event, character, anchor) {
+      if (event.button !== 0) {
+        return;
+      }
+      if (selected.indexOf(character.id) < 0) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      var start = pointOnCanvas(event.clientX, event.clientY);
+      setRelationshipPreview({ from: character.id, fromAnchor: anchor, x1: start.x, y1: start.y, x2: start.x, y2: start.y });
+      setRelationshipDropTarget(null);
+
+      function move(moveEvent) {
+        var point = pointOnCanvas(moveEvent.clientX, moveEvent.clientY);
+        setRelationshipPreview(function (current) {
+          return current ? Object.assign({}, current, { x2: point.x, y2: point.y }) : current;
+        });
+        var targetElement = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+        var targetHandle = targetElement && targetElement.closest ? targetElement.closest("[data-relationship-anchor]") : null;
+        var targetCharacterId = targetHandle && targetHandle.getAttribute("data-character-id");
+        if (targetCharacterId && targetCharacterId !== character.id) {
+          setRelationshipDropTarget({
+            characterId: targetCharacterId,
+            anchor: targetHandle.getAttribute("data-relationship-anchor") || "left"
+          });
+        } else {
+          setRelationshipDropTarget(null);
+        }
+      }
+
+      function up(upEvent) {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        var target = document.elementFromPoint(upEvent.clientX, upEvent.clientY);
+        var handle = target && target.closest ? target.closest("[data-relationship-anchor]") : null;
+        var toId = handle && handle.getAttribute("data-character-id");
+        if (toId && toId !== character.id) {
+          createRelationshipFromAnchors(character.id, toId, anchor, handle.getAttribute("data-relationship-anchor") || "left");
+        }
+        setRelationshipPreview(null);
+        setRelationshipDropTarget(null);
+      }
+
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
     }
 
     useEffect(function () {
@@ -1975,6 +2513,30 @@
     }, [data.tagGroups]);
 
     useEffect(function () {
+      setRelationshipCategoryExpanded(function (prev) {
+        var next = {};
+        var changed = false;
+
+        (data.relationshipCategories || []).forEach(function (category) {
+          if (Object.prototype.hasOwnProperty.call(prev, category.id)) {
+            next[category.id] = prev[category.id];
+          } else {
+            next[category.id] = true;
+            changed = true;
+          }
+        });
+
+        Object.keys(prev).forEach(function (categoryId) {
+          if (!Object.prototype.hasOwnProperty.call(next, categoryId)) {
+            changed = true;
+          }
+        });
+
+        return changed ? next : prev;
+      });
+    }, [data.relationshipCategories]);
+
+    useEffect(function () {
       function onKey(event) {
         if (isEditableElement(document.activeElement)) {
           return;
@@ -1993,6 +2555,10 @@
           if (drawingZone) {
             cancelZoneDraft();
             return;
+          }
+          if (relationshipPreview) {
+            setRelationshipPreview(null);
+            setRelationshipDropTarget(null);
           }
           finishZoneInteraction();
           if (selectedZoneId || zoneEditorOpen) {
@@ -2047,7 +2613,7 @@
         document.removeEventListener("keyup", onKeyUp);
         window.removeEventListener("blur", onBlur);
       };
-    }, [selected, undoStack, redoStack, data, workspaceMode, profileEditMode, characterEditMode, portraitWorkflow.open, drawingZone, selectedZoneId, zoneEditorOpen]);
+    }, [selected, undoStack, redoStack, data, workspaceMode, profileEditMode, characterEditMode, portraitWorkflow.open, drawingZone, selectedZoneId, zoneEditorOpen, relationshipPreview]);
 
     useEffect(function () {
       return function () {
@@ -2080,6 +2646,11 @@
       setContextMenu(null);
       var isZoneTarget = Boolean(event.target && event.target.closest && event.target.closest(".zone"));
       var isNodeTarget = Boolean(event.target && event.target.closest && event.target.closest(".node"));
+      if (!isZoneTarget && !isNodeTarget) {
+        setSelected([]);
+        setRelationshipPreview(null);
+        setRelationshipDropTarget(null);
+      }
       if (!isZoneTarget && !isNodeTarget && (selectedZoneId || zoneEditorOpen)) {
         clearZoneSelection(true);
       }
@@ -2777,6 +3348,8 @@
         var merged = Object.assign(initialState(), parsed);
         delete merged.badges;
         merged.characters = (merged.characters || []).map(normalizeCharacterRecord);
+        merged.relationshipCategories = normalizeRelationshipCategories(merged.relationshipCategories);
+        merged.relationships = normalizeRelationships(merged.relationships, merged.relationshipCategories);
         setData(merged);
         setUndoStack([]);
         setRedoStack([]);
@@ -4252,30 +4825,358 @@
       </div>`;
     }
 
+    function relationshipEditorPanel() {
+      var draft = relationshipEditor;
+      if (!draft) {
+        return null;
+      }
+      var from = data.characters.find(function (character) { return character.id === draft.from; });
+      var to = data.characters.find(function (character) { return character.id === draft.to; });
+      var selectedCategory = data.relationshipCategories.find(function (entry) {
+        return entry.id === draft.categoryId || entry.name === draft.category;
+      }) || data.relationshipCategories[0];
+      var availableTypes = selectedCategory ? (selectedCategory.types || []) : [];
+
+      function update(field, value) {
+        setRelationshipEditor(function (current) {
+          return current ? Object.assign({}, current, { [field]: value }) : current;
+        });
+      }
+
+      function chooseCategory(category) {
+        var firstType = (category.types || [])[0];
+        var defaults = relationshipTypeDefaults(category.id, firstType && firstType.id);
+        setRelationshipEditor(function (current) {
+          return current ? Object.assign({}, current, defaults) : current;
+        });
+      }
+
+      function chooseType(category, typeItem) {
+        var defaults = relationshipTypeDefaults(category.id, typeItem.id);
+        setRelationshipEditor(function (current) {
+          return current ? Object.assign({}, current, defaults) : current;
+        });
+      }
+
+      function save() {
+        commit(function (next) {
+          var relationship = next.relationships.find(function (entry) { return entry.id === draft.id; });
+          if (relationship) {
+            Object.assign(relationship, draft, { isNew: undefined });
+          }
+        });
+        setRelationshipEditor(null);
+        setActivePanel(null);
+      }
+
+      function cancel() {
+        if (draft.isNew) {
+          commit(function (next) {
+            next.relationships = next.relationships.filter(function (entry) { return entry.id !== draft.id; });
+          });
+        }
+        setRelationshipEditor(null);
+        setActivePanel(null);
+      }
+
+      function remove() {
+        commit(function (next) {
+          next.relationships = next.relationships.filter(function (entry) { return entry.id !== draft.id; });
+        });
+        setRelationshipEditor(null);
+        setActivePanel(null);
+      }
+
+      return html`${panelHeader("Relationship Editor")}
+      <div className="panel-body relationship-editor-panel">
+        <div className="relationship-editor-parties">
+          <div><span>From</span><strong>${from ? from.name : "Unknown"}</strong></div>
+          <div><span>To</span><strong>${to ? to.name : "Unknown"}</strong></div>
+        </div>
+
+        <h4>Relationship Category</h4>
+        <div className="relationship-category-buttons">
+          ${data.relationshipCategories.map(function (category) {
+            var isActive = category.id === draft.categoryId;
+            return html`<button key=${"rel-cat-option-" + category.id} className=${isActive ? "active" : ""} style=${{ borderColor: category.color }} onClick=${function () { chooseCategory(category); }}>${category.name}</button>`;
+          })}
+        </div>
+
+        <h4>Relationship Type</h4>
+        <div className="relationship-type-cards">
+          ${availableTypes.map(function (typeItem) {
+            var isActive = typeItem.id === draft.typeId;
+            var dashArray = typeItem.style === "dashed" ? "10 6" : (typeItem.style === "dotted" ? "2 6" : (typeItem.style === "chain" ? "14 4 2 4" : (typeItem.style === "droplets" ? "1 8" : "")));
+            return html`<button key=${"rel-type-option-" + typeItem.id} className=${"relationship-type-card" + (isActive ? " active" : "")} onClick=${function () { chooseType(selectedCategory, typeItem); }}>
+              <span className="relationship-type-color" style=${{ backgroundColor: typeItem.color }}></span>
+              <strong>${typeItem.name}</strong>
+              <svg viewBox="0 0 120 12" className="relationship-type-preview" aria-hidden="true">
+                <line x1="4" y1="6" x2="116" y2="6" stroke=${typeItem.color} strokeWidth=${Math.max(1, typeItem.width)} strokeDasharray=${dashArray}></line>
+              </svg>
+            </button>`;
+          })}
+        </div>
+
+        <label>Direction</label>
+        <select value=${draft.arrow || "end"} onChange=${function (event) { update("arrow", event.target.value); }}>
+          <option value="end">${from ? from.name : "Character A"} → ${to ? to.name : "Character B"}</option>
+          <option value="start">${to ? to.name : "Character B"} → ${from ? from.name : "Character A"}</option>
+          <option value="both">Bidirectional</option>
+        </select>
+
+        <label>Routing</label>
+        <select value=${draft.routingMode || "auto"} onChange=${function (event) { update("routingMode", event.target.value); }}>
+          <option value="auto">Auto</option>
+          <option value="straight">Straight</option>
+          <option value="curved">Curved</option>
+        </select>
+
+        <label className="zone-toggle"><input type="checkbox" checked=${Boolean(draft.hiddenFromCollaborators)} onChange=${function (event) { update("hiddenFromCollaborators", event.target.checked); }} /> Hide Relationship from Collaborators</label>
+        <label>Description</label>
+        <textarea rows="3" value=${draft.description || ""} onInput=${function (event) { update("description", event.target.value); }}></textarea>
+        <label>GM Notes</label>
+        <textarea rows="3" value=${draft.gmNotes || ""} onInput=${function (event) { update("gmNotes", event.target.value); }} placeholder="Future-ready storyteller notes"></textarea>
+
+        <div className="zone-editor-actions">
+          <button onClick=${save}>Save</button>
+          <button onClick=${cancel}>Cancel</button>
+          <button className="destructive" onClick=${remove}>Delete</button>
+        </div>
+      </div>`;
+    }
+
+    function relationshipAnchorPoint(character, anchor) {
+      var radius = 42 * (Number(character.nodeSize) || 1);
+      var offsets = { top: [0, -radius], right: [radius, 0], bottom: [0, radius], left: [-radius, 0] };
+      var offset = offsets[anchor] || [0, 0];
+      return { x: character.x + offset[0], y: character.y + offset[1] };
+    }
+
+    function relationshipAnchorVector(anchor) {
+      switch (String(anchor || "").toLowerCase()) {
+        case "top": return { x: 0, y: -1 };
+        case "right": return { x: 1, y: 0 };
+        case "bottom": return { x: 0, y: 1 };
+        case "left": return { x: -1, y: 0 };
+        default: return { x: 1, y: 0 };
+      }
+    }
+
+    function relationshipRouteStraight(fromPoint, toPoint) {
+      var mid = {
+        x: (fromPoint.x + toPoint.x) / 2,
+        y: (fromPoint.y + toPoint.y) / 2
+      };
+      return {
+        kind: "straight",
+        d: "M " + fromPoint.x + " " + fromPoint.y + " L " + toPoint.x + " " + toPoint.y,
+        labelPoint: mid
+      };
+    }
+
+    function cubicBezierPoint(p0, p1, p2, p3, t) {
+      var mt = 1 - t;
+      var mt2 = mt * mt;
+      var t2 = t * t;
+      return {
+        x: mt2 * mt * p0.x + 3 * mt2 * t * p1.x + 3 * mt * t2 * p2.x + t2 * t * p3.x,
+        y: mt2 * mt * p0.y + 3 * mt2 * t * p1.y + 3 * mt * t2 * p2.y + t2 * t * p3.y
+      };
+    }
+
+    function relationshipRouteCurved(fromPoint, toPoint, fromAnchor, toAnchor, mode) {
+      var dx = toPoint.x - fromPoint.x;
+      var dy = toPoint.y - fromPoint.y;
+      var distance = Math.sqrt(dx * dx + dy * dy);
+      var sourceVector = relationshipAnchorVector(fromAnchor);
+      var targetVector = relationshipAnchorVector(toAnchor);
+
+      var pull = clamp(distance * (mode === "curved" ? 0.28 : 0.22), 24, 210);
+      if (mode === "auto") {
+        if (distance < 180) {
+          pull *= 0.62;
+        } else if (distance > 760) {
+          pull *= 1.2;
+        }
+      }
+
+      var control1 = {
+        x: fromPoint.x + sourceVector.x * pull,
+        y: fromPoint.y + sourceVector.y * pull
+      };
+      var control2 = {
+        x: toPoint.x + targetVector.x * pull,
+        y: toPoint.y + targetVector.y * pull
+      };
+      var label = cubicBezierPoint(fromPoint, control1, control2, toPoint, 0.5);
+
+      return {
+        kind: "curved",
+        d: "M " + fromPoint.x + " " + fromPoint.y + " C " + control1.x + " " + control1.y + ", " + control2.x + " " + control2.y + ", " + toPoint.x + " " + toPoint.y,
+        labelPoint: label
+      };
+    }
+
+    var RELATIONSHIP_ROUTE_ENGINES = {
+      straight: function (fromPoint, toPoint) {
+        return relationshipRouteStraight(fromPoint, toPoint);
+      },
+      curved: function (fromPoint, toPoint, fromAnchor, toAnchor) {
+        return relationshipRouteCurved(fromPoint, toPoint, fromAnchor, toAnchor, "curved");
+      },
+      auto: function (fromPoint, toPoint, fromAnchor, toAnchor) {
+        var dx = Math.abs(toPoint.x - fromPoint.x);
+        var dy = Math.abs(toPoint.y - fromPoint.y);
+        var distance = Math.sqrt(dx * dx + dy * dy);
+        var alignTolerance = Math.max(24, Math.min(56, distance * 0.08));
+        var approximatelyAligned = dx <= alignTolerance || dy <= alignTolerance;
+        if (approximatelyAligned) {
+          return relationshipRouteStraight(fromPoint, toPoint);
+        }
+        return relationshipRouteCurved(fromPoint, toPoint, fromAnchor, toAnchor, "auto");
+      }
+    };
+
+    function relationshipRouteSpec(fromPoint, toPoint, fromAnchor, toAnchor, routingMode) {
+      var mode = String(routingMode || "auto").toLowerCase();
+      var engine = RELATIONSHIP_ROUTE_ENGINES[mode] || RELATIONSHIP_ROUTE_ENGINES.auto;
+      return engine(fromPoint, toPoint, fromAnchor, toAnchor);
+    }
+
     function relationshipsPanel() {
-      return html`${panelHeader("Relationship Categories")}
-      <div className="panel-body">
-        ${data.relationshipCategories.map(function (cat) {
-          var rels = data.relationships.filter(function (r) { return r.category === cat.name; });
-          return html`<div className="card" key=${cat.id}>
-            <div className="row"><strong>${cat.name}</strong><span className="hint">${cat.types.length} types</span></div>
-            <div className="row" style=${{ marginTop: 6 }}>
-              <input type="color" value=${cat.color} onInput=${function (e) { commit(function (next) { var c = next.relationshipCategories.find(function (x) { return x.id === cat.id; }); if (c) c.color = e.target.value; next.relationships.forEach(function (r) { if (r.category === cat.name) r.color = e.target.value; }); }); }} />
-              <button>Edit</button>
-              <button>Delete</button>
+      return html`${panelHeader("Relationship Manager")}
+      <div className="panel-body relationship-manager-body">
+        <div className="tag-group-create-root relationship-category-create-root">
+          <button onClick=${openRelationshipCategoryCreate}>+ New Category</button>
+          <div className=${"tag-inline-editor-shell" + (relationshipCategoryCreate.open ? " expanded" : "") }>
+            <div className="tag-inline-editor-grid">
+              <label>Category Name</label>
+              <input value=${relationshipCategoryCreate.name} onInput=${function (event) { setRelationshipCategoryCreate({ open: true, name: event.target.value, color: relationshipCategoryCreate.color }); }} placeholder="Political Relations" />
+              ${ColorField({
+                label: "Colour",
+                fieldName: "Category Colour",
+                value: relationshipCategoryCreate.color,
+                fallback: "#d10d40",
+                onChange: function (nextColor) { setRelationshipCategoryCreate({ open: true, name: relationshipCategoryCreate.name, color: nextColor }); }
+              })}
+              <div className="tag-inline-editor-actions">
+                <button type="button" onClick=${cancelRelationshipCategoryCreate}>Cancel</button>
+                <button type="button" onClick=${saveRelationshipCategoryCreate}>Add Category</button>
+              </div>
             </div>
-            ${rels.map(function (rel) {
-              return html`<div className="card" key=${rel.id} style=${{ marginTop: 8 }}>
-                <strong>${rel.type}</strong>
-                <div className="split" style=${{ marginTop: 6 }}>
-                  <div><label>Line thickness</label><input type="range" min="1" max="6" value=${rel.thickness} style=${rangeFillStyle(rel.thickness, 1, 6)} onInput=${function (e) { syncRangeFill(e); commit(function (next) { var r = next.relationships.find(function (x) { return x.id === rel.id; }); if (r) r.thickness = Number(e.target.value); }); }} /></div>
-                  <div><label>Line style</label><select value=${rel.style} onChange=${function (e) { commit(function (next) { var r = next.relationships.find(function (x) { return x.id === rel.id; }); if (r) r.style = e.target.value; }); }}><option value="solid">Solid</option><option value="dashed">Dashed</option></select></div>
-                  <div><label>Arrow style</label><select value=${rel.arrow} onChange=${function (e) { commit(function (next) { var r = next.relationships.find(function (x) { return x.id === rel.id; }); if (r) r.arrow = e.target.value; }); }}><option value="none">None</option><option value="start">Start</option><option value="end">End</option><option value="both">Both</option></select></div>
-                  <div><label>Label colour</label><input type="color" value=${rel.labelColor} onInput=${function (e) { commit(function (next) { var r = next.relationships.find(function (x) { return x.id === rel.id; }); if (r) r.labelColor = e.target.value; }); }} /></div>
+          </div>
+        </div>
+
+        ${data.relationshipCategories.map(function (category) {
+          var isExpanded = relationshipCategoryExpanded[category.id] !== false;
+          var typeCount = (category.types || []).length;
+          var typeDraft = makeRelationshipTypeDraft(relationshipTypeDraftsByCategory[category.id] || { open: false, color: category.color });
+          var editingCategory = relationshipCategoryEdit.categoryId === category.id;
+          return html`<section className="tag-group-shell relationship-category-shell" key=${category.id}>
+            <header className="tag-group-header relationship-category-header">
+              <button className="tag-group-toggle" onClick=${function () { toggleRelationshipCategory(category.id); }} aria-expanded=${String(isExpanded)}>
+                <span className="tag-group-caret">${isExpanded ? "▼" : "▶"}</span>
+                <span className="relationship-category-chip" style=${{ backgroundColor: category.color }}></span>
+                <strong>${category.name}</strong>
+              </button>
+              <div className="tag-group-actions">
+                <span className="hint">${typeCount} types</span>
+                ${IconButton({ onClick: function () { openRelationshipCategoryEdit(category); }, ariaLabel: "Edit category", icon: "✎", className: "icon-button-24 tag-icon-button" })}
+                ${IconButton({ onClick: function () { deleteRelationshipCategory(category.id); }, ariaLabel: "Delete category", icon: "✕", className: "icon-button-24 tag-icon-button" })}
+              </div>
+            </header>
+
+            <div className=${"tag-group-content" + (isExpanded ? " expanded" : "") }>
+              <div className="tag-group-content-inner">
+                <div className=${"tag-inline-editor-shell" + (editingCategory ? " expanded" : "") }>
+                  <div className="tag-inline-editor-grid">
+                    <label>Category Name</label>
+                    <input value=${editingCategory ? relationshipCategoryEdit.name : ""} onInput=${function (event) { setRelationshipCategoryEdit({ categoryId: category.id, name: event.target.value, color: relationshipCategoryEdit.color }); }} placeholder="Category name" />
+                    ${ColorField({
+                      label: "Colour",
+                      fieldName: "Category Colour",
+                      value: editingCategory ? relationshipCategoryEdit.color : category.color,
+                      fallback: "#d10d40",
+                      onChange: function (nextColor) {
+                        setRelationshipCategoryEdit({
+                          categoryId: category.id,
+                          name: editingCategory ? relationshipCategoryEdit.name : category.name,
+                          color: nextColor
+                        });
+                      }
+                    })}
+                    <div className="tag-inline-editor-actions">
+                      <button type="button" onClick=${cancelRelationshipCategoryEdit}>Cancel</button>
+                      <button type="button" onClick=${saveRelationshipCategoryEdit}>Save Category</button>
+                    </div>
+                  </div>
                 </div>
-              </div>`;
-            })}
-          </div>`;
+
+                <div className="relationship-type-list">
+                  ${(category.types || []).map(function (typeItem) {
+                    var dashArray = typeItem.style === "dashed" ? "10 6" : (typeItem.style === "dotted" ? "2 6" : (typeItem.style === "chain" ? "14 4 2 4" : (typeItem.style === "droplets" ? "1 8" : "")));
+                    return html`<article className="tag-row relationship-type-row" key=${typeItem.id}>
+                      <div className="tag-row-main">
+                        <span className="relationship-category-chip" style=${{ backgroundColor: typeItem.color }}></span>
+                        <span className="tag-row-name">${typeItem.name}</span>
+                        <svg viewBox="0 0 96 10" className="relationship-type-mini-preview" aria-hidden="true">
+                          <line x1="2" y1="5" x2="94" y2="5" stroke=${typeItem.color} strokeWidth=${Math.max(1, typeItem.width)} strokeDasharray=${dashArray}></line>
+                        </svg>
+                      </div>
+                      <div className="tag-row-actions">
+                        ${IconButton({ onClick: function () { openRelationshipTypeEdit(category.id, typeItem); }, ariaLabel: "Edit " + typeItem.name, icon: "✎", className: "icon-button-24 tag-icon-button" })}
+                        ${IconButton({ onClick: function () { deleteRelationshipType(category, typeItem); }, ariaLabel: "Delete " + typeItem.name, icon: "✕", className: "icon-button-24 tag-icon-button" })}
+                      </div>
+                    </article>`;
+                  })}
+                </div>
+
+                <button className="tag-add-button" onClick=${function () { openRelationshipTypeCreate(category.id, category.color); }}>+ Add Type</button>
+
+                <div className=${"tag-inline-editor-shell" + (typeDraft.open ? " expanded" : "") }>
+                  <div className="tag-inline-editor-grid relationship-type-editor-grid">
+                    <label>Type Name</label>
+                    <input value=${typeDraft.name} onInput=${function (event) { updateRelationshipTypeDraft(category.id, "name", event.target.value); }} placeholder="Sire" />
+                    <label>Display Label</label>
+                    <input value=${typeDraft.label} onInput=${function (event) { updateRelationshipTypeDraft(category.id, "label", event.target.value); }} placeholder="If blank, Type Name is used" />
+
+                    ${ColorField({
+                      label: "Colour",
+                      fieldName: "Type Colour",
+                      value: typeDraft.color,
+                      fallback: "#d10d40",
+                      onChange: function (nextColor) { updateRelationshipTypeDraft(category.id, "color", nextColor); }
+                    })}
+
+                    <label>Line Style</label>
+                    <select value=${typeDraft.style} onChange=${function (event) { updateRelationshipTypeDraft(category.id, "style", event.target.value); }}>
+                      <option value="solid">Solid</option>
+                      <option value="dashed">Dashed</option>
+                      <option value="dotted">Dotted</option>
+                      <option value="chain">Chain</option>
+                      <option value="droplets">Droplets</option>
+                    </select>
+
+                    <label>Width</label>
+                    <input type="number" min="1" max="8" step="1" value=${typeDraft.width} onInput=${function (event) { updateRelationshipTypeDraft(category.id, "width", Number(event.target.value)); }} />
+
+                    <label className="zone-toggle"><input type="checkbox" checked=${Boolean(typeDraft.animated)} onChange=${function (event) { updateRelationshipTypeDraft(category.id, "animated", event.target.checked); }} /> Animated</label>
+                    <label className="zone-toggle"><input type="checkbox" checked=${Boolean(typeDraft.arrow)} onChange=${function (event) { updateRelationshipTypeDraft(category.id, "arrow", event.target.checked); }} /> Arrow</label>
+
+                    <label>Preview</label>
+                    <svg viewBox="0 0 280 20" className="relationship-type-editor-preview" aria-hidden="true">
+                      <line x1="8" y1="10" x2="272" y2="10" stroke=${typeDraft.color} strokeWidth=${Math.max(1, Number(typeDraft.width) || 2)} strokeDasharray=${typeDraft.style === "dashed" ? "10 6" : (typeDraft.style === "dotted" ? "2 6" : (typeDraft.style === "chain" ? "14 4 2 4" : (typeDraft.style === "droplets" ? "1 8" : "")))}></line>
+                    </svg>
+
+                    <div className="tag-inline-editor-actions">
+                      <button type="button" onClick=${function () { cancelRelationshipTypeDraft(category.id); }}>Cancel</button>
+                      <button type="button" onClick=${function () { saveRelationshipTypeDraft(category); }}>${typeDraft.mode === "edit" ? "Save Type" : "Add Type"}</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>`;
         })}
       </div>`;
     }
@@ -4444,6 +5345,7 @@
         case "characters": return charactersPanel();
         case "zones": return zonesPanel();
         case "relationships": return relationshipsPanel();
+        case "relationship-editor": return relationshipEditorPanel();
         case "tags": return tagsPanel();
         case "overlays": return overlaysPanel();
         default: return null;
@@ -4483,10 +5385,6 @@
               <span className="badge">Drawing Zone: drag on canvas</span>
               <button onClick=${cancelZoneDraft}>Cancel Zone</button>
             </${React.Fragment}>` : null}
-            ${selected.length === 2 && !drawingZone ? html`<${React.Fragment}>
-              <button onClick=${completeConnection}>Complete Connection</button>
-              <button onClick=${function () { setSelected([]); }}>Cancel</button>
-            </${React.Fragment}>` : null}
           </div>
 
           <div className=${"canvas-viewport" + (isPanning ? " panning" : "") + (drawingZone ? " drawing-zone" : "")} ref=${viewportRef} onMouseDown=${onCanvasMouseDown} onMouseMove=${onCanvasMouseMove} onMouseUp=${onCanvasMouseUp} onMouseLeave=${onCanvasMouseUp} onWheel=${onWheel} onContextMenu=${function (e) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, type: "canvas" }); }}>
@@ -4522,17 +5420,23 @@
                   if (!from || !to) {
                     return null;
                   }
-                  var mx = (from.x + to.x) / 2;
-                  var my = (from.y + to.y) / 2;
-                  var dash = r.style === "dashed" ? "7 5" : "";
+                  var fromPoint = relationshipAnchorPoint(from, r.fromAnchor || "right");
+                  var toPoint = relationshipAnchorPoint(to, r.toAnchor || "left");
+                  var route = relationshipRouteSpec(fromPoint, toPoint, r.fromAnchor || "right", r.toAnchor || "left", r.routingMode || "auto");
+                  var mx = route.labelPoint.x;
+                  var my = route.labelPoint.y;
+                  var dash = r.style === "dashed" ? "10 6" : (r.style === "dotted" ? "2 6" : (r.style === "chain" ? "14 4 2 4" : (r.style === "droplets" ? "1 8" : "")));
                   var markerEnd = r.arrow === "end" || r.arrow === "both" ? "url(#arrowHead)" : null;
                   var markerStart = r.arrow === "start" || r.arrow === "both" ? "url(#arrowHead)" : null;
+                  var lineWidth = Math.max(1, Number(r.thickness) || 2);
                   return html`<g key=${r.id}>
-                    <line x1=${from.x} y1=${from.y} x2=${to.x} y2=${to.y} stroke=${r.color} strokeWidth=${r.thickness} strokeDasharray=${dash} opacity=${r.opacity} markerEnd=${markerEnd} markerStart=${markerStart}></line>
+                    <path className="relationship-line-hit" d=${route.d} stroke=${r.color} strokeWidth=${Math.max(lineWidth, 10)} strokeOpacity="0" fill="none" onDoubleClick=${function (event) { event.stopPropagation(); openRelationshipEditorFor(Object.assign({}, r), false); }}></path>
+                    <path className=${r.animated ? "relationship-line animated" : "relationship-line"} d=${route.d} stroke=${r.color} strokeWidth=${lineWidth} strokeDasharray=${dash} opacity=${r.opacity} markerEnd=${markerEnd} markerStart=${markerStart} fill="none"></path>
                     <rect x=${mx - 24} y=${my - 11} width="48" height="18" rx="5" fill="rgba(10,10,15,0.9)" stroke="rgba(255,255,255,0.15)"></rect>
-                    <text x=${mx} y=${my + 2} fill=${r.labelColor} fontSize="11" textAnchor="middle">${r.type}</text>
+                    <text x=${mx} y=${my + 2} fill=${r.labelColor || "#ffffff"} fontSize="11" textAnchor="middle">${r.displayLabel || r.type}</text>
                   </g>`;
                 })}
+                ${relationshipPreview ? html`<line className="relationship-preview-line" x1=${relationshipPreview.x1} y1=${relationshipPreview.y1} x2=${relationshipPreview.x2} y2=${relationshipPreview.y2}></line>` : null}
               </svg>
 
               <div className="node-layer">
@@ -4544,12 +5448,26 @@
                   var clip = shape === "hexagon" ? "polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0 50%)" : "none";
                   var portraitDiameter = 74 * nodeSize;
                   var nodeBadges = characterNodeBadges(c, portraitDiameter);
-                  return html`<div key=${c.id} className=${"node" + (selected.indexOf(c.id) >= 0 ? " selected" : "")} style=${{ left: c.x, top: c.y, width: 130 * nodeSize }} onPointerDown=${function (e) { onNodePointerDown(e, c); }} onLostPointerCapture=${onNodeLostPointerCapture} onMouseDown=${function (e) { e.stopPropagation(); }} onClick=${function (e) { e.stopPropagation(); setFocusedId(c.id); if (!e.shiftKey) setSelected([c.id]); }} onDoubleClick=${function (e) { e.stopPropagation(); setFocusedId(c.id); setActivePanel("characters"); }} onContextMenu=${function (e) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, type: "node", id: c.id }); }}>
+                  var isSelectedNode = selected.indexOf(c.id) >= 0;
+                  var isDropCharacter = relationshipDropTarget && relationshipDropTarget.characterId === c.id;
+                  var layerStateClass = isSelectedNode
+                    ? " active"
+                    : (relationshipPreview ? " destination-ready" : "");
+                  if (isDropCharacter) {
+                    layerStateClass += " drop-character";
+                  }
+                  return html`<div key=${c.id} className=${"node" + (isSelectedNode ? " selected" : "")} style=${{ left: c.x, top: c.y, width: 130 * nodeSize }} onPointerDown=${function (e) { onNodePointerDown(e, c); }} onLostPointerCapture=${onNodeLostPointerCapture} onMouseDown=${function (e) { e.stopPropagation(); }} onClick=${function (e) { e.stopPropagation(); setFocusedId(c.id); if (!e.shiftKey) setSelected([c.id]); }} onDoubleClick=${function (e) { e.stopPropagation(); setFocusedId(c.id); setActivePanel("characters"); }} onContextMenu=${function (e) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, type: "node", id: c.id }); }}>
                     <div className="node-portrait-shell">
                       <div className="node-portrait-frame" style=${{ width: portraitDiameter, height: portraitDiameter, borderColor: outlineColor, borderRadius: radius, clipPath: clip }}>
                         <img className="node-portrait media" src=${portraitState(c).src} alt=${c.name} style=${portraitMediaStyle(c)} />
                       </div>
                       ${renderNodeBadgeAnchors(nodeBadges)}
+                      <div className=${"relationship-handle-layer" + layerStateClass }>
+                        ${["top", "right", "bottom", "left"].map(function (anchor) {
+                          var isDropAnchor = Boolean(isDropCharacter && relationshipDropTarget && relationshipDropTarget.anchor === anchor);
+                          return html`<span key=${anchor} className=${"relationship-handle relationship-handle-" + anchor + (isDropAnchor ? " drop-target" : "")} data-relationship-anchor=${anchor} data-character-id=${c.id} onPointerDown=${function (event) { beginRelationshipDrag(event, c, anchor); }}></span>`;
+                        })}
+                      </div>
                     </div>
                     <span>${c.name.toUpperCase()}</span>
                   </div>`;
