@@ -20,9 +20,7 @@ window.GMData = {
     { thread: "Where did the mapmaker vanish?", state: "Stalled", urgency: "Low" }
   ],
 
-  locations: [
-    "The Ashwood Gate", "Copperlight Docks", "Moon Archive", "Blackwater Steps", "Sunken Tribunal", "Saint Nyra Catacombs"
-  ],
+  locations: [],
 
   clues: [
     "Blue wax seal with fractured sun mark",

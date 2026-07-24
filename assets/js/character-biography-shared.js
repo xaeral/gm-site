@@ -279,6 +279,9 @@
     if (id.indexOf("zone-") === 0) {
       return true;
     }
+    if (id.indexOf("location-seed-") === 0) {
+      return true;
+    }
     if (name === "new zone") {
       return true;
     }
