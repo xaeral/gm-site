@@ -127,33 +127,49 @@
     return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
   }
 
-  function isLegacySeedSession(meta) {
-    if (!meta || typeof meta !== "object") {
-      return false;
-    }
-    var id = String(meta.id || "").toLowerCase();
-    return id.indexOf("session-seed-") === 0;
-  }
-
-  async function purgeLegacySeedSessions(db) {
+  async function ensureSeedData(db) {
     var txn = db.transaction([STORE_SESSION_META, STORE_SESSION_BODY], "readwrite");
     var metaStore = txn.objectStore(STORE_SESSION_META);
     var bodyStore = txn.objectStore(STORE_SESSION_BODY);
     var existing = await requestToPromise(metaStore.getAll());
-    (existing || []).forEach(function (meta) {
-      if (!isLegacySeedSession(meta)) {
-        return;
-      }
-      var id = String(meta.id || "");
-      metaStore.delete(id);
-      bodyStore.delete(id);
-    });
+    if (!Array.isArray(existing) || !existing.length) {
+      var seeds = Array.isArray(window.GMData && window.GMData.sessions) ? window.GMData.sessions : [];
+      seeds.forEach(function (entry, index) {
+        var label = String(entry || "");
+        var parts = label.split(":");
+        var numberMatch = /session\s*(\d+)/i.exec(parts[0] || "");
+        var now = new Date().toISOString();
+        var id = "session-seed-" + index;
+        var title = (parts[1] || label || "Session Recap").trim();
+        var number = numberMatch ? Number(numberMatch[1]) : (index + 1);
+        var date = "";
+        var meta = normalizeSessionMetadata({
+          id: id,
+          sessionNumber: number,
+          title: title,
+          datePlayed: date,
+          tags: [],
+          characterIds: [],
+          locationIds: [],
+          timelineEvents: [],
+          previewText: "",
+          pinned: false,
+          archived: false,
+          createdAt: now,
+          updatedAt: now,
+          lastEditedAt: now
+        });
+        var body = normalizeSessionBody({ id: id, bodyHtml: "<p></p>", createdAt: now, updatedAt: now });
+        metaStore.put(meta);
+        bodyStore.put(body);
+      });
+    }
     await transactionToPromise(txn);
   }
 
   async function readSessionJournalState() {
     var db = await openSessionJournalDb();
-    await purgeLegacySeedSessions(db);
+    await ensureSeedData(db);
     var txn = db.transaction([STORE_SESSION_META], "readonly");
     var metadataPromise = requestToPromise(txn.objectStore(STORE_SESSION_META).getAll());
     await transactionToPromise(txn);

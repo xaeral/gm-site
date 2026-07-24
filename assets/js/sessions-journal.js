@@ -47,11 +47,6 @@
     return parsed.toLocaleDateString(undefined, { day: "2-digit", month: "long", year: "numeric" });
   }
 
-  function pluralize(count, singular, plural) {
-    var total = Number(count || 0);
-    return total + " " + (total === 1 ? singular : (plural || singular + "s"));
-  }
-
   function plainTextFromHtml(htmlValue) {
     var container = document.createElement("div");
     container.innerHTML = String(htmlValue || "");
@@ -460,9 +455,6 @@
       });
     }, [visibleSessions, explorerSearch]);
 
-    var totalSessionCount = (state.sessions || []).length;
-    var hasAnySessions = totalSessionCount > 0;
-
     function toggleFilterValue(field, value) {
       setFilters(function (current) {
         var next = clone(current);
@@ -825,20 +817,15 @@
         <aside className="gm-notebook-explorer session-explorer">
           <div className="gm-notebook-explorer-head">
             <div>
-              <h3>SESSION EXPLORER</h3>
-              <p>${pluralize(totalSessionCount, "Session")}</p>
+              <h3>Session Explorer</h3>
+              <p>${explorerSessions.length} visible sessions</p>
             </div>
           </div>
           <div className="gm-notebook-explorer-controls">
-            <label htmlFor="sessionExplorerSearch" className="session-explorer-search-label">Search Sessions</label>
-            <input id="sessionExplorerSearch" type="search" placeholder="Search sessions" value=${explorerSearch} onInput=${function (event) { setExplorerSearch(event.target.value); }} />
+            <input type="search" placeholder="Search sessions..." value=${explorerSearch} onInput=${function (event) { setExplorerSearch(event.target.value); }} />
           </div>
-          <div className="session-explorer-list-heading">Session List</div>
           <div className="session-explorer-list">
-            ${!hasAnySessions ? html`<div className="session-explorer-empty card">
-              <p>No sessions have been recorded yet.</p>
-              <button type="button" className="session-explorer-empty-create" onClick=${createSession}>+ Create Session</button>
-            </div>` : explorerSessions.length ? explorerSessions.map(function (session, index) {
+            ${explorerSessions.length ? explorerSessions.map(function (session, index) {
               var isActive = session.id === selectedSessionId;
               return html`<button key=${"session-card-" + session.id + "-" + index} type="button" className=${"notebook-note-card session-card" + (isActive ? " active" : "") + (session.pinned ? " pinned" : "")} onClick=${function () { selectSession(session.id); }}>
                 <strong>Session ${session.sessionNumber || "?"}</strong>
