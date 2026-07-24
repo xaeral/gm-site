@@ -25,6 +25,7 @@
     relationships: "../assets/Icons/Relationships.svg",
     tag: "../assets/Icons/tag.svg",
     settings: "../assets/Icons/settings.svg",
+    lock: "../assets/Icons/Lock.svg",
     menu: "../assets/Icons/Menu.svg",
     delete: "../assets/Icons/delete.svg",
     copy: "../assets/Icons/copy.svg",
@@ -682,7 +683,9 @@
     var label = opts.label || "Colour";
     var value = safeHexColor(opts.value, opts.fallback || "#d10d40");
     var onChange = typeof opts.onChange === "function" ? opts.onChange : function () {};
+    var onHexInput = typeof opts.onHexInput === "function" ? opts.onHexInput : null;
     var fieldName = opts.fieldName || label;
+    var textValue = opts.textValue === undefined || opts.textValue === null ? value : String(opts.textValue);
 
     return html`<div className="color-field">
       <label>${label}</label>
@@ -699,8 +702,14 @@
         </div>
         <input
           className="color-field-hex"
-          value=${value}
-          onInput=${function (event) { onChange(event.target.value); }}
+          value=${textValue}
+          onInput=${function (event) {
+            if (onHexInput) {
+              onHexInput(event.target.value);
+              return;
+            }
+            onChange(event.target.value);
+          }}
           spellCheck="false"
           inputMode="text"
         />
@@ -1463,6 +1472,22 @@
     var zoneDraft = _zoneDraft[0];
     var setZoneDraft = _zoneDraft[1];
 
+    var _selectedZoneId = useState(null);
+    var selectedZoneId = _selectedZoneId[0];
+    var setSelectedZoneId = _selectedZoneId[1];
+
+    var _zoneEditDraft = useState(null);
+    var zoneEditDraft = _zoneEditDraft[0];
+    var setZoneEditDraft = _zoneEditDraft[1];
+
+    var _zoneEditorOpen = useState(false);
+    var zoneEditorOpen = _zoneEditorOpen[0];
+    var setZoneEditorOpen = _zoneEditorOpen[1];
+
+    var _zonePreview = useState(null);
+    var zonePreview = _zonePreview[0];
+    var setZonePreview = _zonePreview[1];
+
     var _contextMenu = useState(null);
     var contextMenu = _contextMenu[0];
     var setContextMenu = _contextMenu[1];
@@ -1520,6 +1545,7 @@
     var portraitPinchRef = useRef({ active: false, startDistance: 0, startZoom: 1 });
     var portraitStageSizeRef = useRef(PORTRAIT_EDITOR_SIZE);
     var panRef = useRef({ x: 0, y: 0 });
+    var spacePanRef = useRef(false);
     var dragOffsetRef = useRef({ x: 0, y: 0 });
     var nodeDragRef = useRef({
       active: false,
@@ -1534,6 +1560,10 @@
       priorBodyUserSelect: "",
       priorBodyWebkitUserSelect: ""
     });
+    var zoneInteractionRef = useRef(null);
+    var zonePreviewRef = useRef(null);
+    var zoneDraftRef = useRef(null);
+    var zoneEditorPanelRef = useRef(null);
 
     // contentEditable owns its live DOM and selection while the user types.
     // Only replace its contents when the draft changed from another source (for
@@ -1554,6 +1584,12 @@
       }
       profileBiographyLastSyncedRef.current = { characterId: characterDraft.id, html: nextHtml };
     }, [profileEditMode, characterDraft && characterDraft.id, characterDraft && characterDraft.bioHtml]);
+
+    useLayoutEffect(function () {
+      if (zoneEditorOpen && zoneEditorPanelRef.current) {
+        zoneEditorPanelRef.current.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+    }, [zoneEditorOpen, selectedZoneId]);
 
     function syncProfileBiographyDraft() {
       var editor = profileBiographyEditorRef.current;
@@ -1715,18 +1751,101 @@
       });
     }
 
-    function finishZoneDraft() {
-      if (!zoneDraft) {
+    function zoneMemberCount(zone) {
+      return data.characters.filter(function (character) {
+        return character.x >= zone.x && character.x <= zone.x + zone.width && character.y >= zone.y && character.y <= zone.y + zone.height;
+      }).length;
+    }
+
+    function zoneWithDefaults(zone) {
+      return Object.assign({
+        name: "Untitled Zone", description: "", color: "#d10d40", borderColor: "", opacity: 0.18,
+        borderThickness: 2, borderStyle: "dashed", lock: false, hidden: false, layer: 0,
+        shape: "rectangle", cornerRadius: 12, icon: "", notes: "", permissions: ""
+      }, zone || {});
+    }
+
+    function selectZone(zoneId, openPanel) {
+      var zone = data.zones.find(function (entry) { return entry.id === zoneId; });
+      if (!zone) {
         return;
       }
-      var x = Math.min(zoneDraft.x, zoneDraft.x + zoneDraft.width);
-      var y = Math.min(zoneDraft.y, zoneDraft.y + zoneDraft.height);
-      var width = Math.abs(zoneDraft.width);
-      var height = Math.abs(zoneDraft.height);
-      if (width > 20 && height > 20) {
+      setSelectedZoneId(zoneId);
+      setZoneEditDraft(zoneWithDefaults(clone(zone)));
+      setSelected([]);
+      setZoneEditorOpen(Boolean(openPanel));
+      if (openPanel) {
+        setActivePanel("zones");
+      }
+    }
+
+    function zoneIsVisibleInViewport(zone) {
+      var viewport = viewportRef.current;
+      if (!viewport || !zone) {
+        return true;
+      }
+      var rect = viewport.getBoundingClientRect();
+      var left = view.x + zone.x * view.scale;
+      var top = view.y + zone.y * view.scale;
+      var right = view.x + (zone.x + zone.width) * view.scale;
+      var bottom = view.y + (zone.y + zone.height) * view.scale;
+      return right >= 0 && bottom >= 0 && left <= rect.width && top <= rect.height;
+    }
+
+    function focusZoneFromList(zoneId) {
+      var zone = data.zones.find(function (entry) { return entry.id === zoneId; });
+      if (!zone) {
+        return;
+      }
+      selectZone(zoneId, true);
+      if (zoneIsVisibleInViewport(zone)) {
+        return;
+      }
+      var viewport = viewportRef.current;
+      if (!viewport) {
+        return;
+      }
+      var rect = viewport.getBoundingClientRect();
+      var centerX = zone.x + zone.width / 2;
+      var centerY = zone.y + zone.height / 2;
+      setView(function (prev) {
+        return {
+          x: rect.width / 2 - centerX * prev.scale,
+          y: rect.height / 2 - centerY * prev.scale,
+          scale: prev.scale
+        };
+      });
+    }
+    function clearZoneSelection(showZoneList) {
+      setSelectedZoneId(null);
+      setZoneEditDraft(null);
+      setZoneEditorOpen(false);
+      if (showZoneList) {
+        setActivePanel("zones");
+      }
+    }
+
+    function enterZoneDrawingMode() {
+      setDrawingZone(true);
+      setZoneDraft(null);
+      zoneDraftRef.current = null;
+      clearZoneSelection(false);
+    }
+
+    function finishZoneDraft() {
+      var draft = zoneDraftRef.current || zoneDraft;
+      if (!draft) {
+        return;
+      }
+      var x = Math.min(draft.x, draft.x + draft.width);
+      var y = Math.min(draft.y, draft.y + draft.height);
+      var width = Math.abs(draft.width);
+      var height = Math.abs(draft.height);
+      if (width >= 30 && height >= 30) {
+        var newZoneId = "zone-" + Date.now();
         commit(function (next) {
           next.zones.push({
-            id: "zone-" + Date.now(),
+            id: newZoneId,
             name: "New Zone",
             x: x,
             y: y,
@@ -1735,17 +1854,27 @@
             color: "#d10d40",
             opacity: 0.18,
             borderThickness: 2,
+            borderColor: "#d10d40",
+            borderStyle: "dashed",
             description: "",
             lock: false,
-            hidden: false
+            hidden: false,
+            layer: (next.zones || []).length,
+            shape: "rectangle",
+            cornerRadius: 12
           });
         });
+        setSelectedZoneId(newZoneId);
+        setZoneEditDraft(zoneWithDefaults({ id: newZoneId, name: "New Zone", x: x, y: y, width: width, height: height, borderColor: "#d10d40" }));
+        setZoneEditorOpen(false);
       }
+      zoneDraftRef.current = null;
       setZoneDraft(null);
       setDrawingZone(false);
     }
 
     function cancelZoneDraft() {
+      zoneDraftRef.current = null;
       setZoneDraft(null);
       setDrawingZone(false);
     }
@@ -1851,10 +1980,26 @@
           return;
         }
 
+        if (event.code === "Space") {
+          spacePanRef.current = true;
+          event.preventDefault();
+          return;
+        }
+
         if (event.key === "Escape" && nodeDragRef.current.active) {
           endNodeDrag();
         }
         if (event.key === "Escape") {
+          if (drawingZone) {
+            cancelZoneDraft();
+            return;
+          }
+          finishZoneInteraction();
+          if (selectedZoneId || zoneEditorOpen) {
+            clearZoneSelection(true);
+            setContextMenu(null);
+            return;
+          }
           setActivePanel(null);
           setContextMenu(null);
         }
@@ -1883,9 +2028,26 @@
           setSelected([]);
         }
       }
+
+      function onKeyUp(event) {
+        if (event.code === "Space") {
+          spacePanRef.current = false;
+        }
+      }
+
+      function onBlur() {
+        spacePanRef.current = false;
+      }
+
       document.addEventListener("keydown", onKey);
-      return function () { document.removeEventListener("keydown", onKey); };
-    }, [selected, undoStack, redoStack, data, workspaceMode, profileEditMode, characterEditMode, portraitWorkflow.open]);
+      document.addEventListener("keyup", onKeyUp);
+      window.addEventListener("blur", onBlur);
+      return function () {
+        document.removeEventListener("keydown", onKey);
+        document.removeEventListener("keyup", onKeyUp);
+        window.removeEventListener("blur", onBlur);
+      };
+    }, [selected, undoStack, redoStack, data, workspaceMode, profileEditMode, characterEditMode, portraitWorkflow.open, drawingZone, selectedZoneId, zoneEditorOpen]);
 
     useEffect(function () {
       return function () {
@@ -1909,18 +2071,36 @@
       }
       if (drawingZone) {
         var pz = pointOnCanvas(event.clientX, event.clientY);
-        setZoneDraft({ x: pz.x, y: pz.y, width: 0, height: 0 });
+        var draft = { x: pz.x, y: pz.y, width: 0, height: 0 };
+        zoneDraftRef.current = draft;
+        setZoneDraft(draft);
+        setSelectedZoneId(null);
         return;
       }
       setContextMenu(null);
+      var isZoneTarget = Boolean(event.target && event.target.closest && event.target.closest(".zone"));
+      var isNodeTarget = Boolean(event.target && event.target.closest && event.target.closest(".node"));
+      if (!isZoneTarget && !isNodeTarget && (selectedZoneId || zoneEditorOpen)) {
+        clearZoneSelection(true);
+      }
       setIsPanning(true);
       panRef.current = { x: event.clientX - view.x, y: event.clientY - view.y };
     }
 
     function onCanvasMouseMove(event) {
-      if (zoneDraft) {
+      var activeZoneDraft = zoneDraftRef.current || zoneDraft;
+      if (activeZoneDraft) {
         var p = pointOnCanvas(event.clientX, event.clientY);
-        setZoneDraft({ x: zoneDraft.x, y: zoneDraft.y, width: p.x - zoneDraft.x, height: p.y - zoneDraft.y });
+        var width = p.x - activeZoneDraft.x;
+        var height = p.y - activeZoneDraft.y;
+        if (event.shiftKey) {
+          var side = Math.max(Math.abs(width), Math.abs(height));
+          width = (width < 0 ? -1 : 1) * side;
+          height = (height < 0 ? -1 : 1) * side;
+        }
+        var nextDraft = { x: activeZoneDraft.x, y: activeZoneDraft.y, width: width, height: height };
+        zoneDraftRef.current = nextDraft;
+        setZoneDraft(nextDraft);
         return;
       }
 
@@ -1974,9 +2154,138 @@
     function onCanvasMouseUp() {
       endNodeDrag();
       setIsPanning(false);
-      if (zoneDraft) {
+      if (zoneDraftRef.current || zoneDraft) {
         finishZoneDraft();
       }
+    }
+
+    function finishZoneInteraction() {
+      var interaction = zoneInteractionRef.current;
+      if (!interaction) {
+        return;
+      }
+      zoneInteractionRef.current = null;
+      if (zonePreviewRef.current) {
+        var finalZone = zonePreviewRef.current;
+        commit(function (next) {
+          var target = next.zones.find(function (zone) { return zone.id === finalZone.id; });
+          if (target) {
+            target.x = finalZone.x;
+            target.y = finalZone.y;
+            target.width = finalZone.width;
+            target.height = finalZone.height;
+          }
+        });
+        setZoneEditDraft(function (current) {
+          return current && current.id === finalZone.id ? Object.assign({}, current, finalZone) : current;
+        });
+      }
+      zonePreviewRef.current = null;
+      setZonePreview(null);
+    }
+
+    function beginZoneInteraction(event, zone, handle) {
+      if (event.button !== 0) {
+        return;
+      }
+      event.stopPropagation();
+      if (handle && handle !== "move") {
+        selectZone(zone.id, false);
+      }
+      if (zone.lock) {
+        return;
+      }
+      var start = pointOnCanvas(event.clientX, event.clientY);
+      var original = zoneWithDefaults(zone);
+      var pendingInteraction = {
+        id: zone.id,
+        handle: handle || "move",
+        startX: start.x,
+        startY: start.y,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        original: original
+      };
+      var dragThresholdPixels = 4;
+      var dragThresholdPixelsSquared = dragThresholdPixels * dragThresholdPixels;
+
+      function onMove(moveEvent) {
+        var interaction = zoneInteractionRef.current;
+        if (!interaction) {
+          var dxPixels = moveEvent.clientX - pendingInteraction.startClientX;
+          var dyPixels = moveEvent.clientY - pendingInteraction.startClientY;
+          if ((dxPixels * dxPixels + dyPixels * dyPixels) < dragThresholdPixelsSquared) {
+            return;
+          }
+          zoneInteractionRef.current = {
+            id: pendingInteraction.id,
+            handle: pendingInteraction.handle,
+            startX: pendingInteraction.startX,
+            startY: pendingInteraction.startY,
+            original: pendingInteraction.original
+          };
+          interaction = zoneInteractionRef.current;
+        }
+        if (!interaction) {
+          return;
+        }
+        var point = pointOnCanvas(moveEvent.clientX, moveEvent.clientY);
+        var deltaX = point.x - interaction.startX;
+        var deltaY = point.y - interaction.startY;
+        var next = Object.assign({}, interaction.original);
+        var handleName = interaction.handle;
+        if (handleName === "move") {
+          next.x += deltaX;
+          next.y += deltaY;
+        } else {
+          if (handleName.indexOf("w") >= 0) {
+            next.x += deltaX;
+            next.width -= deltaX;
+          }
+          if (handleName.indexOf("e") >= 0) {
+            next.width += deltaX;
+          }
+          if (handleName.indexOf("n") >= 0) {
+            next.y += deltaY;
+            next.height -= deltaY;
+          }
+          if (handleName.indexOf("s") >= 0) {
+            next.height += deltaY;
+          }
+          if (next.width < 30) {
+            if (handleName.indexOf("w") >= 0) next.x = interaction.original.x + interaction.original.width - 30;
+            next.width = 30;
+          }
+          if (next.height < 30) {
+            if (handleName.indexOf("n") >= 0) next.y = interaction.original.y + interaction.original.height - 30;
+            next.height = 30;
+          }
+        }
+        zonePreviewRef.current = next;
+        setZonePreview(next);
+      }
+
+      function onUp() {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        if (zoneInteractionRef.current) {
+          finishZoneInteraction();
+        }
+      }
+
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    }
+
+    function onZoneMouseDown(event, zone) {
+      if (event.button !== 0) {
+        return;
+      }
+      var isSelectedZone = selectedZoneId === zone.id;
+      if (!isSelectedZone || spacePanRef.current || zone.lock) {
+        return;
+      }
+      beginZoneInteraction(event, zone, "move");
     }
 
     function onWheel(event) {
@@ -2001,6 +2310,7 @@
 
       event.stopPropagation();
       event.preventDefault();
+      clearZoneSelection(false);
 
       if (nodeDragRef.current.active) {
         endNodeDrag();
@@ -2135,6 +2445,50 @@
         return text.toLowerCase();
       }
       return fallback;
+    }
+
+    function rangeFillPercent(value, min, max) {
+      var minimum = Number(min);
+      var maximum = Number(max);
+      var current = Number(value);
+      if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || maximum <= minimum || !Number.isFinite(current)) {
+        return 0;
+      }
+      return Math.max(0, Math.min(100, ((current - minimum) / (maximum - minimum)) * 100));
+    }
+
+    function rangeFillStyle(value, min, max) {
+      return { "--fill": rangeFillPercent(value, min, max) + "%" };
+    }
+
+    function syncRangeFill(event) {
+      var input = event.currentTarget;
+      if (input) {
+        input.style.setProperty("--fill", rangeFillPercent(input.value, input.min, input.max) + "%");
+      }
+    }
+
+    function zoneFillColor(color, opacity) {
+      var hex = safeHexColor(color, "#d10d40").slice(1);
+      var red = parseInt(hex.slice(0, 2), 16);
+      var green = parseInt(hex.slice(2, 4), 16);
+      var blue = parseInt(hex.slice(4, 6), 16);
+      return "rgba(" + red + "," + green + "," + blue + "," + Math.max(0, Math.min(0.8, Number(opacity) || 0)) + ")";
+    }
+
+    function renderZoneResizeHandles(zone) {
+      if (!zone || zone.lock) {
+        return null;
+      }
+      var handles = [
+        ["nw", "0%", "0%"], ["n", "50%", "0%"], ["ne", "100%", "0%"],
+        ["w", "0%", "50%"], ["e", "100%", "50%"],
+        ["sw", "0%", "100%"], ["s", "50%", "100%"], ["se", "100%", "100%"]
+      ];
+      var size = 8 / view.scale;
+      return html`<div className="zone-resize-handles">${handles.map(function (handle) {
+        return html`<span key=${handle[0]} className=${"zone-resize-handle zone-resize-" + handle[0]} style=${{ left: handle[1], top: handle[2], width: size, height: size }} onMouseDown=${function (event) { beginZoneInteraction(event, zone, handle[0]); }}></span>`;
+      })}</div>`;
     }
 
     function makeUiId(prefix) {
@@ -3225,8 +3579,8 @@
           updateDraft("tagsText", nextTags.join(", "));
         }
 
-        function onOutlineHexInput(event) {
-          var value = String(event.target.value || "").trim();
+        function onOutlineHexInput(rawValue) {
+          var value = String(rawValue || "").trim();
           if (value && value.charAt(0) !== "#") {
             value = "#" + value;
           }
@@ -3289,12 +3643,17 @@
             </section>
 
             <section className="edit-character-section">
-              <label>Outline Colour</label>
-              <div className="edit-outline-row">
-                <input className="edit-outline-swatch" type="color" value=${outlineColor} onInput=${function (e) { updateDraft("outlineColor", e.target.value.toUpperCase()); }} />
-                <input className="edit-outline-text" value=${String(characterDraft.outlineColor || "").toUpperCase()} onInput=${onOutlineHexInput} />
-                <div className="edit-outline-preview" style=${{ background: outlineColor }} aria-label="Current outline preview"></div>
-              </div>
+              ${ColorField({
+                label: "Outline Colour",
+                fieldName: "Outline Colour",
+                value: outlineColor,
+                fallback: "#d10d40",
+                textValue: String(characterDraft.outlineColor || "").toUpperCase(),
+                onChange: function (nextColor) {
+                  updateDraft("outlineColor", String(nextColor || "").toUpperCase());
+                },
+                onHexInput: onOutlineHexInput
+              })}
             </section>
 
             <section className="edit-character-section">
@@ -3469,7 +3828,8 @@
                 max="4"
                 step="0.01"
                 value=${portraitWorkflow.zoom}
-                onInput=${function (event) { updatePortraitZoom(Number(event.target.value)); }}
+                style=${rangeFillStyle(portraitWorkflow.zoom, portraitWorkflow.minZoom || 1, 4)}
+                onInput=${function (event) { syncRangeFill(event); updatePortraitZoom(Number(event.target.value)); }}
               />
               <span aria-hidden="true">+</span>
             </div>
@@ -3800,30 +4160,95 @@
     }
 
     function zonesPanel() {
-      return html`${panelHeader("Zone Manager")}
-      <div className="panel-body">
-        <button onClick=${function () { setDrawingZone(true); }}>Draw New Zone</button>
-        ${data.zones.map(function (z) {
-          var inside = data.characters.filter(function (c) { return c.x > z.x && c.x < z.x + z.width && c.y > z.y && c.y < z.y + z.height; }).length;
-          return html`<div className="card" key=${z.id}>
-            <div className="row">
-              <div><strong>${z.name}</strong></div>
-              <div className="hint">${inside} inside</div>
+      var selectedZone = selectedZoneId ? data.zones.find(function (zone) { return zone.id === selectedZoneId; }) : null;
+      var draft = zoneEditorOpen && zoneEditDraft && selectedZone ? zoneEditDraft : null;
+      function updateField(field, value) {
+        setZoneEditDraft(function (current) { return current ? Object.assign({}, current, { [field]: value }) : current; });
+      }
+      function onColorHexInput(field, rawValue) {
+        var value = String(rawValue || "").trim();
+        if (value && value.charAt(0) !== "#") {
+          value = "#" + value;
+        }
+        if (/^#[0-9a-fA-F]{0,6}$/.test(value)) {
+          updateField(field, value.toUpperCase());
+        }
+      }
+      function saveZone() {
+        if (!draft || !selectedZone || draft.id !== selectedZone.id) return;
+        commit(function (next) {
+          var target = next.zones.find(function (zone) { return zone.id === draft.id; });
+          if (target) Object.assign(target, zoneWithDefaults(draft));
+        });
+        setZoneEditorOpen(false);
+      }
+      if (draft) {
+        return html`${panelHeader("Edit Zone")}
+        <div className="panel-body zone-editor-panel" ref=${zoneEditorPanelRef}>
+          <section className="zone-editor-group"><h4>General</h4>
+            <label>Zone Name</label><input value=${draft.name} onInput=${function (e) { updateField("name", e.target.value); }} />
+            <label>Description</label><textarea rows="3" value=${draft.description || ""} onInput=${function (e) { updateField("description", e.target.value); }} />
+          </section>
+          <section className="zone-editor-group"><h4>Appearance</h4>
+            <div className="split">
+              <div>
+                ${ColorField({
+                  label: "Fill Colour",
+                  fieldName: "Fill Colour",
+                  value: safeHexColor(draft.color, "#d10d40"),
+                  fallback: "#d10d40",
+                  textValue: String(draft.color || "").toUpperCase(),
+                  onChange: function (nextColor) { updateField("color", String(nextColor || "").toUpperCase()); },
+                  onHexInput: function (nextValue) { onColorHexInput("color", nextValue); }
+                })}
+              </div>
+              <div>
+                ${ColorField({
+                  label: "Border Colour",
+                  fieldName: "Border Colour",
+                  value: safeHexColor(draft.borderColor || draft.color, "#d10d40"),
+                  fallback: "#d10d40",
+                  textValue: String((draft.borderColor || draft.color) || "").toUpperCase(),
+                  onChange: function (nextColor) { updateField("borderColor", String(nextColor || "").toUpperCase()); },
+                  onHexInput: function (nextValue) { onColorHexInput("borderColor", nextValue); }
+                })}
+              </div>
             </div>
-            <div className="split" style=${{ marginTop: 8 }}>
-              <div><label>Colour</label><input type="color" value=${z.color} onInput=${function (e) { commit(function (next) { var t = next.zones.find(function (x) { return x.id === z.id; }); if (t) t.color = e.target.value; }); }} /></div>
-              <div><label>Opacity</label><input type="range" min="0.05" max="0.65" step="0.01" value=${z.opacity} onInput=${function (e) { commit(function (next) { var t = next.zones.find(function (x) { return x.id === z.id; }); if (t) t.opacity = Number(e.target.value); }); }} /></div>
-              <div><label>Border thickness</label><input type="range" min="1" max="6" value=${z.borderThickness} onInput=${function (e) { commit(function (next) { var t = next.zones.find(function (x) { return x.id === z.id; }); if (t) t.borderThickness = Number(e.target.value); }); }} /></div>
-              <div><label>Show or hide</label><select value=${String(!z.hidden)} onChange=${function (e) { commit(function (next) { var t = next.zones.find(function (x) { return x.id === z.id; }); if (t) t.hidden = e.target.value !== "true"; }); }}><option value="true">Show</option><option value="false">Hide</option></select></div>
-            </div>
-            <label>Description</label>
-            <textarea rows="2" value=${z.description} onInput=${function (e) { commit(function (next) { var t = next.zones.find(function (x) { return x.id === z.id; }); if (t) t.description = e.target.value; }); }} />
-            <div className="row">
-              <button onClick=${function () { commit(function (next) { var t = next.zones.find(function (x) { return x.id === z.id; }); if (t) t.lock = !t.lock; }); }}>${z.lock ? "Unlock movement" : "Lock movement"}</button>
-              <button onClick=${function () { commit(function (next) { next.zones = next.zones.filter(function (x) { return x.id !== z.id; }); }); }}>Delete</button>
-            </div>
-          </div>`;
-        })}
+            <label>Fill Opacity <span className="hint">${Math.round(Number(draft.opacity || 0) * 100)}%</span></label><input type="range" min="0" max="0.8" step="0.01" value=${draft.opacity} style=${rangeFillStyle(draft.opacity, 0, 0.8)} onInput=${function (e) { syncRangeFill(e); updateField("opacity", Number(e.target.value)); }} />
+            <label>Border Thickness</label><input type="range" min="1" max="8" step="1" value=${draft.borderThickness} style=${rangeFillStyle(draft.borderThickness, 1, 8)} onInput=${function (e) { syncRangeFill(e); updateField("borderThickness", Number(e.target.value)); }} />
+            <label>Border Style</label><select value=${draft.borderStyle || "dashed"} onChange=${function (e) { updateField("borderStyle", e.target.value); }}><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select>
+          </section>
+          <section className="zone-editor-group"><h4>Behaviour</h4>
+            <article className="zone-lock-card">
+              <span className="zone-lock-icon" aria-hidden="true">${Icon({ icon: CAMPAIGN_ATLAS_ICON_ASSETS.lock, size: 17, className: "zone-lock-icon-glyph" })}</span>
+              <div className="zone-lock-copy">
+                <strong>Lock Zone</strong>
+                <p>Prevent this zone from being moved or resized on the Relationship Map.</p>
+              </div>
+              <button
+                type="button"
+                className=${"toggle-switch zone-lock-toggle" + (draft.lock ? " on" : "")}
+                aria-pressed=${draft.lock ? "true" : "false"}
+                aria-label="Toggle lock zone"
+                onClick=${function () { updateField("lock", !draft.lock); }}
+              ><span></span></button>
+            </article>
+          </section>
+          <section className="zone-editor-group"><h4>Layer Controls</h4><div className="row">
+            <button onClick=${function () { updateField("layer", Math.max.apply(null, data.zones.map(function (zone) { return Number(zone.layer) || 0; })) + 1); }}>Bring Forward</button>
+            <button onClick=${function () { updateField("layer", Math.min.apply(null, data.zones.map(function (zone) { return Number(zone.layer) || 0; })) - 1); }}>Send Backward</button>
+          </div></section>
+          <div className="zone-editor-actions"><button onClick=${saveZone}>Save</button><button onClick=${function () { setZoneEditorOpen(false); }}>Back to Zone List</button><button className="destructive" onClick=${function () { commit(function (next) { next.zones = next.zones.filter(function (zone) { return zone.id !== draft.id; }); }); setSelectedZoneId(null); setZoneEditDraft(null); setZoneEditorOpen(false); }}>Delete Zone</button></div>
+        </div>`;
+      }
+      return html`${panelHeader("Zones")}
+      <div className="panel-body zone-list-panel">
+        <button className="zone-draw-button" onClick=${enterZoneDrawingMode}>Draw New Zone</button>
+        <div className="zone-list">${data.zones.map(function (zone) {
+          var current = zoneWithDefaults(zone);
+          return html`<button className="zone-list-item" key=${zone.id} onClick=${function () { focusZoneFromList(zone.id); }}><span className="zone-list-swatch" style=${{ backgroundColor: current.color }}></span><span className="zone-list-name">${current.name}</span><span className="zone-list-count">${zoneMemberCount(current)} members</span></button>`;
+        })}</div>
+        <button className="destructive zone-delete-all" disabled=${!data.zones.length} onClick=${function () { commit(function (next) { next.zones = []; }); setSelectedZoneId(null); setZoneEditDraft(null); setZoneEditorOpen(false); }}>Delete All Zones</button>
       </div>`;
     }
 
@@ -3843,7 +4268,7 @@
               return html`<div className="card" key=${rel.id} style=${{ marginTop: 8 }}>
                 <strong>${rel.type}</strong>
                 <div className="split" style=${{ marginTop: 6 }}>
-                  <div><label>Line thickness</label><input type="range" min="1" max="6" value=${rel.thickness} onInput=${function (e) { commit(function (next) { var r = next.relationships.find(function (x) { return x.id === rel.id; }); if (r) r.thickness = Number(e.target.value); }); }} /></div>
+                  <div><label>Line thickness</label><input type="range" min="1" max="6" value=${rel.thickness} style=${rangeFillStyle(rel.thickness, 1, 6)} onInput=${function (e) { syncRangeFill(e); commit(function (next) { var r = next.relationships.find(function (x) { return x.id === rel.id; }); if (r) r.thickness = Number(e.target.value); }); }} /></div>
                   <div><label>Line style</label><select value=${rel.style} onChange=${function (e) { commit(function (next) { var r = next.relationships.find(function (x) { return x.id === rel.id; }); if (r) r.style = e.target.value; }); }}><option value="solid">Solid</option><option value="dashed">Dashed</option></select></div>
                   <div><label>Arrow style</label><select value=${rel.arrow} onChange=${function (e) { commit(function (next) { var r = next.relationships.find(function (x) { return x.id === rel.id; }); if (r) r.arrow = e.target.value; }); }}><option value="none">None</option><option value="start">Start</option><option value="end">End</option><option value="both">Both</option></select></div>
                   <div><label>Label colour</label><input type="color" value=${rel.labelColor} onInput=${function (e) { commit(function (next) { var r = next.relationships.find(function (x) { return x.id === rel.id; }); if (r) r.labelColor = e.target.value; }); }} /></div>
@@ -4054,18 +4479,41 @@
             <span className="badge">Selected ${selected.length}</span>
             <button onClick=${undo} disabled=${undoStack.length === 0}>Undo</button>
             <button onClick=${redo} disabled=${redoStack.length === 0}>Redo</button>
-            ${drawingZone ? html`<>
-              <button onClick=${finishZoneDraft}>Finish Zone</button>
+            ${drawingZone ? html`<${React.Fragment}>
+              <span className="badge">Drawing Zone: drag on canvas</span>
               <button onClick=${cancelZoneDraft}>Cancel Zone</button>
-            </>` : null}
-            ${selected.length === 2 && !drawingZone ? html`<>
+            </${React.Fragment}>` : null}
+            ${selected.length === 2 && !drawingZone ? html`<${React.Fragment}>
               <button onClick=${completeConnection}>Complete Connection</button>
               <button onClick=${function () { setSelected([]); }}>Cancel</button>
-            </>` : null}
+            </${React.Fragment}>` : null}
           </div>
 
-          <div className=${"canvas-viewport" + (isPanning ? " panning" : "")} ref=${viewportRef} onMouseDown=${onCanvasMouseDown} onMouseMove=${onCanvasMouseMove} onMouseUp=${onCanvasMouseUp} onMouseLeave=${onCanvasMouseUp} onWheel=${onWheel} onContextMenu=${function (e) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, type: "canvas" }); }}>
+          <div className=${"canvas-viewport" + (isPanning ? " panning" : "") + (drawingZone ? " drawing-zone" : "")} ref=${viewportRef} onMouseDown=${onCanvasMouseDown} onMouseMove=${onCanvasMouseMove} onMouseUp=${onCanvasMouseUp} onMouseLeave=${onCanvasMouseUp} onWheel=${onWheel} onContextMenu=${function (e) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, type: "canvas" }); }}>
             <div className="canvas-surface" style=${{ transform: "translate(" + view.x + "px," + view.y + "px) scale(" + view.scale + ")" }}>
+              <div className="zone-layer">
+                ${data.zones.filter(function (zone) { return !zone.hidden; }).map(function (zone) {
+                  var current = zoneWithDefaults(zone);
+                  if (zoneEditDraft && zoneEditDraft.id === current.id) {
+                    current = zoneWithDefaults(Object.assign({}, current, zoneEditDraft));
+                  }
+                  if (zonePreview && zonePreview.id === current.id) {
+                    current = Object.assign({}, current, {
+                      x: zonePreview.x,
+                      y: zonePreview.y,
+                      width: zonePreview.width,
+                      height: zonePreview.height
+                    });
+                  }
+                  var isSelected = selectedZoneId === current.id;
+                  return html`<div key=${current.id} className=${"zone" + (isSelected ? " selected" : "")} style=${{ left: current.x, top: current.y, width: current.width, height: current.height, borderWidth: current.borderThickness, borderStyle: current.borderStyle, borderColor: safeHexColor(current.borderColor || current.color, "#d10d40"), backgroundColor: zoneFillColor(current.color, current.opacity), borderRadius: current.cornerRadius || 12, zIndex: Number(current.layer) || 0 }} onMouseDown=${function (event) { onZoneMouseDown(event, current); }} onDoubleClick=${function (event) { event.stopPropagation(); selectZone(current.id, true); }}>
+                    <span className="zone-title">${current.name}</span>
+                    ${isSelected ? html`<span className="zone-selection-outline"></span>` : null}
+                    ${isSelected ? renderZoneResizeHandles(current) : null}
+                  </div>`;
+                })}
+                ${zoneDraft ? html`<div className="zone zone-drawing-preview" style=${{ left: Math.min(zoneDraft.x, zoneDraft.x + zoneDraft.width), top: Math.min(zoneDraft.y, zoneDraft.y + zoneDraft.height), width: Math.abs(zoneDraft.width), height: Math.abs(zoneDraft.height) }}><span className="zone-title">Drawing Zone</span></div>` : null}
+              </div>
               <svg className="link-layer" viewBox="0 0 2000 1400" preserveAspectRatio="none">
                 <defs><marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#d10d40"></path></marker></defs>
                 ${data.relationships.filter(function (r) { return r.visible; }).map(function (r) {
@@ -4086,13 +4534,6 @@
                   </g>`;
                 })}
               </svg>
-
-              <div className="zone-layer">
-                ${data.zones.filter(function (z) { return !z.hidden; }).map(function (z) {
-                  return html`<div key=${z.id} className=${"zone" + (z.name.toLowerCase().indexOf("coterie") >= 0 ? " coterie" : "")} style=${{ left: z.x, top: z.y, width: z.width, height: z.height, borderWidth: z.borderThickness, borderColor: z.color, background: "rgba(209,13,64," + z.opacity + ")" }}>${z.name}</div>`;
-                })}
-                ${zoneDraft ? html`<div className="zone" style=${{ left: Math.min(zoneDraft.x, zoneDraft.x + zoneDraft.width), top: Math.min(zoneDraft.y, zoneDraft.y + zoneDraft.height), width: Math.abs(zoneDraft.width), height: Math.abs(zoneDraft.height) }}>Drawing zone</div>` : null}
-              </div>
 
               <div className="node-layer">
                 ${characterList().filter(function (c) { return !c.hidden; }).map(function (c) {
@@ -4128,7 +4569,7 @@
           <button onClick=${function () { commit(function (next) { next.characters = next.characters.filter(function (c) { return c.id !== contextMenu.id; }); next.relationships = next.relationships.filter(function (r) { return r.from !== contextMenu.id && r.to !== contextMenu.id; }); }); setContextMenu(null); }}>Delete Character</button>
         </div>` : html`<div className="context-menu-group">
           <button onClick=${function () { createCharacter(); setContextMenu(null); }}>New Character</button>
-          <button onClick=${function () { setDrawingZone(true); setContextMenu(null); }}>Draw Zone</button>
+          <button onClick=${function () { enterZoneDrawingMode(); setContextMenu(null); }}>Draw Zone</button>
           <button onClick=${function () { setView({ x: 80, y: 60, scale: 0.58 }); setContextMenu(null); }}>Reset View</button>
         </div>`}
       </div>` : null}
