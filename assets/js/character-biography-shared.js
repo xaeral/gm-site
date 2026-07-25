@@ -11,7 +11,7 @@
   var html = window.htm ? window.htm.bind(ReactRef.createElement) : null;
 
   var DB_NAME = "CampaignAtlas";
-  var DB_VERSION = 4;
+  var DB_VERSION = 5;
   var STORE_CHARACTERS = "characters";
   var STORE_RELATIONSHIPS = "relationships";
   var STORE_LOCATIONS = "locations";
@@ -19,11 +19,43 @@
   var STORE_ZONES = "zones";
   var STORE_SESSIONS = "sessions";
   var STORE_SETTINGS = "settings";
+  var STORE_NODE_LAYOUT = "nodeLayout";
   var LOCATION_SYNC_CHANNEL = "campaign-atlas-locations";
   var locationSanitizePromise = null;
   var PORTRAIT_BLOB_MARKER = "__campaignAtlasPortraitBlob__";
   var DEFAULT_PORTRAIT = "Default.png";
   var PORTRAIT_EDITOR_SIZE = 320;
+
+  // Canonical VTM V5 option lists used by the character editor's dropdowns.
+  var SECT_OPTIONS = ["None", "Anarch", "Ashirra", "Camarilla", "Sabbat"];
+  var CLAN_OPTIONS = [
+    "None",
+    "Banu Haqim",
+    "Brujah",
+    "Gangrel",
+    "Hecata",
+    "Lasombra",
+    "Malkavian",
+    "Ministry",
+    "Nosferatu",
+    "Ravnos",
+    "Salubri",
+    "Toreador",
+    "Tremere",
+    "Tzimisce",
+    "Ventrue",
+    "Caitiff",
+    "Thin-Blood"
+  ];
+  var STATUS_OPTIONS = ["Unknown", "Alive", "Embraced", "In Torpor", "Missing", "Destroyed"];
+
+  function optionsWithCurrentValue(options, currentValue) {
+    var value = String(currentValue || "").trim();
+    if (!value || options.indexOf(value) >= 0) {
+      return options;
+    }
+    return options.concat([value]);
+  }
 
   function clone(value) {
     if (value === undefined) {
@@ -42,7 +74,92 @@
   }
 
   function imgPath(fileName) {
-    return "../Relationship map/" + encodeURIComponent(fileName);
+    var prefix = /\/pages\//.test(window.location.pathname) ? "../Relationship map/" : "Relationship map/";
+    return prefix + encodeURIComponent(fileName);
+  }
+
+  var SECT_ICON_FILES = {
+    "Anarch": "Anarch.svg",
+    "Ashirra": "Ashirra.svg",
+    "Camarilla": "Camarilla.svg",
+    "Sabbat": "Sabbat.svg"
+  };
+
+  var CLAN_ICON_FILES = {
+    "Banu Haqim": "Banu-Haqim.svg",
+    "Brujah": "Brujah.svg",
+    "Gangrel": "Gangrel.svg",
+    "Hecata": "Hecata.svg",
+    "Lasombra": "Lasombra.svg",
+    "Malkavian": "Malkavian.svg",
+    "Ministry": "Ministry.svg",
+    "Nosferatu": "Nosferatu.svg",
+    "Ravnos": "Ravnos.svg",
+    "Salubri": "Salubri.svg",
+    "Toreador": "Toreador.svg",
+    "Tremere": "Tremere.svg",
+    "Tzimisce": "Tzimisce.svg",
+    "Ventrue": "Ventrue.svg",
+    "Caitiff": "Caitiff.svg",
+    "Thin-Blood": "Thin-blood.svg"
+  };
+
+  function buildIconLookup(filesByValue) {
+    var lookup = {};
+    Object.keys(filesByValue).forEach(function (key) {
+      lookup[key] = imgPath(filesByValue[key]);
+    });
+    return lookup;
+  }
+
+  var SECT_ICON_LOOKUP = buildIconLookup(SECT_ICON_FILES);
+  var CLAN_ICON_LOOKUP = buildIconLookup(CLAN_ICON_FILES);
+
+  function resolveSectIcon(value) {
+    var sect = String(value || "").trim();
+    return sect && sect !== "None" ? (SECT_ICON_LOOKUP[sect] || "") : "";
+  }
+
+  function resolveClanIcon(value) {
+    var clan = String(value || "").trim();
+    return clan && clan !== "None" ? (CLAN_ICON_LOOKUP[clan] || "") : "";
+  }
+
+  function FactionIcon(config) {
+    if (!config || !config.icon) {
+      return null;
+    }
+    var className = "atlas-icon" + (config.className ? " " + config.className : "");
+    var maskSource = "url('" + config.icon + "')";
+    var style = {
+      color: config.color || "currentColor",
+      backgroundColor: "currentColor",
+      maskImage: maskSource,
+      maskRepeat: "no-repeat",
+      maskPosition: "center",
+      maskSize: "contain",
+      maskMode: "alpha",
+      WebkitMaskImage: maskSource,
+      WebkitMaskRepeat: "no-repeat",
+      WebkitMaskPosition: "center",
+      WebkitMaskSize: "contain",
+      WebkitMaskMode: "alpha"
+    };
+    return html`<span className=${className} style=${style} aria-hidden="true"></span>`;
+  }
+
+  function FactionIconBadge(config) {
+    if (!config || !config.icon) {
+      return null;
+    }
+    var size = Math.max(24, Number(config.size) || 30);
+    var backgroundColor = config.backgroundColor || "var(--accent-red)";
+    var tooltip = config.tooltip || "";
+    var className = "icon-badge" + (config.className ? " " + config.className : "");
+    var badgeStyle = { width: size + "px", height: size + "px", background: backgroundColor };
+    return html`<span className=${className} style=${badgeStyle} title=${tooltip} aria-label=${tooltip}>
+      ${FactionIcon({ icon: config.icon, color: "#ffffff", className: "icon-badge-image" })}
+    </span>`;
   }
 
   function requestToPromise(request) {
@@ -148,11 +265,24 @@
     });
   }
 
+  function isLegacyZoneRecord(record) {
+    if (!record || typeof record !== "object") {
+      return false;
+    }
+    var id = String(record.id || "").trim().toLowerCase();
+    var name = String(record.name || record.title || "").trim().toLowerCase();
+    if (id.indexOf("zone-") === 0 || name === "new zone") {
+      return true;
+    }
+    return Number.isFinite(Number(record.x)) && Number.isFinite(Number(record.y)) && Number.isFinite(Number(record.width)) && Number.isFinite(Number(record.height));
+  }
+
   function openCampaignAtlasDb() {
     return new Promise(function (resolve, reject) {
       var request = window.indexedDB.open(DB_NAME, DB_VERSION);
       request.onupgradeneeded = function (event) {
         var db = event.target.result;
+        var transaction = event.target.transaction;
         if (!db.objectStoreNames.contains(STORE_CHARACTERS)) {
           db.createObjectStore(STORE_CHARACTERS, { keyPath: "id" });
         }
@@ -174,8 +304,33 @@
         if (!db.objectStoreNames.contains(STORE_SETTINGS)) {
           db.createObjectStore(STORE_SETTINGS, { keyPath: "id" });
         }
+        if (!db.objectStoreNames.contains(STORE_NODE_LAYOUT)) {
+          db.createObjectStore(STORE_NODE_LAYOUT, { keyPath: "id" });
+        }
+
+        if (event.oldVersion < 3 && db.objectStoreNames.contains("locations") && transaction) {
+          var legacyLocationStore = transaction.objectStore("locations");
+          var zoneStore = transaction.objectStore(STORE_ZONES);
+          var cursorReq = legacyLocationStore.openCursor();
+          cursorReq.onsuccess = function () {
+            var cursor = cursorReq.result;
+            if (!cursor) {
+              return;
+            }
+            var record = cursor.value;
+            if (isLegacyZoneRecord(record)) {
+              zoneStore.put(clone(record));
+              legacyLocationStore.delete(cursor.primaryKey);
+            }
+            cursor.continue();
+          };
+        }
       };
-      request.onsuccess = function () { resolve(request.result); };
+      request.onsuccess = function () {
+        var db = request.result;
+        db.onversionchange = function () { db.close(); };
+        resolve(db);
+      };
       request.onerror = function () { reject(request.error || new Error("Unable to open CampaignAtlas IndexedDB.")); };
     });
   }
@@ -509,6 +664,12 @@
       : clone((existingTimelineRecord && existingTimelineRecord.events) || []);
     delete nextCharacter.timeline;
 
+    var savedNow = new Date().toISOString();
+    nextCharacter.updatedAt = savedNow;
+    if (!nextCharacter.createdAt) {
+      nextCharacter.createdAt = (existingCharacter && existingCharacter.createdAt) || savedNow;
+    }
+
     characterStore.put(nextCharacter);
     timelineStore.put({ id: nextCharacter.id, events: timelineEvents });
 
@@ -526,15 +687,46 @@
     await transactionToPromise(transaction);
   }
 
+  async function clearAllCharacters() {
+    var db = await openCampaignAtlasDb();
+    var transaction = db.transaction([STORE_CHARACTERS, STORE_TIMELINE], "readwrite");
+    transaction.objectStore(STORE_CHARACTERS).clear();
+    transaction.objectStore(STORE_TIMELINE).clear();
+    await transactionToPromise(transaction);
+  }
+
+  async function clearAllCharacterTimelines() {
+    var db = await openCampaignAtlasDb();
+    var transaction = db.transaction([STORE_TIMELINE], "readwrite");
+    transaction.objectStore(STORE_TIMELINE).clear();
+    await transactionToPromise(transaction);
+  }
+
   async function saveRelationships(relationships) {
     var db = await openCampaignAtlasDb();
     var transaction = db.transaction([STORE_RELATIONSHIPS], "readwrite");
     var store = transaction.objectStore(STORE_RELATIONSHIPS);
+    var existingPromise = requestToPromise(store.getAll());
+    var existing = await existingPromise;
+    var existingById = {};
+    (existing || []).forEach(function (item) {
+      if (item && item.id) {
+        existingById[item.id] = item;
+      }
+    });
+    var now = new Date().toISOString();
+
     store.clear();
     (Array.isArray(relationships) ? relationships : []).forEach(function (relationship) {
-      if (relationship && relationship.id) {
-        store.put(clone(relationship));
+      if (!relationship || !relationship.id) {
+        return;
       }
+      var next = clone(relationship);
+      var prior = existingById[relationship.id];
+      var isUnchanged = prior && JSON.stringify(Object.assign({}, prior, { updatedAt: undefined, createdAt: undefined })) === JSON.stringify(Object.assign({}, next, { updatedAt: undefined, createdAt: undefined }));
+      next.createdAt = (prior && prior.createdAt) || next.createdAt || now;
+      next.updatedAt = isUnchanged ? ((prior && prior.updatedAt) || now) : now;
+      store.put(next);
     });
     await transactionToPromise(transaction);
   }
@@ -1415,6 +1607,26 @@
     var storyNotesLoading = _storyNotesLoading[0];
     var setStoryNotesLoading = _storyNotesLoading[1];
 
+    var _portraitWorkflow = useState({
+      open: false,
+      step: "replace",
+      source: "",
+      zoom: 1,
+      minZoom: 1,
+      cropCenterX: 0.5,
+      cropCenterY: 0.5,
+      imageWidth: 0,
+      imageHeight: 0,
+      urlInput: "",
+      error: ""
+    });
+    var portraitWorkflow = _portraitWorkflow[0];
+    var setPortraitWorkflow = _portraitWorkflow[1];
+
+    var portraitInputRef = useRef(null);
+    var portraitDragRef = useRef({ active: false, pointerId: null, lastX: 0, lastY: 0 });
+    var portraitStageSizeRef = useRef(PORTRAIT_EDITOR_SIZE);
+
     useEffect(function () {
       setDraft(character ? normalizeCharacterForProfile(character) : null);
       setEditMode(Boolean(settings.startInEdit));
@@ -1572,6 +1784,262 @@
     });
     var timelineDisplayEvents = timelineEventsForDisplay(draft.timeline || [], draft.dateOfBirth, draft.dateOfDeath);
     var timelineCanEdit = editMode && editable;
+    var portraitEditable = timelineCanEdit && Boolean(settings.allowPortraitEdit);
+    var hasCustomPortrait = Boolean(draft.portrait && (typeof draft.portrait === "object" ? draft.portrait.image : draft.portrait));
+
+    function triggerPortraitFileUpload() {
+      if (portraitInputRef.current) {
+        portraitInputRef.current.click();
+      }
+    }
+
+    function closePortraitWorkflow() {
+      setPortraitWorkflow(function (prev) { return Object.assign({}, prev, { open: false }); });
+    }
+
+    function openPortraitWorkflow() {
+      setPortraitWorkflow({
+        open: true,
+        step: "replace",
+        source: "",
+        zoom: 1,
+        minZoom: 1,
+        cropCenterX: 0.5,
+        cropCenterY: 0.5,
+        imageWidth: 0,
+        imageHeight: 0,
+        urlInput: "",
+        error: ""
+      });
+    }
+
+    function loadPortraitForAdjust(source, isExisting) {
+      if (!source) {
+        return;
+      }
+      var image = new Image();
+      image.onload = function () {
+        var canonical = isExisting ? canonicalPortraitFromRecord(draft) : null;
+        setPortraitWorkflow(function (prev) {
+          return Object.assign({}, prev, {
+            step: "adjust",
+            source: source,
+            imageWidth: image.naturalWidth || 1,
+            imageHeight: image.naturalHeight || 1,
+            zoom: canonical ? canonical.zoom : 1,
+            minZoom: 1,
+            cropCenterX: canonical ? canonical.cropCenterX : 0.5,
+            cropCenterY: canonical ? canonical.cropCenterY : 0.5,
+            error: ""
+          });
+        });
+      };
+      image.onerror = function () {
+        setPortraitWorkflow(function (prev) { return Object.assign({}, prev, { error: "Couldn't load that image." }); });
+      };
+      image.src = source;
+    }
+
+    function onPortraitFileSelected(event) {
+      var file = event.target.files && event.target.files[0];
+      event.target.value = "";
+      if (!file) {
+        return;
+      }
+      var reader = new FileReader();
+      reader.onload = function () {
+        var dataUrl = typeof reader.result === "string" ? reader.result : "";
+        if (dataUrl) {
+          loadPortraitForAdjust(dataUrl, false);
+        }
+      };
+      reader.onerror = function () {
+        setPortraitWorkflow(function (prev) { return Object.assign({}, prev, { error: "Couldn't read that file." }); });
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function applyPortraitFromUrl() {
+      var url = String(portraitWorkflow.urlInput || "").trim();
+      if (!url) {
+        return;
+      }
+      loadPortraitForAdjust(url, false);
+    }
+
+    function updatePortraitZoom(nextZoom) {
+      setPortraitWorkflow(function (prev) {
+        var zoom = clamp(toNumber(nextZoom, prev.zoom), prev.minZoom || 1, 4);
+        var clamped = clampCropCenter(prev.cropCenterX, prev.cropCenterY, zoom, prev.imageWidth, prev.imageHeight);
+        return Object.assign({}, prev, { zoom: zoom, cropCenterX: clamped.x, cropCenterY: clamped.y });
+      });
+    }
+
+    function nudgePortraitOffset(dxPixels, dyPixels) {
+      setPortraitWorkflow(function (prev) {
+        var stageSize = portraitStageSizeRef.current || PORTRAIT_EDITOR_SIZE;
+        var factors = portraitScaleFactors(prev.imageWidth, prev.imageHeight);
+        var nextX = prev.cropCenterX - (dxPixels / (stageSize * factors.width * prev.zoom));
+        var nextY = prev.cropCenterY - (dyPixels / (stageSize * factors.height * prev.zoom));
+        var clamped = clampCropCenter(nextX, nextY, prev.zoom, prev.imageWidth, prev.imageHeight);
+        return Object.assign({}, prev, { cropCenterX: clamped.x, cropCenterY: clamped.y });
+      });
+    }
+
+    function onPortraitAdjustPointerDown(event) {
+      event.preventDefault();
+      var stage = event.currentTarget;
+      portraitStageSizeRef.current = stage.getBoundingClientRect().width;
+      portraitDragRef.current = { active: true, pointerId: event.pointerId, lastX: event.clientX, lastY: event.clientY };
+      if (stage.setPointerCapture) {
+        try { stage.setPointerCapture(event.pointerId); } catch (_error) { /* best effort */ }
+      }
+    }
+
+    function onPortraitAdjustPointerMove(event) {
+      var drag = portraitDragRef.current;
+      if (!drag.active || drag.pointerId !== event.pointerId) {
+        return;
+      }
+      var dx = event.clientX - drag.lastX;
+      var dy = event.clientY - drag.lastY;
+      drag.lastX = event.clientX;
+      drag.lastY = event.clientY;
+      nudgePortraitOffset(dx, dy);
+    }
+
+    function onPortraitAdjustPointerUp(event) {
+      var drag = portraitDragRef.current;
+      if (drag.pointerId === event.pointerId) {
+        drag.active = false;
+        drag.pointerId = null;
+      }
+    }
+
+    function onPortraitAdjustWheel(event) {
+      event.preventDefault();
+      // Read/compute the zoom delta from `prev` inside the updater (not from
+      // the closed-over `portraitWorkflow.zoom`) so rapid-fire wheel ticks --
+      // which can queue several updates before a re-render lands -- each
+      // build on the latest zoom instead of a stale snapshot. This is what
+      // keeps the slider, wheel and stored zoom value in sync.
+      var delta = event.deltaY > 0 ? -0.08 : 0.08;
+      setPortraitWorkflow(function (prev) {
+        var zoom = clamp(toNumber(prev.zoom, 1) + delta, prev.minZoom || 1, 4);
+        var clamped = clampCropCenter(prev.cropCenterX, prev.cropCenterY, zoom, prev.imageWidth, prev.imageHeight);
+        return Object.assign({}, prev, { zoom: zoom, cropCenterX: clamped.x, cropCenterY: clamped.y });
+      });
+    }
+
+    function savePortraitWorkflow() {
+      updateDraftField("portrait", {
+        image: portraitWorkflow.source,
+        imageWidth: portraitWorkflow.imageWidth,
+        imageHeight: portraitWorkflow.imageHeight,
+        cropCenterX: portraitWorkflow.cropCenterX,
+        cropCenterY: portraitWorkflow.cropCenterY,
+        zoom: portraitWorkflow.zoom
+      });
+      closePortraitWorkflow();
+    }
+
+    function removePortrait() {
+      updateDraftField("portrait", null);
+    }
+
+    function renderPortraitWorkflowModal() {
+      if (!portraitWorkflow.open) {
+        return null;
+      }
+      var model = portraitRenderModel({
+        imageWidth: portraitWorkflow.imageWidth,
+        imageHeight: portraitWorkflow.imageHeight,
+        cropCenterX: portraitWorkflow.cropCenterX,
+        cropCenterY: portraitWorkflow.cropCenterY,
+        zoom: portraitWorkflow.zoom
+      });
+      var adjustImageStyle = {
+        width: (model.widthScale * 100) + "%",
+        height: (model.heightScale * 100) + "%",
+        left: ((0.5 - (model.cropCenterX * model.widthScale)) * 100) + "%",
+        top: ((0.5 - (model.cropCenterY * model.heightScale)) * 100) + "%",
+        transform: "none"
+      };
+      var zoomMin = portraitWorkflow.minZoom || 1;
+      var zoomMax = 4;
+      var zoomFillPercent = zoomMax > zoomMin
+        ? clamp(((portraitWorkflow.zoom - zoomMin) / (zoomMax - zoomMin)) * 100, 0, 100)
+        : 0;
+      var zoomSliderStyle = { "--fill": zoomFillPercent + "%" };
+
+      return html`<div className="portrait-workflow-backdrop" onClick=${closePortraitWorkflow}>
+        <div className="portrait-workflow-modal" onClick=${function (event) { event.stopPropagation(); }}>
+          ${portraitWorkflow.step === "replace" ? html`<div className="portrait-workflow-step">
+            <header className="portrait-workflow-header">
+              <h3>REPLACE PORTRAIT</h3>
+            </header>
+            <div className="portrait-replace-grid">
+              <button type="button" className="portrait-replace-action" onClick=${triggerPortraitFileUpload}>
+                <strong>Upload from Computer</strong>
+                <span>JPEG, PNG, WebP, GIF</span>
+              </button>
+              <div className="portrait-replace-action url-action">
+                <strong>Import from URL</strong>
+                <span>Paste a public image URL</span>
+                <input
+                  type="url"
+                  value=${portraitWorkflow.urlInput}
+                  placeholder="https://example.com/portrait.jpg"
+                  onInput=${function (event) {
+                    var value = event.target.value;
+                    setPortraitWorkflow(function (prev) { return Object.assign({}, prev, { urlInput: value, error: "" }); });
+                  }}
+                />
+                <button type="button" onClick=${applyPortraitFromUrl}>Load URL</button>
+              </div>
+            </div>
+            ${hasCustomPortrait ? html`<button type="button" className="portrait-adjust-current" onClick=${function () { loadPortraitForAdjust(portraitState(draft).src, true); }}>Adjust Current Portrait</button>` : null}
+            ${portraitWorkflow.error ? html`<p className="portrait-workflow-error">${portraitWorkflow.error}</p>` : null}
+            <footer className="portrait-workflow-actions">
+              <button type="button" onClick=${closePortraitWorkflow}>Cancel</button>
+            </footer>
+          </div>` : html`<div className="portrait-workflow-step">
+            <header className="portrait-workflow-header">
+              <h3>ADJUST PORTRAIT</h3>
+            </header>
+            <div
+              className="portrait-adjust-stage"
+              onPointerDown=${onPortraitAdjustPointerDown}
+              onPointerMove=${onPortraitAdjustPointerMove}
+              onPointerUp=${onPortraitAdjustPointerUp}
+              onPointerCancel=${onPortraitAdjustPointerUp}
+              onWheel=${onPortraitAdjustWheel}
+            >
+              ${portraitWorkflow.source ? html`<img className="portrait-adjust-image" src=${portraitWorkflow.source} alt="Portrait adjustment" style=${adjustImageStyle} draggable="false" />` : null}
+              <div className="portrait-adjust-mask"></div>
+            </div>
+            <div className="portrait-adjust-zoom-row">
+              <span aria-hidden="true">-</span>
+              <input
+                type="range"
+                min=${zoomMin}
+                max=${zoomMax}
+                step="0.01"
+                value=${portraitWorkflow.zoom}
+                style=${zoomSliderStyle}
+                onInput=${function (event) { updatePortraitZoom(Number(event.target.value)); }}
+              />
+              <span aria-hidden="true">+</span>
+            </div>
+            ${portraitWorkflow.error ? html`<p className="portrait-workflow-error">${portraitWorkflow.error}</p>` : null}
+            <footer className="portrait-workflow-actions">
+              <button type="button" onClick=${function () { setPortraitWorkflow(function (prev) { return Object.assign({}, prev, { step: "replace", error: "" }); }); }}>Back</button>
+              <button type="button" onClick=${savePortraitWorkflow}>Save Portrait</button>
+            </footer>
+          </div>`}
+        </div>
+      </div>`;
+    }
 
     function detailTableRow(label, key, options) {
       var config = options && typeof options === "object" ? options : {};
@@ -1598,21 +2066,37 @@
       statusTags.unshift(draft.status);
     }
 
+    var headerClanIcon = resolveClanIcon(draft.clan);
+    var headerSectIcon = resolveSectIcon(draft.sect);
+
     return html`<section className="character-profile-page">
       <div className="profile-dossier-shell">
         <div className="profile-content-container">
           <header className="profile-header">
             <div className="profile-header-main">
-              <${CharacterProfilePortrait} record=${draft} className="profile-header-portrait" />
+              <div className="profile-portrait-column">
+                <${CharacterProfilePortrait}
+                  record=${draft}
+                  className="profile-header-portrait"
+                  editable=${portraitEditable}
+                  onClick=${portraitEditable ? openPortraitWorkflow : null}
+                />
+                ${portraitEditable ? html`<input ref=${portraitInputRef} type="file" accept="image/*" style=${{ display: "none" }} onChange=${onPortraitFileSelected} />` : null}
+                ${portraitEditable && hasCustomPortrait ? html`<button type="button" className="profile-portrait-remove-button" onClick=${removePortrait}>Remove Portrait</button>` : null}
+              </div>
               <div className="profile-title-block">
                 ${timelineCanEdit
-                  ? html`<input className="profile-name-input" value=${draft.name || ""} onInput=${function (event) { updateDraftField("name", event.target.value); }} />`
+                  ? html`<input className="profile-name-input" value=${draft.name || ""} placeholder="Character Name" onInput=${function (event) { updateDraftField("name", event.target.value); }} />`
                   : html`<h1>${draft.name || "Unnamed Character"}</h1>`}
                 <div className="profile-header-facts">
-                  <span><strong>Clan</strong>${draft.clan || "None"}</span>
-                  <span><strong>Sect</strong>${draft.sect || "None"}</span>
-                  <span><strong>Generation</strong>${draft.generation || "Unknown"}</span>
-                  <span><strong>Predator Type</strong>${draft.predatorType || "Unknown"}</span>
+                  <div className="profile-fact-row">
+                    ${headerClanIcon ? FactionIconBadge({ icon: headerClanIcon, size: 28, tooltip: draft.clan }) : null}
+                    <span className="profile-fact-value">${draft.clan || "None"}</span>
+                  </div>
+                  <div className="profile-fact-row">
+                    ${headerSectIcon ? FactionIconBadge({ icon: headerSectIcon, size: 28, tooltip: draft.sect }) : null}
+                    <span className="profile-fact-value">${draft.sect || "None"}</span>
+                  </div>
                 </div>
                 <div className="profile-header-tags" aria-label="Status tags">
                   ${statusTags.length
@@ -1622,16 +2106,32 @@
                     : html`<span className="tag">No Status Tags</span>`}
                 </div>
                 ${timelineCanEdit ? html`<div className="profile-header-editor-grid">
-                  <input value=${draft.clan || ""} onInput=${function (event) { updateDraftField("clan", event.target.value); }} placeholder="Clan" />
-                  <input value=${draft.sect || ""} onInput=${function (event) { updateDraftField("sect", event.target.value); }} placeholder="Sect" />
-                  <input value=${draft.generation || ""} onInput=${function (event) { updateDraftField("generation", event.target.value); }} placeholder="Generation" />
-                  <input value=${draft.predatorType || ""} onInput=${function (event) { updateDraftField("predatorType", event.target.value); }} placeholder="Predator Type" />
-                  <input value=${draft.status || ""} onInput=${function (event) { updateDraftField("status", event.target.value); }} placeholder="Status" />
+                  <select value=${draft.clan || "None"} onChange=${function (event) { updateDraftField("clan", event.target.value); }}>
+                    ${optionsWithCurrentValue(CLAN_OPTIONS, draft.clan).map(function (option) {
+                      return html`<option key=${"clan-opt-" + option} value=${option}>${option}</option>`;
+                    })}
+                  </select>
+                  <select value=${draft.sect || "None"} onChange=${function (event) { updateDraftField("sect", event.target.value); }}>
+                    ${optionsWithCurrentValue(SECT_OPTIONS, draft.sect).map(function (option) {
+                      return html`<option key=${"sect-opt-" + option} value=${option}>${option}</option>`;
+                    })}
+                  </select>
+                  <select value=${draft.status || "Unknown"} onChange=${function (event) { updateDraftField("status", event.target.value); }}>
+                    ${optionsWithCurrentValue(STATUS_OPTIONS, draft.status).map(function (option) {
+                      return html`<option key=${"status-opt-" + option} value=${option}>${option}</option>`;
+                    })}
+                  </select>
                   <input value=${(Array.isArray(draft.tags) ? draft.tags.join(", ") : "")} onInput=${function (event) { updateDraftField("tags", event.target.value.split(",").map(function (tag) { return tag.trim(); }).filter(Boolean)); }} placeholder="Tags (comma separated)" />
                 </div>` : null}
               </div>
             </div>
             <div className="profile-header-controls">
+              ${editable ? (timelineCanEdit
+                ? html`<div className="profile-edit-actions-row">
+                    <button type="button" className="profile-save-button" onClick=${commitSave}>Save</button>
+                    <button type="button" className="profile-cancel-button secondary" onClick=${function () { setDraft(normalizeCharacterForProfile(character)); setEditMode(false); }}>Cancel</button>
+                  </div>`
+                : html`<button type="button" className="profile-biography-edit-button" onClick=${function () { setEditMode(true); }}>Edit</button>`) : null}
               ${onRequestClose ? html`<button type="button" className="icon-button-34 profile-close-button" onClick=${onRequestClose}>x</button>` : null}
             </div>
           </header>
@@ -1660,11 +2160,6 @@
                       Story Notes
                     </button>
                   </div>
-                  ${editable ? html`<div className="profile-tab-actions">
-                    ${timelineCanEdit
-                      ? html`<div className="profile-edit-actions-row"><button type="button" onClick=${commitSave}>Save</button><button type="button" onClick=${function () { setDraft(normalizeCharacterForProfile(character)); setEditMode(false); }}>Cancel</button></div>`
-                      : html`<button type="button" className="profile-biography-edit-button" onClick=${function () { setEditMode(true); }}>Edit</button>`}
-                  </div>` : null}
                 </div>
 
                 <div className="profile-tab-panels">
@@ -1740,9 +2235,13 @@
                       <div className="timeline-log-head" onClick=${function () { setExpandedTimelineKey(isExpanded ? null : key); }}>
                         <div className="timeline-log-main chronicle-entry-row">
                           <span className="chronicle-entry-year">${yearLabel}</span>
-                          <span className="timeline-log-caret">${isExpanded ? "v" : ">"}</span>
-                          <p className="timeline-log-title-row"><strong>${item.title || "Untitled Event"}</strong>${isSystem ? html`<span className="timeline-system-badge">System Event</span>` : null}</p>
-                          ${isExpanded ? html`<p className="timeline-log-date">${item.date ? formatDisplayDate(item.date) : "Unknown Date"}</p>` : null}
+                          <div className="timeline-log-content">
+                            <p className="timeline-log-title-row">
+                              <strong>${item.title || "Untitled Event"}</strong>
+                              <span className="timeline-log-tags">${isSystem ? html`<span className="timeline-system-badge">System Event</span>` : null}</span>
+                            </p>
+                            ${isExpanded ? html`<p className="timeline-log-date">${item.date ? formatDisplayDate(item.date) : "Unknown Date"}</p>` : null}
+                          </div>
                         </div>
                         ${timelineCanEdit && !isSystem && isExpanded ? html`<div className="timeline-log-actions"><button type="button" className="timeline-action-button" onClick=${function (event) { event.stopPropagation(); removeTimelineEvent(entry.sourceIndex); }}>Delete</button></div>` : null}
                       </div>
@@ -1766,15 +2265,18 @@
               <article className="profile-section profile-details-panel">
                 <h3>Character Details</h3>
                 <dl className="profile-details-table">
+                  <div className="profile-details-group-label">Identity</div>
                   ${detailTableRow("Clan", "clan")}
                   ${detailTableRow("Sect", "sect")}
                   ${detailTableRow("Generation", "generation")}
                   ${detailTableRow("Predator Type", "predatorType")}
+                  <div className="profile-details-group-label">Roleplay Hooks</div>
                   ${detailTableRow("Concept", "concept", { multiline: true })}
                   ${detailTableRow("Ambition", "ambition", { multiline: true })}
                   ${detailTableRow("Desire", "desire", { multiline: true })}
                   ${timelineCanEdit ? detailTableRow("Convictions", "convictions", { multiline: true }) : null}
                   ${timelineCanEdit ? detailTableRow("Touchstones", "touchstones", { multiline: true }) : null}
+                  <div className="profile-details-group-label">Vitals</div>
                   ${detailTableRow("True Age", "trueAge")}
                   ${detailTableRow("Apparent Age", "apparentAge")}
                   ${detailTableRow("Date of Birth", "dateOfBirth", { type: "date" })}
@@ -1788,11 +2290,15 @@
           </div>
         </div>
       </div>
+      ${portraitEditable ? renderPortraitWorkflowModal() : null}
     </section>`;
   }
 
   window.CampaignAtlasCharactersShared = {
+    DB_NAME: DB_NAME,
+    DB_VERSION: DB_VERSION,
     clone: clone,
+    openCampaignAtlasDb: openCampaignAtlasDb,
     characterBiographyHtml: characterBiographyHtml,
     normalizeIsoDate: normalizeIsoDate,
     formatDisplayDate: formatDisplayDate,
@@ -1815,8 +2321,11 @@
     saveLocationRecord: saveLocationRecord,
     deleteLocationRecord: deleteLocationRecord,
     subscribeLocationRecordChanges: subscribeLocationRecordChanges,
+    notifyLocationRecordsChanged: notifyLocationRecordsChanged,
     saveCharacterToCampaignAtlas: saveCharacterToCampaignAtlas,
     deleteCharacterFromCampaignAtlas: deleteCharacterFromCampaignAtlas,
+    clearAllCharacters: clearAllCharacters,
+    clearAllCharacterTimelines: clearAllCharacterTimelines,
     saveRelationships: saveRelationships,
     CharacterBiographyWorkspace: CharacterBiographyWorkspace,
     CharacterProfilePortrait: CharacterProfilePortrait,

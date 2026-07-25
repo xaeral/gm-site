@@ -9,12 +9,13 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="assets/css/styles.css" />
+  <link rel="stylesheet" href="assets/css/relationship-map-app.css" />
 </head>
-<body>
+<body class="workspace-page">
   <div class="site-shell">
     <aside class="sidebar" id="sidebar">
       <div class="brand">
-        
+
         <h1>Chronicle Codex</h1>
         <p>Central Hub</p>
       </div>
@@ -37,7 +38,7 @@
       </div>
     </aside>
 
-    <main class="main-content">
+    <main class="main-content app-workspace-main">
       <header class="topbar">
         <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="sidebar">Menu</button>
         <div class="topbar-title">
@@ -46,95 +47,7 @@
         </div>
       </header>
 
-      <section class="search-panel card">
-        <label for="globalSearch">Search Campaign Content</label>
-        <div class="search-row">
-          <input id="globalSearch" type="search" placeholder="Search NPCs, clues, locations, sessions..." autocomplete="off" />
-          <button id="clearSearch" type="button">Clear</button>
-        </div>
-        <ul id="searchResults" class="search-results" aria-live="polite"></ul>
-      </section>
-
-      <section class="dashboard-grid" aria-label="Quick access">
-        <article class="card quick-card">
-          <h3>GM Notes</h3>
-          <p>Direct access to your published campaign notebook.</p>
-          <a href="pages/gm-notes.html">Open Notes</a>
-        </article>
-        <article class="card quick-card">
-          <h3>Relationship Map</h3>
-          <p>Inspect alliance webs, factions, and hidden ties.</p>
-          <a href="pages/relationship-map.html">Open Map</a>
-        </article>
-        <article class="card quick-card">
-          <h3>Sessions</h3>
-          <p>Track prep status, unresolved hooks, and recap flow.</p>
-          <a href="pages/sessions.html">View Sessions</a>
-        </article>
-        <article class="card quick-card">
-          <h3>Encounter Vault</h3>
-          <p>Organize active combat scenes and challenge ideas.</p>
-          <a href="pages/tools.html">Open Tools</a>
-        </article>
-      </section>
-
-      <section class="columns">
-        <article class="card" aria-labelledby="recent-notes-heading">
-          <div class="section-heading">
-            <h3 id="recent-notes-heading">Recent Notes</h3>
-            <a href="pages/gm-notes.html">View all</a>
-          </div>
-          <ul id="recentNotesList" class="stack-list"></ul>
-        </article>
-
-        <article class="card" aria-labelledby="pinned-npcs-heading" id="npcs">
-          <div class="section-heading">
-            <h3 id="pinned-npcs-heading">Pinned NPCs</h3>
-            <a href="pages/characters.html">Manage list</a>
-          </div>
-          <ul id="pinnedNpcList" class="stack-list"></ul>
-        </article>
-
-        <article class="card" aria-labelledby="active-threads-heading">
-          <div class="section-heading">
-            <h3 id="active-threads-heading">Active Threads</h3>
-            <a href="#clues">Cross-reference clues</a>
-          </div>
-          <ul id="activeThreadsList" class="stack-list"></ul>
-        </article>
-      </section>
-
-      <section class="detail-grid">
-        <article class="card" id="locations">
-          <h3>Locations</h3>
-          <p class="note"><a class="inline-link" href="pages/locations.html">Open Locations Database</a></p>
-          <ul id="locationList" class="tag-list"></ul>
-        </article>
-
-        <article class="card" id="clues">
-          <h3>Clues</h3>
-          <ul id="clueList" class="tag-list"></ul>
-        </article>
-
-        <article class="card" id="sessions">
-          <h3>Sessions</h3>
-          <p class="note"><a class="inline-link" href="pages/sessions.html">Open Sessions Archive</a></p>
-          <ul id="sessionList" class="tag-list"></ul>
-        </article>
-
-        <article class="card" id="encounters">
-          <h3>Encounters</h3>
-          <ul id="encounterList" class="tag-list"></ul>
-        </article>
-      </section>
-
-      <section class="card" id="quick-links">
-        <div class="section-heading">
-          <h3>Quick Links</h3>
-          <a href="#">Edit links</a>
-        </div>
-        <ul id="quickLinksList" class="link-grid"></ul>
-      </section>
+      <div id="homeDashboardApp" class="home-dashboard-app-root"></div>
 
       <footer class="page-footer">
         <small>Chronicle Codex Dashboard</small>
@@ -143,8 +56,17 @@
     </main>
   </div>
 
-  <script src="assets/js/data.js"></script>
   <script src="assets/js/common.js"></script>
-  <script src="assets/js/app.js"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+  <script src="assets/js/character-biography-shared.js"></script>
+  <script src="assets/js/character-service.js"></script>
+  <script src="assets/js/relationship-service.js"></script>
+  <script src="assets/js/map-layout-service.js"></script>
+  <script src="assets/js/session-journal-shared.js"></script>
+  <script src="assets/js/gm-notebook-shared.js"></script>
+  <script src="assets/js/home-dashboard-data.js"></script>
+  <script src="assets/js/home-dashboard.js"></script>
 </body>
 </html>

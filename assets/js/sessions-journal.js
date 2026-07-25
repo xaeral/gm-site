@@ -11,8 +11,9 @@
 
   var journal = window.ChronicleSessionJournal;
   var shared = window.CampaignAtlasCharactersShared || {};
+  var characterService = window.CharacterService;
 
-  if (!journal || !shared.readCampaignAtlasState || !shared.saveCharacterToCampaignAtlas || !shared.CharacterBiographyWorkspace) {
+  if (!journal || !characterService || !shared.CharacterBiographyWorkspace) {
     var target = document.getElementById("sessionJournalApp");
     if (target) {
       target.textContent = "Session Journal data layer unavailable.";
@@ -341,17 +342,17 @@
       var cancelled = false;
       Promise.all([
         journal.readSessionJournalState(),
-        shared.readCampaignAtlasState(),
+        characterService.getAll(),
         shared.readLocationRecords ? shared.readLocationRecords() : Promise.resolve([])
       ]).then(function (results) {
         if (cancelled) {
           return;
         }
         var journalState = results[0] || { sessions: [] };
-        var atlas = results[1] || { characters: [] };
+        var characterList = results[1] || [];
         var locationRecords = results[2] || [];
         setState({ sessions: journalState.sessions || [] });
-        setCharacters(Array.isArray(atlas.characters) ? atlas.characters : []);
+        setCharacters(Array.isArray(characterList) ? characterList : []);
         setLocations(Array.isArray(locationRecords) ? locationRecords : []);
         if (!selectedSessionId && journalState.sessions && journalState.sessions.length) {
           setSelectedSessionId(journalState.sessions[0].id);
@@ -595,9 +596,9 @@
       if (!validEvents.length) {
         return;
       }
-      var atlas = await shared.readCampaignAtlasState();
+      var allCharacters = await characterService.getAll();
       var characterById = {};
-      (atlas.characters || []).forEach(function (character) {
+      (allCharacters || []).forEach(function (character) {
         characterById[character.id] = clone(character);
       });
 
@@ -624,7 +625,8 @@
             description: event.description || event.rawText || "",
             location: event.locationId || "",
             relatedSession: "Session " + sessionPayload.sessionNumber,
-            sourceId: sourceId
+            sourceId: sourceId,
+            createdAt: new Date().toISOString()
           });
           character.timeline = timeline;
           characterById[characterId] = character;
@@ -637,7 +639,7 @@
         return;
       }
       await Promise.all(changedCharacters.map(function (character) {
-        return shared.saveCharacterToCampaignAtlas(character);
+        return characterService.save(character);
       }));
 
       if (typeof window.BroadcastChannel === "function") {

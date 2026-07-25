@@ -10,7 +10,8 @@
   var html = htm.bind(React.createElement);
 
   var shared = window.CampaignAtlasCharactersShared || {};
-  if (!shared.readCampaignAtlasState || !shared.saveCharacterToCampaignAtlas || !shared.clone) {
+  var characterService = window.CharacterService;
+  if (!characterService || !shared.clone) {
     return;
   }
 
@@ -321,12 +322,12 @@
 
     useEffect(function () {
       var cancelled = false;
-      shared.readCampaignAtlasState()
-        .then(function (state) {
+      characterService.getAll()
+        .then(function (characters) {
           if (cancelled) {
             return;
           }
-          var nextCharacters = Array.isArray(state.characters) ? state.characters : [];
+          var nextCharacters = Array.isArray(characters) ? characters : [];
           setCharacters(nextCharacters.map(function (character) {
             var next = Object.assign({}, character);
             next.timeline = sortTimelineEvents((next.timeline || []).map(normalizeTimelineEvent));
@@ -975,7 +976,7 @@
     function persistCharacters(changedCharacters) {
       var channel = channelRef.current;
       (changedCharacters || []).forEach(function (character) {
-        shared.saveCharacterToCampaignAtlas(character).catch(function () { return null; });
+        characterService.save(character).catch(function () { return null; });
         if (channel) {
           channel.postMessage({
             type: "character-updated",
@@ -1010,6 +1011,9 @@
         tags: parseTags(draft.tags),
         extraMeta: Object.assign({}, draft.extraMeta || {})
       };
+      if (modalState.mode !== "edit") {
+        normalizedEvent.createdAt = new Date().toISOString();
+      }
 
       var changedById = {};
       var nextCharacters = characters.map(function (character) {
@@ -1125,15 +1129,6 @@
                 role="listitem"
                 onClick=${function () { setExpandedEntryKey(isExpanded ? null : entry.key); }}>
                 <div className="chronicle-entry-actions">
-                  <button
-                    type="button"
-                    className="chronicle-entry-action chronicle-expand-action"
-                    aria-label=${isExpanded ? "Collapse event" : "Expand event"}
-                    onClick=${function (event) {
-                      event.stopPropagation();
-                      setExpandedEntryKey(isExpanded ? null : entry.key);
-                    }}
-                  >${isExpanded ? "v" : ">"}</button>
                   ${!entry.system ? html`<button
                     type="button"
                     className="chronicle-entry-action chronicle-edit-action"

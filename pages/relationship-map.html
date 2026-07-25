@@ -10,6 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="../assets/css/styles.css" />
   <link rel="stylesheet" href="../assets/css/relationship-map-app.css" />
+  <link rel="stylesheet" href="https://unpkg.com/reactflow@11.11.4/dist/style.css" />
 </head>
 <body class="workspace-page">
   <div class="site-shell">
@@ -37,7 +38,7 @@
       </div>
     </aside>
 
-    <main class="main-content relationship-main-content">
+    <main class="main-content app-workspace-main">
       <header class="topbar">
         <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="sidebar">Menu</button>
         <div class="topbar-title">
@@ -47,6 +48,11 @@
       </header>
 
       <div id="app" class="map-app-root"></div>
+
+      <footer class="page-footer">
+        <small>Chronicle Codex Dashboard</small>
+        <small id="yearStamp"></small>
+      </footer>
     </main>
   </div>
 
@@ -54,7 +60,11 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+  <script src="https://unpkg.com/reactflow@11.11.4/dist/umd/index.js"></script>
   <script src="../assets/js/character-biography-shared.js"></script>
+  <script src="../assets/js/character-service.js"></script>
+  <script src="../assets/js/relationship-service.js"></script>
+  <script src="../assets/js/map-layout-service.js"></script>
   <script src="../assets/js/relationship-map-react.js"></script>
 </body>
 </html>

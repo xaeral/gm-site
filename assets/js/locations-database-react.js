@@ -11,7 +11,9 @@
   var OWNER_NONE_LABEL = "None";
 
   var shared = window.CampaignAtlasCharactersShared || {};
-  if (!shared.readCampaignAtlasState || !shared.readLocationRecords || !shared.readLocationRecordById || !shared.saveLocationRecord || !shared.CharacterBiographyWorkspace) {
+  var characterService = window.CharacterService;
+  var relationshipService = window.RelationshipService;
+  if (!characterService || !relationshipService || !shared.readLocationRecords || !shared.readLocationRecordById || !shared.saveLocationRecord || !shared.CharacterBiographyWorkspace) {
     return;
   }
 
@@ -318,13 +320,13 @@
 
     useEffect(function () {
       var cancelled = false;
-      shared.readCampaignAtlasState()
-        .then(function (state) {
+      Promise.all([characterService.getAll(), relationshipService.getAll()])
+        .then(function (results) {
           if (cancelled) {
             return null;
           }
-          setCharacters(Array.isArray(state.characters) ? state.characters : []);
-          setRelationships(Array.isArray(state.relationships) ? state.relationships : []);
+          setCharacters(Array.isArray(results[0]) ? results[0] : []);
+          setRelationships(Array.isArray(results[1]) ? results[1] : []);
           return shared.readLocationRecords();
         })
         .then(function (records) {

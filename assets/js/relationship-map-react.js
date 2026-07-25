@@ -10,17 +10,32 @@
   var SharedCharacterProfileWorkspace = sharedCharacters.CharacterProfileWorkspace || null;
   var CHARACTER_SYNC_CHANNEL = "campaign-atlas-characters";
 
-  var STORAGE_KEY = "relationship-map-desktop-v1";
-  var DB_NAME = "CampaignAtlas";
-  var DB_VERSION = 4;
-  var STORE_CHARACTERS = "characters";
-  var STORE_RELATIONSHIPS = "relationships";
-  var STORE_ZONES = "zones";
-  var STORE_TIMELINE = "timeline";
-  var STORE_SESSIONS = "sessions";
-  var STORE_SETTINGS = "settings";
-  var STORE_LOCATIONS = "locations";
-  var dbPromise = null;
+  // All persistence access is routed through these three services. This module
+  // never opens IndexedDB directly: CharacterService owns character records,
+  // RelationshipService owns relationship records, and MapLayoutService owns
+  // this map's own view state (node layout, zones, viewport, preferences).
+  var characterService = window.CharacterService;
+  var relationshipService = window.RelationshipService;
+  var mapLayoutService = window.MapLayoutService;
+
+  // React Flow is the rendering engine for this page: node/edge rendering,
+  // dragging, zooming, panning and selection are all owned by React Flow.
+  // This module only supplies node/edge data (from CharacterService and
+  // RelationshipService) and persists layout changes (via MapLayoutService).
+  var ReactFlowLib = window.ReactFlow || {};
+  var ReactFlowComponent = ReactFlowLib.ReactFlow;
+  var ReactFlowProvider = ReactFlowLib.ReactFlowProvider;
+  var ReactFlowHandle = ReactFlowLib.Handle;
+  var ReactFlowPosition = ReactFlowLib.Position || { Left: "left", Right: "right", Top: "top", Bottom: "bottom" };
+  var ReactFlowConnectionMode = ReactFlowLib.ConnectionMode || { Strict: "strict", Loose: "loose" };
+  var ReactFlowMarkerType = ReactFlowLib.MarkerType || { Arrow: "arrow", ArrowClosed: "arrowclosed" };
+  var ReactFlowBaseEdge = ReactFlowLib.BaseEdge;
+  var ReactFlowGetBezierPath = ReactFlowLib.getBezierPath;
+  var ReactFlowEdgeLabelRenderer = ReactFlowLib.EdgeLabelRenderer;
+  var useFlowNodesState = ReactFlowLib.useNodesState;
+  var useFlowEdgesState = ReactFlowLib.useEdgesState;
+  var useReactFlowInstance = ReactFlowLib.useReactFlow;
+
   var persistenceQueue = Promise.resolve();
 
   var CAMPAIGN_ATLAS_ICON_ASSETS = {
@@ -74,13 +89,382 @@
   var RELATIONSHIP_ROUTING_MODE_OPTIONS = ["auto", "straight", "curved"];
   var CUSTOM_RELATIONSHIP_FALLBACK_LABEL = "Custom Relationship";
 
+  // Edge-stroke translation for each declared relationship line style. Solid/
+  // dashed/dotted are plain SVG dash patterns; chain/droplets are dash-pattern
+  // approximations. solid/dashed/dotted render this way for real -- a plain
+  // stroked path is the correct, cheapest representation for them, and
+  // always will be. chain/droplets keep dasharray entries too, purely as a
+  // fallback for when EdgeLabelRenderer isn't available (see
+  // DECORATIVE_EDGE_RENDERERS below, which is what actually draws them).
+  var RELATIONSHIP_STYLE_DASHARRAY = {
+    solid: "none",
+    dashed: "9 5",
+    dotted: "1.5 5",
+    chain: "10 3 2 3",
+    droplets: "1 9"
+  };
+
+  var CHAIN_LINK_ICON = "../assets/Icons/chain-link.svg";
+  var CHAIN_LINK_ASPECT = 24 / 4.95;
+
+  // Four hand-drawn droplet-tile variants (rather than one repeated asset)
+  // so the trail doesn't read as an obviously stamped pattern. Each has its
+  // own true aspect ratio, computed from its own SVG's width/height -- a
+  // tile is never stretched/squashed regardless of which variant a given
+  // placement draws (see pickTileVariant).
+  var DROPLET_VARIANT_ICONS = [
+    { icon: "../assets/Icons/droplet1.svg", aspect: 14682.07 / 2415 },
+    { icon: "../assets/Icons/droplet2.svg", aspect: 11100.9 / 2199.98 },
+    { icon: "../assets/Icons/droplet3.svg", aspect: 4985.51 / 2173.74 },
+    { icon: "../assets/Icons/droplet4.svg", aspect: 8483.36 / 1785.69 }
+  ];
+
+  // Default fraction of a tile's own rendered width to advance before
+  // placing the next one, for any tiled style that opts into overlap-based
+  // "stamp" spacing (see the `tileAdvanceRatio` style config field and
+  // resolveTileSpacing) instead of a fixed absolute arc-length `spacing`.
+  // 0.4 means each new stamp only advances 40% of the previous tile's own
+  // width -- a 60% overlap -- so stamps merge into one continuous smear
+  // rather than reading as separate, evenly-spaced icons.
+  var TILE_ADVANCE_RATIO_DEFAULT = 0.4;
+
+  // The arrow marker's own rendered length along the path (matches the
+  // width/height relationshipEdgeMarker actually draws it at -- one source
+  // of truth for both, so the padding calculation below can never drift out
+  // of sync with the marker's real size).
+  var RELATIONSHIP_ARROW_MARKER_SIZE = 18;
+
+  // Configurable safety margin (in flow/path units, screen space at 100%
+  // zoom), on top of RELATIONSHIP_ARROW_MARKER_SIZE, defining how close a
+  // decorative element may render to the literal tip of an edge before it
+  // gets clipped rather than skipped -- see decorationMarkerClip. Decorative
+  // elements are placed with even spacing along the FULL path (they are
+  // never stopped early to "leave room" for a marker); whichever one ends up
+  // nearest a marker gets exactly the portion beyond this boundary masked
+  // off via clip-path, so the pattern flows naturally up to the arrowhead
+  // with a small consistent gap and never protrudes past it. Tuning this one
+  // constant -- or RELATIONSHIP_ARROW_MARKER_SIZE above, if the arrowhead
+  // size itself changes -- adjusts every decorative renderer at once, with
+  // no per-renderer hardcoded offsets.
+  var MARKER_END_PADDING = 4;
+
+  // Small deterministic PRNG (mulberry32) seeded from a string -- used to
+  // give each tile of a tiled decorative style (see renderTiledDecoration)
+  // stable-but-unique per-tile variation: the same relationship always
+  // renders identically across sessions (same seed in, same values out),
+  // while different tiles -- and different relationships -- look visibly
+  // distinct from one another.
+  function makeSeededRandom(seedString) {
+    var seed = 0;
+    var text = String(seedString || "seed");
+    for (var i = 0; i < text.length; i++) {
+      seed = (Math.imul(seed, 31) + text.charCodeAt(i)) | 0;
+    }
+    return function () {
+      seed |= 0;
+      seed = (seed + 0x6D2B79F5) | 0;
+      var t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Samples evenly-spaced points (by arc length, so spacing looks consistent
+  // regardless of curvature) and local tangent angles along a real, mounted
+  // SVGPathElement. This is the one piece of geometry every decorative edge
+  // style shares -- every current style (Chain, Droplets) tiles a small SVG
+  // asset at each point via renderTiledDecoration, but nothing here assumes
+  // that; a future non-tiled style can consume the same points differently.
+  // Works identically for straight and curved (bezier) edges since it reads
+  // the actual rendered path rather than assuming any particular shape.
+  //
+  // Samples the FULL path, all the way to both literal ends -- decorative
+  // elements are never stopped early to "leave room" for a marker (that
+  // used to leave a large, variable gap before the arrowhead). Each point
+  // carries its own arc length (len) and the path's totalLength so a
+  // renderer can figure out, per element, how close it lands to either end
+  // and clip accordingly -- see decorationMarkerClip.
+  function sampleEdgePathPoints(pathEl, spacing) {
+    if (!pathEl || typeof pathEl.getTotalLength !== "function") {
+      return [];
+    }
+    var totalLength = pathEl.getTotalLength();
+    if (!totalLength || totalLength <= 0) {
+      return [];
+    }
+    var step = Math.max(4, spacing || 20);
+    var count = Math.max(1, Math.floor(totalLength / step));
+    var points = [];
+    for (var i = 0; i <= count; i++) {
+      var len = Math.min(totalLength, i * step);
+      var point = pathEl.getPointAtLength(len);
+      var aheadLen = Math.min(totalLength, len + 1);
+      var ahead = pathEl.getPointAtLength(aheadLen);
+      var angle = Math.atan2(ahead.y - point.y, ahead.x - point.x) * (180 / Math.PI);
+      points.push({ x: point.x, y: point.y, angle: angle, len: len, totalLength: totalLength });
+    }
+    return points;
+  }
+
+  // Shared by every decorative renderer: figures out how many px of a
+  // decorative element's own along-path extent (its width in the direction
+  // of travel -- a chain link's width, a droplet's height, whatever a future
+  // style uses) fall inside the reserved zone at either end of the edge
+  // where a marker is drawn, given that end's boundary length (0 if that end
+  // has no marker at all). Returns 0/0 when nothing needs clipping.
+  function decorationMarkerClip(point, elementLength, startBoundaryLen, endBoundaryLen) {
+    var half = (elementLength || 0) / 2;
+    var distanceFromStart = point.len;
+    var distanceFromEnd = point.totalLength - point.len;
+    return {
+      clipStart: Math.max(0, (startBoundaryLen || 0) - (distanceFromStart - half)),
+      clipEnd: Math.max(0, (endBoundaryLen || 0) - (distanceFromEnd - half))
+    };
+  }
+
+  // Turns a decorationMarkerClip() result into a CSS clip-path, masking off
+  // only the overlapping portion of an element (never scaling or squashing
+  // it) -- applied in the element's own local box space, which is why every
+  // decorative element must be positioned/sized BEFORE rotation: clipping
+  // the local right edge always removes the "leading" (tip-ward) portion of
+  // an element that's rotated to face the path's direction of travel, and
+  // the local left edge the "trailing" (start-ward) portion, regardless of
+  // the path's actual curve direction at that point.
+  function decorationClipPath(clip) {
+    if (!clip || (clip.clipStart <= 0 && clip.clipEnd <= 0)) {
+      return undefined;
+    }
+    return "inset(0px " + Math.max(0, clip.clipEnd) + "px 0px " + Math.max(0, clip.clipStart) + "px)";
+  }
+
+  // Generic tiled decorative renderer: repeats a small SVG asset along the
+  // edge, each instance rotated to the path's local tangent -- never a
+  // single SVG stretched across the whole edge. Reuses Icon()'s existing
+  // mask-image + currentColor recoloring (the same technique already used
+  // for Clan/Sect badges) so the relationship color applies without a
+  // tinted asset copy. Shared by every tiled style (Chain, Droplets, and any
+  // future one) via TILED_DECORATIVE_STYLES below -- adding a new tiled
+  // style is exactly one config entry (asset path, tile dimensions, tile
+  // spacing) with no new rendering code.
+  //
+  // Tiles are placed with even spacing all the way to the path's literal
+  // ends -- never stopped early to leave room for a marker. Whichever tile
+  // ends up nearest a marker gets the overlapping portion clip-masked
+  // (decorationMarkerClip/decorationClipPath) instead of being omitted, so
+  // the trail flows naturally up to and under the arrowhead with only a
+  // small, consistent, configurable (MARKER_END_PADDING) gap, and no tile is
+  // ever scaled or squashed to make it fit. That same end-padding constant
+  // is shared by every tiled style, deliberately -- see MARKER_END_PADDING.
+  //
+  // If styleConfig.variation is set, each tile also gets subtle, per-tile,
+  // deterministic variation (random flip/scale/rotation/position jitter --
+  // see computeTileVariation) seeded from `seedKey` (the relationship id)
+  // and the tile's own index, so the pattern never looks like an obviously
+  // repeating stamp but is still 100% stable across reloads. The tile's
+  // SAMPLED point (and therefore tile spacing/overlap) is never touched by
+  // this -- the position jitter is added on top as a small render-time
+  // offset, so the trail's underlying continuity is always preserved.
+  function renderTiledDecoration(styleConfig, samplePoints, color, seedKey, markerClip) {
+    if (!ReactFlowEdgeLabelRenderer || !samplePoints.length) {
+      return null;
+    }
+    var tileWidth = styleConfig.tileWidth;
+    var clipInfo = markerClip || { startBoundaryLen: 0, endBoundaryLen: 0 };
+    return html`<${ReactFlowEdgeLabelRenderer}>
+      ${samplePoints.map(function (point, index) {
+        var clip = decorationMarkerClip(point, tileWidth, clipInfo.startBoundaryLen, clipInfo.endBoundaryLen);
+        var variant = pickTileVariant(styleConfig, seedKey, index);
+        var tileHeight = tileWidth / variant.aspect;
+        var variation = styleConfig.variation ? computeTileVariation(point.angle, seedKey, index) : null;
+        var left = point.x + (variation ? variation.offsetX : 0);
+        var top = point.y + (variation ? variation.offsetY : 0);
+        var transform = variation ? variation.transform : "translate(-50%, -50%) rotate(" + point.angle + "deg)";
+        return html`<div
+          key=${styleConfig.className + "-" + index}
+          className=${styleConfig.className}
+          style=${{
+            position: "absolute",
+            left: left + "px",
+            top: top + "px",
+            width: tileWidth + "px",
+            height: tileHeight + "px",
+            transform: transform,
+            clipPath: decorationClipPath(clip),
+            pointerEvents: "none"
+          }}
+        >
+          ${Icon({ icon: variant.icon, color: color, width: tileWidth, height: tileHeight, className: styleConfig.className + "-icon" })}
+        </div>`;
+      })}
+    </${ReactFlowEdgeLabelRenderer}>`;
+  }
+
+  // Picks which SVG asset a tile uses. A style with a single fixed asset
+  // (Chain) just returns it unchanged. A style with multiple `variants`
+  // (Droplets) draws one deterministically -- a dedicated seeded PRNG per
+  // tile (seedKey + its own index, kept separate from computeTileVariation's
+  // own PRNG so variant choice doesn't depend on whether shape variation is
+  // enabled) picks an index, never sequentially, so the same relationship
+  // always renders the same sequence of assets while different relationships
+  // -- and different tiles along the same trail -- look naturally varied.
+  function pickTileVariant(styleConfig, seedKey, tileIndex) {
+    if (!styleConfig.variants || !styleConfig.variants.length) {
+      return { icon: styleConfig.icon, aspect: styleConfig.aspect };
+    }
+    var rand = makeSeededRandom(seedKey + "-tile-" + tileIndex + "-variant");
+    var index = Math.floor(rand() * styleConfig.variants.length);
+    return styleConfig.variants[Math.min(index, styleConfig.variants.length - 1)];
+  }
+
+  // Computes one varied tile's CSS transform plus a small position offset,
+  // from a fresh seeded PRNG per tile (seedKey + its own index) -- every
+  // tile's variation is independent and deterministic regardless of how
+  // many tiles the edge has, or of any other tile's own random draws.
+  //
+  // Random horizontal/vertical flips (each 50%, and can combine) come from
+  // negating the relevant scale() axis; a random uniform 0.9x-1.1x scale and
+  // a small +-3 degree rotation offset (added on top of the real edge
+  // tangent, never replacing it) round out the shape variation.
+  // translate(-50%, -50%) is applied first in the transform so every
+  // subsequent rotate/scale pivots around the tile's own center -- the
+  // random scale/flip never shifts its placement point.
+  //
+  // offsetX/offsetY nudge that placement point itself by a small amount
+  // resolved in the path's own tangent/normal directions (not raw x/y), so
+  // "lateral" and "longitudinal" mean the same thing they visually look
+  // like regardless of the edge's on-screen angle: a lateral offset (+-2 to
+  // 4px, randomised sign) shifts the tile sideways off the centreline, and a
+  // longitudinal offset (+-2px) shifts it forward/back along the trail. Both
+  // are kept small relative to the tile's own size and the configured
+  // overlap specifically so neighbouring tiles never lose enough overlap to
+  // visibly gap or disconnect.
+  function computeTileVariation(tangentAngle, seedKey, tileIndex) {
+    var rand = makeSeededRandom(seedKey + "-tile-" + tileIndex);
+    var scale = 0.9 + rand() * 0.2;
+    var flipX = rand() < 0.5 ? -1 : 1;
+    var flipY = rand() < 0.5 ? -1 : 1;
+    var rotationJitter = (rand() - 0.5) * 6;
+    var lateralOffset = (rand() < 0.5 ? -1 : 1) * (2 + rand() * 2);
+    var longitudinalOffset = (rand() - 0.5) * 4;
+    var radians = (tangentAngle * Math.PI) / 180;
+    var alongX = Math.cos(radians) * longitudinalOffset;
+    var alongY = Math.sin(radians) * longitudinalOffset;
+    var acrossX = -Math.sin(radians) * lateralOffset;
+    var acrossY = Math.cos(radians) * lateralOffset;
+    return {
+      offsetX: alongX + acrossX,
+      offsetY: alongY + acrossY,
+      transform: "translate(-50%, -50%) rotate(" + (tangentAngle + rotationJitter) + "deg) scale(" + (flipX * scale) + ", " + (flipY * scale) + ")"
+    };
+  }
+
+  // Per-style config for renderTiledDecoration -- the one place a tiled
+  // decorative style is defined. Spacing between tile centres comes from
+  // EITHER of two mutually exclusive fields, resolved by resolveTileSpacing:
+  //   - `spacing`: a fixed absolute arc-length distance. Less than
+  //     `tileWidth` means adjacent tiles overlap slightly; more means a
+  //     visible gap between them (Chain, by design -- individual links, not
+  //     a solid line).
+  //   - `tileAdvanceRatio`: a fraction of the style's OWN `tileWidth` to
+  //     advance instead, so heavily-overlapping "stamp" styles (Droplets)
+  //     scale their spacing to their own asset size rather than an
+  //     unrelated fixed number -- see TILE_ADVANCE_RATIO_DEFAULT.
+  // `variation` opts a style into computeTileVariation's per-tile
+  // flip/scale/rotation/position jitter (Droplets, to break up the
+  // repeating stamp look); omitting it (Chain) keeps that style's tiles
+  // exactly as rotated-to-tangent as before, unchanged. A style uses either
+  // a single fixed `icon`/`aspect` (Chain) or a `variants` list of
+  // {icon, aspect} pairs that pickTileVariant chooses between per tile
+  // (Droplets) -- `tileWidth` always stays fixed across variants so spacing/
+  // overlap is unaffected by which asset a given tile draws; only the
+  // rendered height follows that variant's own aspect ratio.
+  var TILED_DECORATIVE_STYLES = {
+    chain: {
+      icon: CHAIN_LINK_ICON,
+      aspect: CHAIN_LINK_ASPECT,
+      tileWidth: 24,
+      spacing: 26,
+      className: "relationship-chain-link"
+    },
+    droplets: {
+      variants: DROPLET_VARIANT_ICONS,
+      tileWidth: 42,
+      tileAdvanceRatio: TILE_ADVANCE_RATIO_DEFAULT,
+      className: "relationship-droplet-tile",
+      variation: true
+    }
+  };
+
+  // Resolves the actual arc-length spacing (px, at 100% zoom) used to
+  // sample points for a tiled style -- see the field-by-field explanation
+  // above TILED_DECORATIVE_STYLES. Styles that don't opt into
+  // `tileAdvanceRatio` (Chain) are entirely unaffected and keep using their
+  // own fixed `spacing`, unchanged.
+  function resolveTileSpacing(styleConfig) {
+    if (styleConfig.tileAdvanceRatio) {
+      return styleConfig.tileWidth * styleConfig.tileAdvanceRatio;
+    }
+    return styleConfig.spacing;
+  }
+
+  // The extensibility point the task calls for: adding a new tiled
+  // decorative style is exactly one new TILED_DECORATIVE_STYLES entry --
+  // nothing else in RelationshipFlowEdge or the sampling pipeline changes.
+  // A future non-tiled style can still be added the same way this pair of
+  // maps has always supported: a direct DECORATIVE_EDGE_RENDERERS /
+  // DECORATIVE_EDGE_SPACING entry with its own renderer function.
+  var DECORATIVE_EDGE_RENDERERS = {};
+  var DECORATIVE_EDGE_SPACING = {};
+  Object.keys(TILED_DECORATIVE_STYLES).forEach(function (styleKey) {
+    var styleConfig = TILED_DECORATIVE_STYLES[styleKey];
+    DECORATIVE_EDGE_RENDERERS[styleKey] = function (samplePoints, color, seedKey, markerClip) {
+      return renderTiledDecoration(styleConfig, samplePoints, color, seedKey, markerClip);
+    };
+    DECORATIVE_EDGE_SPACING[styleKey] = resolveTileSpacing(styleConfig);
+  });
+
+  // Every decorative renderer above portals its content into React Flow's
+  // shared EdgeLabelRenderer layer, which sits above the SVG canvas (and
+  // therefore above BaseEdge's own SVG-rendered label) -- so a label drawn
+  // through BaseEdge's label prop would end up underneath chain links or
+  // droplets from any edge, not just its own. Rendering the label through
+  // the same portal, with an explicit z-index higher than the decorations
+  // (which don't set one), keeps it on top regardless of DOM order across
+  // however many edges are portaling content into that shared layer at
+  // once. Kept visually identical to BaseEdge's previous built-in label.
+  function renderRelationshipLabel(labelX, labelY, label) {
+    if (!ReactFlowEdgeLabelRenderer || !label) {
+      return null;
+    }
+    return html`<${ReactFlowEdgeLabelRenderer}>
+      <div
+        className="relationship-edge-label"
+        style=${{
+          position: "absolute",
+          left: labelX + "px",
+          top: labelY + "px",
+          transform: "translate(-50%, -50%)",
+          zIndex: 1000,
+          pointerEvents: "none",
+          background: "rgba(15, 15, 22, 0.85)",
+          color: "#f4f4ff",
+          fontSize: "11px",
+          fontWeight: 600,
+          padding: "2px 4px",
+          borderRadius: "4px",
+          whiteSpace: "nowrap"
+        }}
+      >${label}</div>
+    </${ReactFlowEdgeLabelRenderer}>`;
+  }
+
   var DEFAULT_RELATIONSHIP_CATEGORIES = [
     {
       id: "cat-vampire-relations",
       name: "Vampire Relations",
       color: "#7a3db8",
       types: [
-        { id: "type-sire", name: "Sire", label: "Sire", color: "#7a3db8", width: 2, style: "solid", animated: false, arrow: true },
+        { id: "type-sire", name: "Sire", label: "Sire", color: "#db243f", width: 2, style: "droplets", animated: false, arrow: true },
         { id: "type-touchstone", name: "Touchstone", label: "Touchstone", color: "#d4af37", width: 2, style: "solid", animated: false, arrow: true },
         { id: "type-blood-bond", name: "Blood Bond", label: "Blood Bond", color: "#b80f2a", width: 2, style: "chain", animated: false, arrow: true },
         { id: "type-coterie", name: "Coterie", label: "Coterie", color: "#7a3db8", width: 1, style: "solid", animated: false, arrow: false },
@@ -172,7 +556,7 @@
     var label = String(source.label || source.displayLabel || typeName).trim() || typeName;
     var color = safeHexColor(source.color, safeHexColor(categoryColor, "#d10d40"));
     var width = Math.max(1, Math.min(8, Number(source.width) || Number(source.thickness) || 2));
-    var arrow = typeof source.arrow === "boolean" ? source.arrow : (String(source.arrow || "").toLowerCase() === "end");
+    var arrow = typeof source.arrow === "boolean" ? source.arrow : (String(source.arrow || "").toLowerCase() === "end" || String(source.arrow || "").toLowerCase() === "both");
     var decoration = Object.assign(makeRelationshipTypeDecoration(), source.decoration || {});
     return {
       id: String(source.id || makeRelationshipUiId("rel-type")).trim(),
@@ -183,6 +567,13 @@
       style: normalizedStyle,
       animated: Boolean(source.animated),
       arrow: Boolean(arrow),
+      // Whether an arrowhead (when `arrow` is on) renders at both ends of
+      // the edge instead of just the end -- feeds relationshipTypeDefaults
+      // FromCategory's 4-way relationship-level `arrow` field ("start" /
+      // "end" / "both" / "none"), which the edge renderer and preview SVG
+      // already fully support; this was just never reachable from a type
+      // definition before.
+      bidirectional: Boolean(source.bidirectional),
       decoration: decoration
     };
   }
@@ -203,37 +594,6 @@
         types: types
       };
     });
-  }
-
-  function relationshipOppositeAnchor(anchor) {
-    switch (String(anchor || "").toLowerCase()) {
-      case "top": return "bottom";
-      case "right": return "left";
-      case "bottom": return "top";
-      case "left": return "right";
-      default: return "right";
-    }
-  }
-
-  function relationshipAutoAnchor(fromCharacter, toCharacter) {
-    var fromX = Number(fromCharacter && fromCharacter.x) || 0;
-    var fromY = Number(fromCharacter && fromCharacter.y) || 0;
-    var toX = Number(toCharacter && toCharacter.x) || 0;
-    var toY = Number(toCharacter && toCharacter.y) || 0;
-    var dx = toX - fromX;
-    var dy = toY - fromY;
-    if (Math.abs(dx) >= Math.abs(dy)) {
-      return dx >= 0 ? "right" : "left";
-    }
-    return dy >= 0 ? "bottom" : "top";
-  }
-
-  function relationshipResolvedAnchors(fromCharacter, toCharacter) {
-    var source = relationshipAutoAnchor(fromCharacter, toCharacter);
-    return {
-      sourceAnchor: source,
-      destinationAnchor: relationshipOppositeAnchor(source)
-    };
   }
 
   function flattenRelationshipTypes(categories) {
@@ -262,12 +622,21 @@
       thickness: Math.max(1, Math.min(8, Number(type.width) || 2)),
       style: type.style || "solid",
       animated: Boolean(type.animated),
-      arrow: type.arrow ? "end" : "none",
+      arrow: type.arrow ? (type.bidirectional ? "both" : "end") : "none",
       routingMode: "auto",
       lineMeta: Object.assign(makeRelationshipTypeDecoration(), type.decoration || {})
     };
   }
 
+  // Relationship types are the single source of truth for visual styling.
+  // A relationship record only ever stores core, relationship-specific data
+  // (id/from/to/categoryId/typeId/displayLabel/description/etc) -- it never
+  // caches color/thickness/style/animated/arrow/routingMode/lineMeta/
+  // category/type. Any such fields found on legacy/loaded data are stripped
+  // here (the one place every relationship passes through on load and on
+  // save) so a stale cached value can never again shadow the live type
+  // definition. Visual properties are resolved fresh at render time instead
+  // -- see resolveRelationshipVisuals.
   function normalizeRelationships(rawRelationships, categories) {
     var list = Array.isArray(rawRelationships) ? rawRelationships : [];
     var availableCategories = normalizeRelationshipCategories(categories);
@@ -278,28 +647,52 @@
       delete current.destinationAnchor;
       delete current.fromAnchor;
       delete current.toAnchor;
-      var fallback = relationshipTypeDefaultsFromCategory(availableCategories, current.categoryId || current.category, current.typeId || current.type);
+
+      var resolved = relationshipTypeDefaultsFromCategory(availableCategories, current.categoryId || current.category, current.typeId || current.type);
       if (current.typeId && typeLookup[current.typeId]) {
         var exact = typeLookup[current.typeId];
-        fallback = relationshipTypeDefaultsFromCategory(availableCategories, exact.category.id, exact.type.id);
+        resolved = relationshipTypeDefaultsFromCategory(availableCategories, exact.category.id, exact.type.id);
       }
+
+      delete current.color;
+      delete current.thickness;
+      delete current.width;
+      delete current.style;
+      delete current.animated;
+      delete current.arrow;
+      delete current.routingMode;
+      delete current.lineMeta;
+      delete current.category;
+      delete current.type;
+
       return Object.assign({
         id: current.id || ("rel-" + Date.now() + "-" + index),
         from: "",
         to: "",
+        displayLabel: "",
         description: "",
         gmNotes: "",
         hiddenFromCollaborators: false,
         visible: true,
         opacity: 1
-      }, fallback, current, {
-        color: safeHexColor(current.color, fallback.color),
-        thickness: Math.max(1, Math.min(8, Number(current.thickness) || Number(current.width) || fallback.thickness)),
-        style: RELATIONSHIP_TYPE_STYLE_OPTIONS.indexOf(String(current.style || fallback.style).toLowerCase()) >= 0 ? String(current.style || fallback.style).toLowerCase() : "solid",
-        arrow: ["start", "end", "both", "none"].indexOf(String(current.arrow || fallback.arrow).toLowerCase()) >= 0 ? String(current.arrow || fallback.arrow).toLowerCase() : "none",
-        routingMode: RELATIONSHIP_ROUTING_MODE_OPTIONS.indexOf(String(current.routingMode || fallback.routingMode || "auto").toLowerCase()) >= 0 ? String(current.routingMode || fallback.routingMode || "auto").toLowerCase() : "auto",
-        lineMeta: Object.assign(makeRelationshipTypeDecoration(), fallback.lineMeta || {}, current.lineMeta || {})
+      }, current, {
+        categoryId: resolved.categoryId,
+        typeId: resolved.typeId,
+        displayLabel: current.displayLabel || resolved.displayLabel
       });
+    });
+  }
+
+  // Resolves a relationship's live visual styling from its relationship
+  // type, merged with its own relationship-specific fields (from/to/label/
+  // description/etc). Call this at every render site instead of reading
+  // color/thickness/style/etc directly off a relationship -- this is what
+  // makes editing a relationship type immediately update every relationship
+  // that uses it, with no delete/recreate and no reload required.
+  function resolveRelationshipVisuals(relationship, categories) {
+    var visuals = relationshipTypeDefaultsFromCategory(categories, relationship.categoryId, relationship.typeId);
+    return Object.assign({}, relationship, visuals, {
+      displayLabel: relationship.displayLabel || visuals.displayLabel
     });
   }
 
@@ -383,6 +776,11 @@
       return null;
     }
     var iconSize = Number(config.size) || null;
+    // width/height override size for non-square source assets (e.g. the
+    // chain-link SVG, which is a wide/short strip rather than an icon glyph)
+    // -- existing callers that only ever pass `size` are unaffected.
+    var iconWidth = Number(config.width) || iconSize;
+    var iconHeight = Number(config.height) || iconSize;
     var className = "atlas-icon" + (config.className ? " " + config.className : "");
     var maskSource = "url('" + config.icon + "')";
     var style = {
@@ -399,9 +797,11 @@
       WebkitMaskSize: "contain",
       WebkitMaskMode: "alpha"
     };
-    if (iconSize) {
-      style.width = iconSize + "px";
-      style.height = iconSize + "px";
+    if (iconWidth) {
+      style.width = iconWidth + "px";
+    }
+    if (iconHeight) {
+      style.height = iconHeight + "px";
     }
     return html`<span className=${className} style=${style} aria-hidden="true"></span>`;
   }
@@ -423,89 +823,6 @@
     return html`<span className=${className} style=${badgeStyle} title=${tooltip} aria-label=${tooltip}>
       ${Icon({ icon: config.icon, color: config.iconColor || "#ffffff", className: imageClassName })}
     </span>`;
-  }
-
-  function characterNodeBadges(character, portraitDiameter) {
-    var badgeSize = Math.round(clamp(toNumber(portraitDiameter, 74) * 0.28, 18, 42));
-    var badges = [];
-    var sect = normalizeSectValue(character && character.sect);
-    var clan = normalizeClanValue(character && character.clan);
-    var sectIcon = resolveSectIcon(sect);
-    var clanIcon = resolveClanIcon(clan);
-
-    if (sect !== "None" && sectIcon) {
-      badges.push({
-        id: "sect",
-        anchor: "left",
-        icon: sectIcon,
-        tooltip: sect,
-        size: badgeSize,
-        backgroundColor: "#000000",
-        borderColor: "#2e2e2e",
-        iconColor: "#d10d40"
-      });
-    }
-
-    if (clan !== "None" && clanIcon) {
-      badges.push({
-        id: "clan",
-        anchor: "right",
-        icon: clanIcon,
-        tooltip: clan,
-        size: badgeSize,
-        backgroundColor: "#000000",
-        borderColor: "#2e2e2e",
-        iconColor: "#ffffff"
-      });
-    }
-
-    return badges;
-  }
-
-  function renderNodeBadgeAnchors(badges) {
-    if (!badges || !badges.length) {
-      return null;
-    }
-
-    var grouped = {
-      left: [],
-      right: []
-    };
-
-    badges.forEach(function (badge) {
-      if (!badge || !badge.icon) {
-        return;
-      }
-      var anchor = badge.anchor === "right" ? "right" : "left";
-      grouped[anchor].push(badge);
-    });
-
-    function renderAnchor(anchor) {
-      var entries = grouped[anchor];
-      if (!entries.length) {
-        return null;
-      }
-      return html`<div className=${"node-badge-anchor node-badge-anchor-" + anchor}>
-        ${entries.map(function (badge, index) {
-          return html`<span className="node-badge-item" key=${"node-badge-" + anchor + "-" + (badge.id || index) + "-" + index}>
-            ${IconBadge({
-              icon: badge.icon,
-              size: badge.size,
-              backgroundColor: badge.backgroundColor,
-              borderColor: badge.borderColor,
-              iconColor: badge.iconColor,
-              tooltip: badge.tooltip,
-              className: "node-icon-badge"
-            })}
-          </span>`;
-        })}
-      </div>`;
-    }
-
-    return html`<div className="node-badge-layer" aria-hidden="true">
-      ${renderAnchor("left")}
-      ${renderAnchor("right")}
-    </div>`;
   }
 
   function renderPortraitSource(portrait) {
@@ -1133,49 +1450,6 @@
     return normalized;
   }
 
-  function characterToDraft(character) {
-    var currentPortrait = portraitState(character);
-    var timelineEvents = sortTimelineEvents(timelineEventsFromAny(character.timeline));
-    return {
-      id: character.id,
-      name: character.name || "",
-      portrait: {
-        image: currentPortrait.source || DEFAULT_PORTRAIT,
-        imageWidth: currentPortrait.imageWidth,
-        imageHeight: currentPortrait.imageHeight,
-        cropCenterX: currentPortrait.cropCenterX,
-        cropCenterY: currentPortrait.cropCenterY,
-        zoom: currentPortrait.zoom,
-        cropX: currentPortrait.cropCenterX,
-        cropY: currentPortrait.cropCenterY
-      },
-      clan: normalizeClanValue(character.clan),
-      sect: normalizeSectValue(character.sect),
-      status: character.status || "",
-      tagsText: (character.tags || []).join(", "),
-      concept: character.concept || "",
-      ambition: character.ambition || "",
-      desire: character.desire || "",
-      convictions: character.convictions || "",
-      touchstones: character.touchstones || "",
-      predatorType: character.predatorType || "",
-      generation: character.generation || "",
-      sire: character.sire || "",
-      outlineColor: character.outlineColor || "#d10d40",
-      nodeSize: typeof character.nodeSize === "number" ? character.nodeSize : 1,
-      nodeShape: character.nodeShape || "circle",
-      hidden: Boolean(character.hidden),
-      trueAge: character.trueAge || "",
-      apparentAge: character.apparentAge || "",
-      dateOfBirth: normalizeIsoDate(character.dateOfBirth),
-      dateOfDeath: normalizeIsoDate(character.dateOfDeath),
-      storytellerNotes: character.storytellerNotes !== undefined ? String(character.storytellerNotes || "") : String(character.gmNotes || ""),
-      gmOnlyInformation: character.gmOnlyInformation !== undefined ? String(character.gmOnlyInformation || "") : String(character.gmNotes || ""),
-      timelineEvents: timelineEvents,
-      bioHtml: characterBiographyHtml(character)
-    };
-  }
-
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
   }
@@ -1184,306 +1458,118 @@
     return typeof window !== "undefined" && !!window.indexedDB;
   }
 
-  function requestToPromise(request) {
-    return new Promise(function (resolve, reject) {
-      request.onsuccess = function () { resolve(request.result); };
-      request.onerror = function () { reject(request.error || new Error("IndexedDB request failed.")); };
-    });
+  // The Relationship Map no longer owns character identity data (name, portrait,
+  // biography, clan/sect, timeline, etc.) -- that is persisted exclusively by
+  // CharacterService. Relationship records are persisted exclusively by
+  // RelationshipService. This map only owns its own view state -- node layout,
+  // zones, viewport and view-specific preferences -- persisted exclusively by
+  // MapLayoutService. This module does not access IndexedDB directly.
+  function nodeLayoutRecordFor(character) {
+    return {
+      id: character.id,
+      x: character.x,
+      y: character.y,
+      outlineColor: character.outlineColor,
+      nodeSize: character.nodeSize,
+      nodeShape: character.nodeShape,
+      hidden: Boolean(character.hidden)
+    };
   }
 
-  function transactionToPromise(transaction) {
-    return new Promise(function (resolve, reject) {
-      transaction.oncomplete = function () { resolve(); };
-      transaction.onerror = function () { reject(transaction.error || new Error("IndexedDB transaction failed.")); };
-      transaction.onabort = function () { reject(transaction.error || new Error("IndexedDB transaction aborted.")); };
-    });
-  }
-
-  function isLegacyZoneRecord(record) {
-    if (!record || typeof record !== "object") {
-      return false;
-    }
-    var id = String(record.id || "").trim().toLowerCase();
-    var name = String(record.name || record.title || "").trim().toLowerCase();
-    if (id.indexOf("zone-") === 0 || name === "new zone") {
-      return true;
-    }
-    return Number.isFinite(Number(record.x)) && Number.isFinite(Number(record.y)) && Number.isFinite(Number(record.width)) && Number.isFinite(Number(record.height));
-  }
-
-  function openCampaignAtlasDb() {
-    if (!indexedDbAvailable()) {
-      return Promise.reject(new Error("IndexedDB is not available in this browser."));
-    }
-
-    if (!dbPromise) {
-      dbPromise = new Promise(function (resolve, reject) {
-        var request = window.indexedDB.open(DB_NAME, DB_VERSION);
-
-        request.onupgradeneeded = function (event) {
-          var db = request.result;
-          var transaction = event.target.transaction;
-          if (!db.objectStoreNames.contains(STORE_CHARACTERS)) {
-            db.createObjectStore(STORE_CHARACTERS, { keyPath: "id" });
-          }
-          if (!db.objectStoreNames.contains(STORE_RELATIONSHIPS)) {
-            db.createObjectStore(STORE_RELATIONSHIPS, { keyPath: "id" });
-          }
-          if (!db.objectStoreNames.contains(STORE_ZONES)) {
-            db.createObjectStore(STORE_ZONES, { keyPath: "id" });
-          }
-          if (!db.objectStoreNames.contains(STORE_TIMELINE)) {
-            db.createObjectStore(STORE_TIMELINE, { keyPath: "id" });
-          }
-          if (!db.objectStoreNames.contains(STORE_SESSIONS)) {
-            db.createObjectStore(STORE_SESSIONS, { keyPath: "id" });
-          }
-          if (!db.objectStoreNames.contains(STORE_SETTINGS)) {
-            db.createObjectStore(STORE_SETTINGS, { keyPath: "id" });
-          }
-          if (!db.objectStoreNames.contains(STORE_LOCATIONS)) {
-            db.createObjectStore(STORE_LOCATIONS, { keyPath: "id" });
-          }
-
-          if (event.oldVersion < 3 && db.objectStoreNames.contains("locations") && transaction) {
-            var legacyLocationStore = transaction.objectStore("locations");
-            var zoneStore = transaction.objectStore(STORE_ZONES);
-            var cursorReq = legacyLocationStore.openCursor();
-            cursorReq.onsuccess = function () {
-              var cursor = cursorReq.result;
-              if (!cursor) {
-                return;
-              }
-              var record = cursor.value;
-              if (isLegacyZoneRecord(record)) {
-                zoneStore.put(clone(record));
-                legacyLocationStore.delete(cursor.primaryKey);
-              }
-              cursor.continue();
-            };
-          }
-        };
-
-        request.onsuccess = function () {
-          var db = request.result;
-          db.onversionchange = function () {
-            db.close();
-          };
-          resolve(db);
-        };
-
-        request.onerror = function () {
-          reject(request.error || new Error("Unable to open CampaignAtlas IndexedDB."));
-        };
-      });
-    }
-
-    return dbPromise;
-  }
-
-  var lastPersistedCharacterIds = null;
-
-  async function persistCharactersAndRelationships(state) {
-    var characters = Array.isArray(state.characters) ? state.characters : [];
-    var relationships = Array.isArray(state.relationships) ? state.relationships : [];
-
-    var currentIds = {};
-    characters.forEach(function (character) {
-      if (character && character.id) {
-        currentIds[character.id] = true;
+  // A character only appears on the map once it has a saved node-layout
+  // record -- CharacterService's full roster is not automatically placed on
+  // the canvas. `onMap` tracks that membership; it is never persisted onto
+  // the character record itself (it's derived fresh from MapLayoutService's
+  // layout table on every load).
+  function applyNodeLayout(character, layout) {
+    if (layout) {
+      if (typeof layout.x === "number") {
+        character.x = layout.x;
       }
-    });
-
-    if (lastPersistedCharacterIds) {
-      var removedIds = Object.keys(lastPersistedCharacterIds).filter(function (id) { return !currentIds[id]; });
-      await Promise.all(removedIds.map(function (id) {
-        return sharedCharacters.deleteCharacterFromCampaignAtlas(id);
-      }));
+      if (typeof layout.y === "number") {
+        character.y = layout.y;
+      }
+      if (layout.outlineColor) {
+        character.outlineColor = layout.outlineColor;
+      }
+      if (typeof layout.nodeSize === "number") {
+        character.nodeSize = layout.nodeSize;
+      }
+      if (layout.nodeShape) {
+        character.nodeShape = layout.nodeShape;
+      }
+      character.hidden = Boolean(layout.hidden);
+      character.onMap = true;
+      return character;
     }
+    character.onMap = false;
+    character.hidden = false;
+    return character;
+  }
 
-    await Promise.all(characters.map(function (character) {
-      return sharedCharacters.saveCharacterToCampaignAtlas(clone(character));
-    }));
-    await sharedCharacters.saveRelationships(clone(relationships));
-
-    lastPersistedCharacterIds = currentIds;
+  // Returns the grid position a newly added character should default to,
+  // offset from however many characters are already on the map.
+  function nextMapPosition(characters) {
+    var onMapCount = (characters || []).filter(function (character) { return character && character.onMap; }).length;
+    return {
+      x: 200 + (onMapCount % 5) * 220,
+      y: 200 + Math.floor(onMapCount / 5) * 220
+    };
   }
 
   async function persistStateToIndexedDb(state) {
     var source = state && typeof state === "object" ? state : initialState();
+    var characters = Array.isArray(source.characters) ? source.characters : [];
 
-    await persistCharactersAndRelationships(source);
+    await mapLayoutService.saveNodeLayouts(characters.filter(function (character) {
+      return character && character.id && character.onMap;
+    }).map(nodeLayoutRecordFor));
+    await relationshipService.saveAll(clone(source.relationships || []));
+    await mapLayoutService.saveZones(clone(source.zones || []));
 
-    var db = await openCampaignAtlasDb();
-    var transaction = db.transaction([STORE_ZONES, STORE_SESSIONS, STORE_SETTINGS], "readwrite");
-
-    var zoneStore = transaction.objectStore(STORE_ZONES);
-    var sessionsStore = transaction.objectStore(STORE_SESSIONS);
-    var settingsStore = transaction.objectStore(STORE_SETTINGS);
-
-    var settings = {
-      id: "app",
-      title: source.title,
-      relationshipCategories: clone(source.relationshipCategories || []),
-      tagGroups: clone(source.tagGroups || [])
-    };
-
-    var sessions = {
-      id: "current",
-      session: source.session,
-      notes: clone(source.notes || [])
-    };
-
-    var extra = {};
+    var preferences = {};
     Object.keys(source).forEach(function (key) {
-      if (["title", "session", "notes", "characters", "relationships", "zones", "relationshipCategories", "tagGroups", "badges", "overlays"].indexOf(key) >= 0) {
+      if (["characters", "relationships", "zones"].indexOf(key) >= 0) {
         return;
       }
-      extra[key] = clone(source[key]);
+      preferences[key] = clone(source[key]);
     });
-
-    zoneStore.clear();
-    (source.zones || []).forEach(function (item) { zoneStore.put(clone(item)); });
-    sessionsStore.put(sessions);
-    settingsStore.put(settings);
-    settingsStore.put({ id: "extra", data: extra });
-
-    await transactionToPromise(transaction);
+    await mapLayoutService.savePreferences(preferences);
   }
 
   async function readStateFromIndexedDb() {
-    var db = await openCampaignAtlasDb();
-    var transaction = db.transaction([STORE_ZONES, STORE_SESSIONS, STORE_SETTINGS], "readonly");
-
-    var zonesReq = transaction.objectStore(STORE_ZONES).getAll();
-    var sessionsReq = transaction.objectStore(STORE_SESSIONS).get("current");
-    var settingsReq = transaction.objectStore(STORE_SETTINGS).get("app");
-    var extraReq = transaction.objectStore(STORE_SETTINGS).get("extra");
-
-    var storedZonesPromise = requestToPromise(zonesReq);
-    var storedSessionPromise = requestToPromise(sessionsReq);
-    var storedSettingsPromise = requestToPromise(settingsReq);
-    var storedExtraPromise = requestToPromise(extraReq);
-
-    await transactionToPromise(transaction);
-
-    var storedZones = await storedZonesPromise;
-    var storedSession = await storedSessionPromise;
-    var storedSettings = await storedSettingsPromise;
-    var storedExtra = await storedExtraPromise;
-
-    var atlas = await sharedCharacters.readCampaignAtlasState();
+    var characters = await characterService.getAll();
+    var relationships = await relationshipService.getAll();
+    var zones = await mapLayoutService.getZones();
+    var layoutById = await mapLayoutService.getNodeLayouts();
+    var preferences = await mapLayoutService.getPreferences();
 
     var state = initialState();
-    state.characters = (atlas.characters || []).map(normalizeCharacterRecord);
-    state.relationships = clone(atlas.relationships || []);
-
-    var currentIds = {};
-    state.characters.forEach(function (character) {
-      if (character && character.id) {
-        currentIds[character.id] = true;
-      }
+    state.characters = (characters || []).map(function (character) {
+      var normalized = normalizeCharacterRecord(character);
+      return applyNodeLayout(normalized, layoutById[normalized.id]);
     });
-    lastPersistedCharacterIds = currentIds;
+    state.relationships = clone(relationships || []);
 
-    if (storedZones && storedZones.length) {
-      state.zones = clone(storedZones);
+    if (zones && zones.length) {
+      state.zones = clone(zones);
     }
-    if (storedSession) {
-      state.session = storedSession.session !== undefined ? storedSession.session : state.session;
-      state.notes = clone(storedSession.notes || []);
-    }
-    if (storedSettings) {
-      state.title = storedSettings.title !== undefined ? storedSettings.title : state.title;
-      state.relationshipCategories = clone(storedSettings.relationshipCategories || []);
-      state.tagGroups = clone(storedSettings.tagGroups || []);
-    }
-    if (storedExtra && storedExtra.data && typeof storedExtra.data === "object") {
-      state = Object.assign(state, clone(storedExtra.data));
+    if (preferences && typeof preferences === "object") {
+      state = Object.assign(state, clone(preferences));
     }
 
     return state;
   }
 
-  async function indexedDbHasData() {
-    var db = await openCampaignAtlasDb();
-    var transaction = db.transaction([STORE_CHARACTERS, STORE_RELATIONSHIPS, STORE_ZONES, STORE_SETTINGS], "readonly");
-    var charsCountReq = transaction.objectStore(STORE_CHARACTERS).count();
-    var relCountReq = transaction.objectStore(STORE_RELATIONSHIPS).count();
-    var zoneCountReq = transaction.objectStore(STORE_ZONES).count();
-    var settingsReq = transaction.objectStore(STORE_SETTINGS).get("app");
-    var charsCountPromise = requestToPromise(charsCountReq);
-    var relCountPromise = requestToPromise(relCountReq);
-    var zoneCountPromise = requestToPromise(zoneCountReq);
-    var settingsPromise = requestToPromise(settingsReq);
-    await transactionToPromise(transaction);
-    var charsCount = await charsCountPromise;
-    var relCount = await relCountPromise;
-    var zoneCount = await zoneCountPromise;
-    var settings = await settingsPromise;
-    return Boolean(charsCount || relCount || zoneCount || settings);
-  }
-
-  function loadStateFromLocalStorage() {
-    try {
-      var raw = window.localStorage.getItem(STORAGE_KEY);
-      if (!raw) {
-        return null;
-      }
-      var merged = Object.assign(initialState(), JSON.parse(raw));
-      delete merged.badges;
-      merged.characters = (merged.characters || []).map(normalizeCharacterRecord);
-      return merged;
-    } catch (_error) {
-      return null;
-    }
-  }
-
-  async function migrateLocalStorageToIndexedDbIfNeeded() {
-    var legacyState = loadStateFromLocalStorage();
-    if (!legacyState) {
-      return;
-    }
-
-    var hasIndexedData = await indexedDbHasData();
-    if (hasIndexedData) {
-      return;
-    }
-
-    await persistStateToIndexedDb(legacyState);
-    var migrated = await readStateFromIndexedDb();
-    var verified =
-      (migrated.characters || []).length === (legacyState.characters || []).length &&
-      (migrated.relationships || []).length === (legacyState.relationships || []).length &&
-      (migrated.zones || []).length === (legacyState.zones || []).length &&
-      migrated.title === legacyState.title &&
-      migrated.session === legacyState.session;
-
-    if (!verified) {
-      throw new Error("LocalStorage to IndexedDB migration verification failed.");
-    }
-
-    window.localStorage.removeItem(STORAGE_KEY);
-  }
-
   async function loadInitialState() {
-    var localFallback = loadStateFromLocalStorage();
     if (!indexedDbAvailable()) {
-      return localFallback || initialState();
+      return initialState();
     }
-
-    try {
-      await migrateLocalStorageToIndexedDbIfNeeded();
-      var dbState = await readStateFromIndexedDb();
-      var hasUsefulData = (dbState.characters && dbState.characters.length) || (dbState.relationships && dbState.relationships.length);
-      if (hasUsefulData) {
-        return dbState;
-      }
-      return localFallback || initialState();
-    } catch (error) {
-      console.warn("IndexedDB load failed; using local fallback.", error);
-      return localFallback || initialState();
-    }
+    // The canonical character/relationship/layout services are always trusted,
+    // including when they legitimately report zero characters (a fresh or
+    // fully-cleared campaign) -- that is real data, not a signal to fall back
+    // to anything else.
+    return await readStateFromIndexedDb();
   }
 
   function initialState() {
@@ -1499,6 +1585,274 @@
         { id: "tg1", name: "Politics", tags: [{ id: "t1", name: "Prince", color: "#d10d40", icon: "♛", description: "Ruling authority", visible: true }, { id: "t2", name: "Council", color: "#8b1e46", icon: "◎", description: "Council aligned", visible: true }] }
       ]
     };
+  }
+
+  // Small circular badge showing the character's status as a single letter,
+  // styled to match the existing icon-badge look (used for the clan badge)
+  // even though status has no icon asset of its own.
+  function nodeStatusBadge(status, size) {
+    var badgeStyle = { width: size + "px", height: size + "px", background: "#000000" };
+    return html`<span className="icon-badge node-icon-badge node-status-badge" style=${badgeStyle} title=${status} aria-label=${status}>
+      <span className="node-status-badge-letter">${String(status).slice(0, 1).toUpperCase()}</span>
+    </span>`;
+  }
+
+  // Left anchor carries the Sect icon, right anchor carries the Clan badge --
+  // same anchor layout and icon-badge styling the map has always used for
+  // node badges (see resolveSectIcon/resolveClanIcon above -- the same
+  // lookups the Characters page uses, just reused here rather than
+  // duplicated). The portrait ring is untouched and still represents Clan.
+  function characterNodeBadges(character, portraitDiameter) {
+    var badgeSize = Math.round(clamp(toNumber(portraitDiameter, 74) * 0.28, 18, 42));
+    var badges = [];
+    var clan = normalizeClanValue(character && character.clan);
+    var clanIcon = resolveClanIcon(clan);
+    var sect = normalizeSectValue(character && character.sect);
+    var sectIcon = resolveSectIcon(sect);
+
+    if (sect !== "None" && sectIcon) {
+      badges.push({ id: "sect", anchor: "left", kind: "icon", icon: sectIcon, tooltip: sect, size: badgeSize, backgroundColor: "#000000", borderColor: "#2e2e2e", iconColor: "#ffffff" });
+    }
+    if (clan !== "None" && clanIcon) {
+      badges.push({ id: "clan", anchor: "right", kind: "icon", icon: clanIcon, tooltip: clan, size: badgeSize, backgroundColor: "#000000", borderColor: "#2e2e2e", iconColor: "#ffffff" });
+    }
+    return badges;
+  }
+
+  function renderNodeBadgeAnchors(badges) {
+    if (!badges || !badges.length) {
+      return null;
+    }
+
+    var grouped = { left: [], right: [] };
+    badges.forEach(function (badge) {
+      if (!badge) {
+        return;
+      }
+      var anchor = badge.anchor === "right" ? "right" : "left";
+      grouped[anchor].push(badge);
+    });
+
+    function renderBadge(badge, anchor, index) {
+      if (badge.kind === "status") {
+        return html`<span className="node-badge-item" key=${"node-badge-" + anchor + "-status-" + index}>
+          ${nodeStatusBadge(badge.value, badge.size)}
+        </span>`;
+      }
+      return html`<span className="node-badge-item" key=${"node-badge-" + anchor + "-" + (badge.id || index) + "-" + index}>
+        ${IconBadge({
+          icon: badge.icon,
+          size: badge.size,
+          backgroundColor: badge.backgroundColor,
+          borderColor: badge.borderColor,
+          iconColor: badge.iconColor,
+          tooltip: badge.tooltip,
+          className: "node-icon-badge"
+        })}
+      </span>`;
+    }
+
+    function renderAnchor(anchor) {
+      var entries = grouped[anchor];
+      if (!entries.length) {
+        return null;
+      }
+      return html`<div className=${"node-badge-anchor node-badge-anchor-" + anchor}>
+        ${entries.map(function (badge, index) { return renderBadge(badge, anchor, index); })}
+      </div>`;
+    }
+
+    return html`<div className="node-badge-layer" aria-hidden="true">
+      ${renderAnchor("left")}
+      ${renderAnchor("right")}
+    </div>`;
+  }
+
+  // Chronicle Codex character node: portrait (with the map's existing
+  // outline-color/shape customization), clan badge, status indicator and
+  // name label -- matching the pre-React-Flow node design. Defined at
+  // module scope (not inside App) so its identity is stable across renders
+  // -- React Flow keys its `nodeTypes` lookup by reference, and a fresh
+  // function every render would remount every node.
+  function CharacterFlowNode(props) {
+    var character = props && props.data ? props.data.character : null;
+    if (!character) {
+      return null;
+    }
+    var nodeSize = typeof character.nodeSize === "number" ? character.nodeSize : 1;
+    var outlineColor = character.outlineColor || "#d10d40";
+    var shape = character.nodeShape === "rounded" ? "square" : (character.nodeShape || "circle");
+    var radius = shape === "circle" ? "50%" : "8px";
+    var clip = shape === "hexagon" ? "polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0 50%)" : "none";
+    var portraitDiameter = 74 * nodeSize;
+    var badges = characterNodeBadges(character, portraitDiameter);
+    // Four connection points, one per side. `connectionMode="loose"` on the
+    // <ReactFlow> element (see the App-level JSX) is what actually lets each
+    // of these act as both a source and a target -- the `type` below only
+    // sets each handle's default cursor/class, it no longer restricts which
+    // direction a drag can start or land in.
+    return html`<div className=${"flow-node" + (props.selected ? " selected" : "")}>
+      ${ReactFlowHandle ? html`<${ReactFlowHandle} id="top" type="target" position=${ReactFlowPosition.Top} />` : null}
+      ${ReactFlowHandle ? html`<${ReactFlowHandle} id="left" type="target" position=${ReactFlowPosition.Left} />` : null}
+      <div className="node-portrait-shell">
+        <div className="node-portrait-frame" style=${{ width: portraitDiameter, height: portraitDiameter, "--node-outline-color": outlineColor, borderRadius: radius, clipPath: clip }}>
+          <img className="node-portrait media" src=${portraitState(character).src} alt=${character.name} style=${portraitMediaStyle(character)} />
+        </div>
+        ${renderNodeBadgeAnchors(badges)}
+      </div>
+      <span className="flow-node-label">${String(character.name || "").toUpperCase()}</span>
+      ${ReactFlowHandle ? html`<${ReactFlowHandle} id="right" type="source" position=${ReactFlowPosition.Right} />` : null}
+      ${ReactFlowHandle ? html`<${ReactFlowHandle} id="bottom" type="source" position=${ReactFlowPosition.Bottom} />` : null}
+    </div>`;
+  }
+
+  var FLOW_NODE_TYPES = { characterNode: CharacterFlowNode };
+
+  // Renders the relationship-type metadata that already exists (color,
+  // thickness, line style, animation, arrowheads -- see
+  // DEFAULT_RELATIONSHIP_CATEGORIES / normalizeRelationships above) onto the
+  // actual React Flow edge. Defined at module scope for the same reason
+  // CharacterFlowNode is -- React Flow keys edgeTypes by reference, so a
+  // fresh function every render would remount every edge.
+  function RelationshipFlowEdge(props) {
+    if (!ReactFlowGetBezierPath || !ReactFlowBaseEdge) {
+      return null;
+    }
+    var pathResult = ReactFlowGetBezierPath({
+      sourceX: props.sourceX,
+      sourceY: props.sourceY,
+      sourcePosition: props.sourcePosition,
+      targetX: props.targetX,
+      targetY: props.targetY,
+      targetPosition: props.targetPosition
+    });
+    var edgePath = pathResult[0];
+    var labelX = pathResult[1];
+    var labelY = pathResult[2];
+    var relationshipData = props.data || {};
+    var color = relationshipData.color || "#8a8f99";
+    var decorativeRenderer = DECORATIVE_EDGE_RENDERERS[relationshipData.style];
+
+    // A real, mounted (but invisible) copy of the path is what lets
+    // decorative renderers call getTotalLength()/getPointAtLength() -- the
+    // Web Platform doesn't expose that geometry any other way, and it's the
+    // one thing every decorative style needs regardless of pattern. Measured
+    // in an effect (needs the element to actually be in the DOM first), then
+    // re-measured whenever the path shape or style changes.
+    var measurePathRef = useRef(null);
+    var _samplePoints = useState([]);
+    var samplePoints = _samplePoints[0];
+    var setSamplePoints = _samplePoints[1];
+
+    // Reserved arc length at whichever end(s) actually carry an arrowhead --
+    // an edge with no start marker shouldn't lose any decoration space for
+    // nothing. Decorative elements are no longer stopped short of this zone
+    // (see sampleEdgePathPoints); instead it's used to clip whichever
+    // element lands nearest it, via decorationMarkerClip. Both terms come
+    // from the shared constants above, so every decorative renderer stays in
+    // sync from one place -- no renderer hardcodes its own end offset.
+    var markerClip = {
+      startBoundaryLen: props.markerStart ? (RELATIONSHIP_ARROW_MARKER_SIZE + MARKER_END_PADDING) : 0,
+      endBoundaryLen: props.markerEnd ? (RELATIONSHIP_ARROW_MARKER_SIZE + MARKER_END_PADDING) : 0
+    };
+
+    useLayoutEffect(function () {
+      if (!decorativeRenderer || !measurePathRef.current) {
+        setSamplePoints(function (prev) { return prev.length ? [] : prev; });
+        return;
+      }
+      var spacing = DECORATIVE_EDGE_SPACING[relationshipData.style] || 20;
+      setSamplePoints(sampleEdgePathPoints(measurePathRef.current, spacing));
+    }, [edgePath, relationshipData.style]);
+
+    var dashArray = RELATIONSHIP_STYLE_DASHARRAY[relationshipData.style] || "none";
+    var edgeStyle = Object.assign({
+      stroke: color,
+      strokeWidth: relationshipData.thickness || 2,
+      // Decorative styles (chain/droplets) draw their own visual via
+      // repeated elements below -- the underlying path stays in the DOM
+      // (React Flow still uses it for the wide invisible interaction/hit
+      // area) but is fully transparent so it doesn't show through the gaps
+      // between links/droplets.
+      strokeOpacity: decorativeRenderer ? 0 : 1,
+      strokeDasharray: decorativeRenderer || dashArray === "none" ? undefined : dashArray
+    }, props.style || {});
+
+    return html`<g>
+      <path ref=${measurePathRef} d=${edgePath} fill="none" stroke="none" style=${{ pointerEvents: "none" }} />
+      <${ReactFlowBaseEdge}
+        id=${props.id}
+        path=${edgePath}
+        style=${edgeStyle}
+        markerStart=${props.markerStart}
+        markerEnd=${props.markerEnd}
+      />
+      ${decorativeRenderer ? decorativeRenderer(samplePoints, color, props.id, markerClip) : null}
+      ${renderRelationshipLabel(labelX, labelY, props.label)}
+    </g>`;
+  }
+
+  var FLOW_EDGE_TYPES = { relationshipEdge: RelationshipFlowEdge };
+
+  function relationshipEdgeMarker(kind, relationship) {
+    // kind: "start" | "end". relationship.arrow is "start" | "end" | "both" | "none".
+    var arrow = relationship.arrow || "none";
+    var wantsMarker = arrow === "both" || arrow === kind;
+    if (!wantsMarker || !ReactFlowMarkerType) {
+      return undefined;
+    }
+    return { type: ReactFlowMarkerType.ArrowClosed, color: relationship.color || "#8a8f99", width: RELATIONSHIP_ARROW_MARKER_SIZE, height: RELATIONSHIP_ARROW_MARKER_SIZE };
+  }
+
+  // Small inline preview of a relationship's line -- same color/style/arrow
+  // metadata RelationshipFlowEdge renders on the canvas, just as a compact
+  // static swatch for a list card instead of a live canvas path.
+  function relationshipPreviewSvg(relationship) {
+    var color = relationship.color || "#8a8f99";
+    var dash = RELATIONSHIP_STYLE_DASHARRAY[relationship.style] || "none";
+    var arrow = relationship.arrow || "none";
+    var showStart = arrow === "start" || arrow === "both";
+    var showEnd = arrow === "end" || arrow === "both";
+    var linecap = relationship.style === "droplets" ? "round" : "butt";
+    return html`<svg className="relationship-card-preview" viewBox="0 0 64 16" width="64" height="16" aria-hidden="true">
+      ${showStart ? html`<polygon points="10,8 16,4 16,12" fill=${color} />` : null}
+      <line
+        x1=${showStart ? 15 : 4}
+        y1="8"
+        x2=${showEnd ? 49 : 60}
+        y2="8"
+        stroke=${color}
+        strokeWidth=${Math.max(1, Math.min(4, relationship.thickness || 2))}
+        strokeDasharray=${dash === "none" ? null : dash}
+        strokeLinecap=${linecap}
+      />
+      ${showEnd ? html`<polygon points="54,8 48,4 48,12" fill=${color} />` : null}
+    </svg>`;
+  }
+
+  // Bridges a type definition's own fields (arrow: boolean, bidirectional:
+  // boolean) into the "start"/"end"/"both"/"none" shape relationshipPreviewSvg
+  // and the relationship-level `arrow` field both already expect.
+  function relationshipTypeArrowValue(typeItem) {
+    if (!typeItem || !typeItem.arrow) {
+      return "none";
+    }
+    return typeItem.bidirectional ? "both" : "end";
+  }
+
+  function relationshipTypeSummaryText(typeItem) {
+    if (!typeItem) {
+      return "";
+    }
+    var styleName = String(typeItem.style || "solid");
+    var parts = [styleName.charAt(0).toUpperCase() + styleName.slice(1), "Width " + (typeItem.width || 2)];
+    if (typeItem.animated) {
+      parts.push("Animated");
+    }
+    if (typeItem.arrow) {
+      parts.push((typeItem.bidirectional ? "↔" : "→") + " Arrow");
+    }
+    return parts.join(" • ");
   }
 
   function App(props) {
@@ -1521,17 +1875,9 @@
     var activePanel = _panel[0];
     var setActivePanel = _panel[1];
 
-    var _selected = useState([]);
-    var selected = _selected[0];
-    var setSelected = _selected[1];
-
     var _focused = useState(data.characters[0] ? data.characters[0].id : null);
     var focusedId = _focused[0];
     var setFocusedId = _focused[1];
-
-    var _view = useState({ x: 80, y: 60, scale: 0.58 });
-    var view = _view[0];
-    var setView = _view[1];
 
     var _search = useState("");
     var search = _search[0];
@@ -1545,190 +1891,112 @@
     var characterView = _characterView[0];
     var setCharacterView = _characterView[1];
 
-    var _characterEditMode = useState(false);
-    var characterEditMode = _characterEditMode[0];
-    var setCharacterEditMode = _characterEditMode[1];
-
-    var _characterEditOrigin = useState("directory");
-    var characterEditOrigin = _characterEditOrigin[0];
-    var setCharacterEditOrigin = _characterEditOrigin[1];
-
-    var _characterDraft = useState(null);
-    var characterDraft = _characterDraft[0];
-    var setCharacterDraft = _characterDraft[1];
-
     var _workspaceMode = useState("map");
     var workspaceMode = _workspaceMode[0];
     var setWorkspaceMode = _workspaceMode[1];
-
-    var _profileEditMode = useState(false);
-    var profileEditMode = _profileEditMode[0];
-    var setProfileEditMode = _profileEditMode[1];
 
     var _timelineExpandedIndex = useState(null);
     var timelineExpandedIndex = _timelineExpandedIndex[0];
     var setTimelineExpandedIndex = _timelineExpandedIndex[1];
 
-    var _portraitWorkflow = useState({
-      open: false,
-      step: "replace",
-      source: "",
-      zoom: 1,
-      minZoom: 1,
-      cropCenterX: 0.5,
-      cropCenterY: 0.5,
-      imageWidth: 0,
-      imageHeight: 0,
-      urlInput: "",
-      loading: false,
-      error: ""
-    });
-    var portraitWorkflow = _portraitWorkflow[0];
-    var setPortraitWorkflow = _portraitWorkflow[1];
-
-    var _panning = useState(false);
-    var isPanning = _panning[0];
-    var setIsPanning = _panning[1];
-
-    var _draggingId = useState(null);
-    var draggingId = _draggingId[0];
-    var setDraggingId = _draggingId[1];
-
-    var _drawingZone = useState(false);
-    var drawingZone = _drawingZone[0];
-    var setDrawingZone = _drawingZone[1];
-
-    var _relationshipPreview = useState(null);
-    var relationshipPreview = _relationshipPreview[0];
-    var setRelationshipPreview = _relationshipPreview[1];
-
-    var _relationshipDropTarget = useState(null);
-    var relationshipDropTarget = _relationshipDropTarget[0];
-    var setRelationshipDropTarget = _relationshipDropTarget[1];
-
+    // Draft state for the relationship editor panel (create or edit). Only
+    // written to `data.relationships` -- and thus persisted via
+    // RelationshipService -- when the user explicitly saves.
     var _relationshipEditor = useState(null);
     var relationshipEditor = _relationshipEditor[0];
     var setRelationshipEditor = _relationshipEditor[1];
 
-    var _relationshipCategoryExpanded = useState({});
-    var relationshipCategoryExpanded = _relationshipCategoryExpanded[0];
-    var setRelationshipCategoryExpanded = _relationshipCategoryExpanded[1];
+    // "Add Character to Map" picker state.
+    var _addCharacterOpen = useState(false);
+    var addCharacterOpen = _addCharacterOpen[0];
+    var setAddCharacterOpen = _addCharacterOpen[1];
 
-    var _relationshipCategoryCreate = useState({ open: false, name: "", color: "#d10d40" });
-    var relationshipCategoryCreate = _relationshipCategoryCreate[0];
-    var setRelationshipCategoryCreate = _relationshipCategoryCreate[1];
+    var _addCharacterSearch = useState("");
+    var addCharacterSearch = _addCharacterSearch[0];
+    var setAddCharacterSearch = _addCharacterSearch[1];
 
-    var _relationshipCategoryEdit = useState({ categoryId: null, name: "", color: "#d10d40" });
-    var relationshipCategoryEdit = _relationshipCategoryEdit[0];
-    var setRelationshipCategoryEdit = _relationshipCategoryEdit[1];
+    // Relationships tab filters. Purely a view-state concern -- nothing here
+    // touches the relationship data model, RelationshipService or the editor.
+    var _relationshipSearch = useState("");
+    var relationshipSearch = _relationshipSearch[0];
+    var setRelationshipSearch = _relationshipSearch[1];
 
-    var _relationshipTypeDraftsByCategory = useState({});
-    var relationshipTypeDraftsByCategory = _relationshipTypeDraftsByCategory[0];
-    var setRelationshipTypeDraftsByCategory = _relationshipTypeDraftsByCategory[1];
+    var _relationshipCategoryFilter = useState("all");
+    var relationshipCategoryFilter = _relationshipCategoryFilter[0];
+    var setRelationshipCategoryFilter = _relationshipCategoryFilter[1];
 
-    var _relationshipResetDialogOpen = useState(false);
-    var relationshipResetDialogOpen = _relationshipResetDialogOpen[0];
-    var setRelationshipResetDialogOpen = _relationshipResetDialogOpen[1];
+    var _relationshipTypeFilter = useState("all");
+    var relationshipTypeFilter = _relationshipTypeFilter[0];
+    var setRelationshipTypeFilter = _relationshipTypeFilter[1];
 
-    var _zoneDraft = useState(null);
-    var zoneDraft = _zoneDraft[0];
-    var setZoneDraft = _zoneDraft[1];
+    var _relationshipCharacterFilter = useState("all");
+    var relationshipCharacterFilter = _relationshipCharacterFilter[0];
+    var setRelationshipCharacterFilter = _relationshipCharacterFilter[1];
 
-    var _selectedZoneId = useState(null);
-    var selectedZoneId = _selectedZoneId[0];
-    var setSelectedZoneId = _selectedZoneId[1];
+    // Which sub-view the Relationships tab is showing -- "list" (the
+    // default relationship cards) or "manage-types" (the Relationship Type
+    // Manager). Purely a view-state toggle within the same tab; it doesn't
+    // touch activePanel so the tool-rail's "Relationships" icon stays
+    // highlighted in both sub-views.
+    var _relationshipsView = useState("list");
+    var relationshipsView = _relationshipsView[0];
+    var setRelationshipsView = _relationshipsView[1];
 
-    var _zoneEditDraft = useState(null);
-    var zoneEditDraft = _zoneEditDraft[0];
-    var setZoneEditDraft = _zoneEditDraft[1];
+    // Whether a connection is actively being dragged from/to a handle right
+    // now -- purely a CSS hook (see the "rf-connecting" class on the
+    // <ReactFlow> root below) so every handle on the canvas stays visible
+    // for the duration of the drag, not just the one node currently
+    // hovered. Handles are otherwise hidden until hover; this is what keeps
+    // them from vanishing mid-drag the instant the pointer leaves the
+    // source node.
+    var _isConnectingRelationship = useState(false);
+    var isConnectingRelationship = _isConnectingRelationship[0];
+    var setIsConnectingRelationship = _isConnectingRelationship[1];
 
-    var _zoneEditorOpen = useState(false);
-    var zoneEditorOpen = _zoneEditorOpen[0];
-    var setZoneEditorOpen = _zoneEditorOpen[1];
+    function handleFlowConnectStart() {
+      setIsConnectingRelationship(true);
+    }
 
-    var _zonePreview = useState(null);
-    var zonePreview = _zonePreview[0];
-    var setZonePreview = _zonePreview[1];
+    function handleFlowConnectEnd() {
+      setIsConnectingRelationship(false);
+    }
 
-    var _contextMenu = useState(null);
-    var contextMenu = _contextMenu[0];
-    var setContextMenu = _contextMenu[1];
+    // Which single relationship type (if any) is currently expanded into
+    // its inline editor within the Type Manager, and the unsaved draft of
+    // its fields. Mirrors the same draft-then-commit pattern already used
+    // for the per-relationship editor (relationshipEditor / saveRelationship
+    // Editor) so Cancel can discard edits without ever touching `data`.
+    var _editingRelationshipType = useState(null);
+    var editingRelationshipType = _editingRelationshipType[0];
+    var setEditingRelationshipType = _editingRelationshipType[1];
 
-    var _tagGroupExpanded = useState({});
-    var tagGroupExpanded = _tagGroupExpanded[0];
-    var setTagGroupExpanded = _tagGroupExpanded[1];
+    // React Flow owns node/edge rendering, dragging, zooming, panning and
+    // selection. These are React Flow's own local view-state hooks, seeded
+    // from `data.characters`/`data.relationships` and re-synced whenever
+    // that canonical data changes (see the useEffects below).
+    var _flowNodes = useFlowNodesState([]);
+    var flowNodes = _flowNodes[0];
+    var setFlowNodes = _flowNodes[1];
+    var onFlowNodesChange = _flowNodes[2];
 
-    var _tagGroupCreate = useState({ open: false, name: "" });
-    var tagGroupCreate = _tagGroupCreate[0];
-    var setTagGroupCreate = _tagGroupCreate[1];
+    var _flowEdges = useFlowEdgesState([]);
+    var flowEdges = _flowEdges[0];
+    var setFlowEdges = _flowEdges[1];
+    var onFlowEdgesChange = _flowEdges[2];
 
-    var _tagGroupRenameDraft = useState({ groupId: null, name: "" });
-    var tagGroupRenameDraft = _tagGroupRenameDraft[0];
-    var setTagGroupRenameDraft = _tagGroupRenameDraft[1];
+    var reactFlowInstance = useReactFlowInstance ? useReactFlowInstance() : null;
 
-    var _tagDraftsByGroup = useState({});
-    var tagDraftsByGroup = _tagDraftsByGroup[0];
-    var setTagDraftsByGroup = _tagDraftsByGroup[1];
+    var _zoomPercent = useState(58);
+    var zoomPercent = _zoomPercent[0];
+    var setZoomPercent = _zoomPercent[1];
 
-    var _tagEditDialog = useState({
-      open: false,
-      groupId: null,
-      tagId: null,
-      originalName: "",
-      name: "",
-      color: "#d10d40",
-      icon: "",
-      description: ""
-    });
-    var tagEditDialog = _tagEditDialog[0];
-    var setTagEditDialog = _tagEditDialog[1];
-
-    var _undo = useState([]);
-    var undoStack = _undo[0];
-    var setUndoStack = _undo[1];
-
-    var _redo = useState([]);
-    var redoStack = _redo[0];
-    var setRedoStack = _redo[1];
-
-    var viewportRef = useRef(null);
     var directoryListRef = useRef(null);
     var directoryScrollRef = useRef(0);
     var previousPanelRef = useRef(activePanel);
     var profileReturnRef = useRef({ panel: "characters", characterView: "details" });
-    var profilePortraitInputRef = useRef(null);
     var characterSyncChannelRef = useRef(null);
     var characterSyncSourceRef = useRef("relationship-map-" + Date.now() + "-" + Math.floor(Math.random() * 100000));
     var storageWriteErrorRef = useRef(false);
-    var portraitDragRef = useRef({ active: false, pointerId: null, lastX: 0, lastY: 0 });
-    var portraitPinchRef = useRef({ active: false, startDistance: 0, startZoom: 1 });
-    var portraitStageSizeRef = useRef(PORTRAIT_EDITOR_SIZE);
-    var panRef = useRef({ x: 0, y: 0 });
-    var spacePanRef = useRef(false);
-    var dragOffsetRef = useRef({ x: 0, y: 0 });
-    var nodeDragRef = useRef({
-      active: false,
-      pointerId: null,
-      nodeId: null,
-      startPointerX: 0,
-      startPointerY: 0,
-      startNodeX: 0,
-      startNodeY: 0,
-      captureElement: null,
-      cleanup: null,
-      priorBodyUserSelect: "",
-      priorBodyWebkitUserSelect: ""
-    });
-    var zoneInteractionRef = useRef(null);
-    var zonePreviewRef = useRef(null);
-    var zoneDraftRef = useRef(null);
-    var zoneEditorPanelRef = useRef(null);
-
-    useLayoutEffect(function () {
-      if (zoneEditorOpen && zoneEditorPanelRef.current) {
-        zoneEditorPanelRef.current.scrollIntoView({ block: "start", behavior: "smooth" });
-      }
-    }, [zoneEditorOpen, selectedZoneId]);
 
     function isEditableElement(element) {
       if (!element || element === document.body || element === document.documentElement) {
@@ -1756,646 +2024,322 @@
       return false;
     }
 
-    function commit(mutator) {
-      setData(function (prev) {
-        var snapshot = clone(prev);
-        var next = clone(prev);
-        mutator(next);
-        setUndoStack(function (s) { return s.concat([snapshot]).slice(-50); });
-        setRedoStack([]);
-        return next;
-      });
-    }
-
-    function undo() {
-      if (!undoStack.length) {
-        return;
-      }
-      var prior = undoStack[undoStack.length - 1];
-      setUndoStack(undoStack.slice(0, -1));
-      setRedoStack(redoStack.concat([clone(data)]).slice(-50));
-      setData(prior);
-    }
-
-    function redo() {
-      if (!redoStack.length) {
-        return;
-      }
-      var next = redoStack[redoStack.length - 1];
-      setRedoStack(redoStack.slice(0, -1));
-      setUndoStack(undoStack.concat([clone(data)]).slice(-50));
-      setData(next);
-    }
-
     function togglePanel(panelKey) {
       setActivePanel(function (current) {
         return current === panelKey ? null : panelKey;
       });
     }
 
-    function zoneMemberCount(zone) {
-      return data.characters.filter(function (character) {
-        return character.x >= zone.x && character.x <= zone.x + zone.width && character.y >= zone.y && character.y <= zone.y + zone.height;
-      }).length;
-    }
-
-    function zoneWithDefaults(zone) {
-      return Object.assign({
-        name: "Untitled Zone", description: "", color: "#d10d40", borderColor: "", opacity: 0.18,
-        borderThickness: 2, borderStyle: "dashed", lock: false, hidden: false, layer: 0,
-        shape: "rectangle", cornerRadius: 12, icon: "", notes: "", permissions: ""
-      }, zone || {});
-    }
-
-    function selectZone(zoneId, openPanel) {
-      var zone = data.zones.find(function (entry) { return entry.id === zoneId; });
-      if (!zone) {
-        return;
-      }
-      setSelectedZoneId(zoneId);
-      setZoneEditDraft(zoneWithDefaults(clone(zone)));
-      setSelected([]);
-      setZoneEditorOpen(Boolean(openPanel));
-      if (openPanel) {
-        setActivePanel("zones");
-      }
-    }
-
-    function zoneIsVisibleInViewport(zone) {
-      var viewport = viewportRef.current;
-      if (!viewport || !zone) {
-        return true;
-      }
-      var rect = viewport.getBoundingClientRect();
-      var left = view.x + zone.x * view.scale;
-      var top = view.y + zone.y * view.scale;
-      var right = view.x + (zone.x + zone.width) * view.scale;
-      var bottom = view.y + (zone.y + zone.height) * view.scale;
-      return right >= 0 && bottom >= 0 && left <= rect.width && top <= rect.height;
-    }
-
-    function focusZoneFromList(zoneId) {
-      var zone = data.zones.find(function (entry) { return entry.id === zoneId; });
-      if (!zone) {
-        return;
-      }
-      selectZone(zoneId, true);
-      if (zoneIsVisibleInViewport(zone)) {
-        return;
-      }
-      var viewport = viewportRef.current;
-      if (!viewport) {
-        return;
-      }
-      var rect = viewport.getBoundingClientRect();
-      var centerX = zone.x + zone.width / 2;
-      var centerY = zone.y + zone.height / 2;
-      setView(function (prev) {
-        return {
-          x: rect.width / 2 - centerX * prev.scale,
-          y: rect.height / 2 - centerY * prev.scale,
-          scale: prev.scale
-        };
-      });
-    }
-    function clearZoneSelection(showZoneList) {
-      setSelectedZoneId(null);
-      setZoneEditDraft(null);
-      setZoneEditorOpen(false);
-      if (showZoneList) {
-        setActivePanel("zones");
-      }
-    }
-
-    function enterZoneDrawingMode() {
-      setDrawingZone(true);
-      setZoneDraft(null);
-      zoneDraftRef.current = null;
-      clearZoneSelection(false);
-    }
-
-    function finishZoneDraft() {
-      var draft = zoneDraftRef.current || zoneDraft;
-      if (!draft) {
-        return;
-      }
-      var x = Math.min(draft.x, draft.x + draft.width);
-      var y = Math.min(draft.y, draft.y + draft.height);
-      var width = Math.abs(draft.width);
-      var height = Math.abs(draft.height);
-      if (width >= 30 && height >= 30) {
-        var newZoneId = "zone-" + Date.now();
-        commit(function (next) {
-          next.zones.push({
-            id: newZoneId,
-            name: "New Zone",
-            x: x,
-            y: y,
-            width: width,
-            height: height,
-            color: "#d10d40",
-            opacity: 0.18,
-            borderThickness: 2,
-            borderColor: "#d10d40",
-            borderStyle: "dashed",
-            description: "",
-            lock: false,
-            hidden: false,
-            layer: (next.zones || []).length,
-            shape: "rectangle",
-            cornerRadius: 12
-          });
-        });
-        setSelectedZoneId(newZoneId);
-        setZoneEditDraft(zoneWithDefaults({ id: newZoneId, name: "New Zone", x: x, y: y, width: width, height: height, borderColor: "#d10d40" }));
-        setZoneEditorOpen(false);
-      }
-      zoneDraftRef.current = null;
-      setZoneDraft(null);
-      setDrawingZone(false);
-    }
-
-    function cancelZoneDraft() {
-      zoneDraftRef.current = null;
-      setZoneDraft(null);
-      setDrawingZone(false);
-    }
-
-    function relationshipTypeDefaults(categoryRef, typeRef) {
-      return relationshipTypeDefaultsFromCategory(data.relationshipCategories, categoryRef, typeRef);
-    }
-
-    function relationshipLineStyleName(style) {
-      var value = String(style || "solid").toLowerCase();
-      return RELATIONSHIP_TYPE_STYLE_OPTIONS.indexOf(value) >= 0 ? value : "solid";
-    }
-
-    function makeRelationshipTypeDraft(seed) {
-      var source = seed && typeof seed === "object" ? seed : {};
-      return {
-        open: Boolean(source.open),
-        mode: source.mode || "create",
-        typeId: source.typeId || null,
-        originalName: String(source.originalName || ""),
-        name: String(source.name || ""),
-        label: String(source.label || ""),
-        color: safeHexColor(source.color, "#d10d40"),
-        style: relationshipLineStyleName(source.style || "solid"),
-        width: Math.max(1, Math.min(8, Number(source.width) || 2)),
-        animated: Boolean(source.animated),
-        arrow: Boolean(source.arrow)
-      };
-    }
-
-    function toggleRelationshipCategory(categoryId) {
-      setRelationshipCategoryExpanded(function (prev) {
-        var current = Object.prototype.hasOwnProperty.call(prev, categoryId) ? prev[categoryId] : true;
-        return Object.assign({}, prev, { [categoryId]: !current });
-      });
-    }
-
-    function openRelationshipCategoryCreate() {
-      setRelationshipCategoryCreate({ open: true, name: "", color: "#d10d40" });
-    }
-
-    function cancelRelationshipCategoryCreate() {
-      setRelationshipCategoryCreate({ open: false, name: "", color: "#d10d40" });
-    }
-
-    function saveRelationshipCategoryCreate() {
-      var name = String(relationshipCategoryCreate.name || "").trim();
-      if (!name) {
-        return;
-      }
-      var categoryId = makeRelationshipUiId("rel-cat");
-      var color = safeHexColor(relationshipCategoryCreate.color, "#d10d40");
-      commit(function (next) {
-        next.relationshipCategories.push({
-          id: categoryId,
-          name: name,
-          color: color,
-          types: [normalizeRelationshipType({ name: "Connection", label: "Connection", color: color }, color)]
-        });
-      });
-      setRelationshipCategoryExpanded(function (prev) { return Object.assign({}, prev, { [categoryId]: true }); });
-      cancelRelationshipCategoryCreate();
-    }
-
-    function openRelationshipCategoryEdit(category) {
-      setRelationshipCategoryEdit({
-        categoryId: category.id,
-        name: category.name || "",
-        color: safeHexColor(category.color, "#d10d40")
-      });
-    }
-
-    function cancelRelationshipCategoryEdit() {
-      setRelationshipCategoryEdit({ categoryId: null, name: "", color: "#d10d40" });
-    }
-
-    function saveRelationshipCategoryEdit() {
-      var categoryId = relationshipCategoryEdit.categoryId;
-      var nextName = String(relationshipCategoryEdit.name || "").trim();
-      if (!categoryId || !nextName) {
-        cancelRelationshipCategoryEdit();
-        return;
-      }
-      var nextColor = safeHexColor(relationshipCategoryEdit.color, "#d10d40");
-      commit(function (next) {
-        var target = next.relationshipCategories.find(function (entry) { return entry.id === categoryId; });
-        if (!target) {
-          return;
-        }
-        var previousName = target.name;
-        target.name = nextName;
-        target.color = nextColor;
-        target.types = (target.types || []).map(function (typeItem) {
-          return Object.assign({}, typeItem, {
-            color: safeHexColor(typeItem.color, nextColor)
-          });
-        });
-        next.relationships.forEach(function (relationship) {
-          if (relationship.categoryId === categoryId || relationship.category === previousName) {
-            relationship.categoryId = categoryId;
-            relationship.category = nextName;
-          }
-        });
-      });
-      cancelRelationshipCategoryEdit();
-    }
-
-    function deleteRelationshipCategory(categoryId) {
-      var category = (data.relationshipCategories || []).find(function (entry) { return entry.id === categoryId; });
-      if (!category) {
-        return;
-      }
-      var confirmDelete = window.confirm("Delete category '" + category.name + "' and all relationships that use its types?");
-      if (!confirmDelete) {
-        return;
-      }
-      var typeIds = (category.types || []).map(function (typeItem) { return typeItem.id; });
-      commit(function (next) {
-        next.relationshipCategories = next.relationshipCategories.filter(function (entry) { return entry.id !== categoryId; });
-        next.relationships = next.relationships.filter(function (relationship) {
-          return relationship.categoryId !== categoryId && typeIds.indexOf(relationship.typeId) < 0;
-        });
-      });
-      setRelationshipTypeDraftsByCategory(function (prev) {
-        if (!Object.prototype.hasOwnProperty.call(prev, categoryId)) {
-          return prev;
-        }
-        var next = Object.assign({}, prev);
-        delete next[categoryId];
-        return next;
-      });
-      if (relationshipCategoryEdit.categoryId === categoryId) {
-        cancelRelationshipCategoryEdit();
-      }
-    }
-
-    function openRelationshipTypeCreate(categoryId, categoryColor) {
-      setRelationshipTypeDraftsByCategory(function (prev) {
-        return Object.assign({}, prev, {
-          [categoryId]: makeRelationshipTypeDraft({ open: true, mode: "create", color: safeHexColor(categoryColor, "#d10d40") })
-        });
-      });
-    }
-
-    function openRelationshipTypeEdit(categoryId, typeItem) {
-      setRelationshipTypeDraftsByCategory(function (prev) {
-        return Object.assign({}, prev, {
-          [categoryId]: makeRelationshipTypeDraft({
-            open: true,
-            mode: "edit",
-            typeId: typeItem.id,
-            originalName: typeItem.name,
-            name: typeItem.name,
-            label: typeItem.label,
-            color: typeItem.color,
-            style: typeItem.style,
-            width: typeItem.width,
-            animated: typeItem.animated,
-            arrow: typeItem.arrow
-          })
-        });
-      });
-    }
-
-    function cancelRelationshipTypeDraft(categoryId) {
-      setRelationshipTypeDraftsByCategory(function (prev) {
-        if (!Object.prototype.hasOwnProperty.call(prev, categoryId)) {
-          return prev;
-        }
-        var next = Object.assign({}, prev);
-        next[categoryId] = makeRelationshipTypeDraft({ open: false });
-        return next;
-      });
-    }
-
-    function updateRelationshipTypeDraft(categoryId, field, value) {
-      setRelationshipTypeDraftsByCategory(function (prev) {
-        var current = makeRelationshipTypeDraft(prev[categoryId] || { open: true });
-        var next = Object.assign({}, current, { [field]: value, open: true });
-        if (field === "color") {
-          next.color = safeHexColor(value, current.color);
-        }
-        if (field === "style") {
-          next.style = relationshipLineStyleName(value);
-        }
-        if (field === "width") {
-          next.width = Math.max(1, Math.min(8, Number(value) || 1));
-        }
-        return Object.assign({}, prev, { [categoryId]: next });
-      });
-    }
-
-    function saveRelationshipTypeDraft(category) {
-      var categoryId = category.id;
-      var draft = makeRelationshipTypeDraft(relationshipTypeDraftsByCategory[categoryId] || {});
-      var typeName = String(draft.name || "").trim();
-      if (!draft.open || !typeName) {
-        return;
-      }
-      var displayLabel = String(draft.label || "").trim() || typeName;
-      var normalized = normalizeRelationshipType({
-        id: draft.typeId || makeRelationshipUiId("rel-type"),
-        name: typeName,
-        label: displayLabel,
-        color: draft.color,
-        width: draft.width,
-        style: draft.style,
-        animated: draft.animated,
-        arrow: draft.arrow
-      }, category.color);
-
-      var shouldUpdateExisting = draft.mode === "edit" ? window.confirm("Update existing relationships using this type?") : true;
-      commit(function (next) {
-        var targetCategory = next.relationshipCategories.find(function (entry) { return entry.id === categoryId; });
-        if (!targetCategory) {
-          return;
-        }
-        targetCategory.types = targetCategory.types || [];
-        if (draft.mode === "edit") {
-          var index = targetCategory.types.findIndex(function (typeItem) { return typeItem.id === draft.typeId; });
-          if (index >= 0) {
-            targetCategory.types[index] = normalized;
-          }
-        } else {
-          targetCategory.types.push(normalized);
-        }
-
-        if (shouldUpdateExisting) {
-          var defaults = relationshipTypeDefaultsFromCategory(next.relationshipCategories, categoryId, normalized.id);
-          next.relationships.forEach(function (relationship) {
-            var sameType = relationship.typeId === normalized.id || (relationship.categoryId === categoryId && relationship.type === draft.originalName);
-            if (!sameType) {
-              return;
-            }
-            relationship.categoryId = defaults.categoryId;
-            relationship.category = defaults.category;
-            relationship.typeId = defaults.typeId;
-            relationship.type = defaults.type;
-            relationship.displayLabel = defaults.displayLabel;
-            relationship.color = defaults.color;
-            relationship.thickness = defaults.thickness;
-            relationship.style = defaults.style;
-            relationship.animated = defaults.animated;
-            relationship.arrow = defaults.arrow;
-            relationship.lineMeta = Object.assign(makeRelationshipTypeDecoration(), defaults.lineMeta || {});
-          });
-        }
-      });
-
-      cancelRelationshipTypeDraft(categoryId);
-    }
-
-    function deleteRelationshipType(category, typeItem) {
-      var categoryId = category.id;
-      var typeId = typeItem.id;
-      var confirmDelete = window.confirm("Delete relationship type '" + typeItem.name + "'?");
-      if (!confirmDelete) {
-        return;
-      }
-      commit(function (next) {
-        var targetCategory = next.relationshipCategories.find(function (entry) { return entry.id === categoryId; });
-        if (!targetCategory) {
-          return;
-        }
-        targetCategory.types = (targetCategory.types || []).filter(function (entry) { return entry.id !== typeId; });
-        next.relationships = next.relationships.filter(function (relationship) {
-          return relationship.typeId !== typeId;
-        });
-      });
-    }
-
-    function hexToRgb(hexValue) {
-      var hex = safeHexColor(hexValue, "#000000").slice(1);
-      return {
-        r: parseInt(hex.slice(0, 2), 16),
-        g: parseInt(hex.slice(2, 4), 16),
-        b: parseInt(hex.slice(4, 6), 16)
-      };
-    }
-
-    function relationshipDistanceScore(currentRelationship, category, typeItem) {
-      var score = 0;
-      var relCategory = String(currentRelationship.category || "").toLowerCase();
-      var relType = String(currentRelationship.type || "").toLowerCase();
-      var relLabel = String(currentRelationship.displayLabel || "").toLowerCase();
-      var catName = String(category.name || "").toLowerCase();
-      var typeName = String(typeItem.name || "").toLowerCase();
-      var typeLabel = String(typeItem.label || "").toLowerCase();
-
-      if (relCategory && relCategory === catName) {
-        score += 45;
-      }
-      if (relType && (relType === typeName || relType === typeLabel)) {
-        score += 65;
-      }
-      if (relLabel && (relLabel === typeLabel || relLabel === typeName)) {
-        score += 30;
-      }
-      if (String(currentRelationship.style || "") === String(typeItem.style || "")) {
-        score += 20;
-      }
-      var relArrow = ["end", "both"].indexOf(String(currentRelationship.arrow || "none").toLowerCase()) >= 0;
-      if (relArrow === Boolean(typeItem.arrow)) {
-        score += 14;
-      }
-      if (Boolean(currentRelationship.animated) === Boolean(typeItem.animated)) {
-        score += 12;
-      }
-
-      var relWidth = Math.max(1, Number(currentRelationship.thickness) || 2);
-      var typeWidth = Math.max(1, Number(typeItem.width) || 2);
-      score += Math.max(0, 10 - Math.abs(relWidth - typeWidth) * 3);
-
-      var relRgb = hexToRgb(currentRelationship.color);
-      var typeRgb = hexToRgb(typeItem.color);
-      var distance = Math.sqrt(
-        Math.pow(relRgb.r - typeRgb.r, 2) +
-        Math.pow(relRgb.g - typeRgb.g, 2) +
-        Math.pow(relRgb.b - typeRgb.b, 2)
-      );
-      score += Math.max(0, 24 - distance / 12);
-
-      return score;
-    }
-
-    function closestDefaultRelationshipType(currentRelationship, defaultCategories) {
-      var exactById = null;
-      (defaultCategories || []).some(function (category) {
-        var match = (category.types || []).find(function (typeItem) {
-          return currentRelationship.typeId && typeItem.id === currentRelationship.typeId;
-        });
-        if (match) {
-          exactById = { category: category, type: match, score: 999 };
-          return true;
-        }
-        return false;
-      });
-      if (exactById) {
-        return exactById;
-      }
-
-      var best = null;
-      (defaultCategories || []).forEach(function (category) {
-        (category.types || []).forEach(function (typeItem) {
-          var score = relationshipDistanceScore(currentRelationship, category, typeItem);
-          if (!best || score > best.score) {
-            best = { category: category, type: typeItem, score: score };
-          }
-        });
-      });
-
-      return best && best.score >= 42 ? best : null;
-    }
-
-    function resetRelationshipDefaults() {
-      var defaults = normalizeRelationshipCategories(clone(DEFAULT_RELATIONSHIP_CATEGORIES));
-      var fallbackCategory = defaults[0] || { id: "", name: "", color: "#d10d40" };
-
-      commit(function (next) {
-        next.relationshipCategories = clone(defaults);
-        next.relationships = (next.relationships || []).map(function (relationship) {
-          var current = clone(relationship || {});
-          var match = closestDefaultRelationshipType(current, defaults);
-          if (match && match.category && match.type) {
-            var mapped = relationshipTypeDefaultsFromCategory(defaults, match.category.id, match.type.id);
-            return Object.assign({}, current, {
-              category: mapped.category,
-              categoryId: mapped.categoryId,
-              type: mapped.type,
-              typeId: mapped.typeId,
-              displayLabel: mapped.displayLabel,
-              color: mapped.color,
-              thickness: mapped.thickness,
-              style: mapped.style,
-              animated: mapped.animated,
-              arrow: mapped.arrow,
-              lineMeta: Object.assign(makeRelationshipTypeDecoration(), mapped.lineMeta || {}, current.lineMeta || {})
-            });
-          }
-
-          // Preserve unmatched relationships by marking them as custom while keeping line details.
-          return Object.assign({}, current, {
-            category: fallbackCategory.name,
-            categoryId: fallbackCategory.id,
-            type: CUSTOM_RELATIONSHIP_FALLBACK_LABEL,
-            typeId: "",
-            displayLabel: CUSTOM_RELATIONSHIP_FALLBACK_LABEL
-          });
-        });
-      });
-
-      setRelationshipTypeDraftsByCategory({});
-      setRelationshipCategoryCreate({ open: false, name: "", color: "#d10d40" });
-      setRelationshipCategoryEdit({ categoryId: null, name: "", color: "#d10d40" });
-      setRelationshipResetDialogOpen(false);
-      setRelationshipEditor(null);
-      setActivePanel("relationships");
-    }
-
+    // Relationship create/edit/delete. All of these only ever call setData;
+    // the persistence effect below is what actually writes the change,
+    // exclusively through RelationshipService.saveAll -- this map never
+    // owns relationship persistence itself.
     function openRelationshipEditorFor(relationship, isNew) {
-      if (!relationship) {
-        return;
-      }
-      var defaults = relationshipTypeDefaults(relationship.categoryId || relationship.category, relationship.typeId || relationship.type);
-      var draftRelationship = clone(relationship);
-      delete draftRelationship.sourceAnchor;
-      delete draftRelationship.destinationAnchor;
-      delete draftRelationship.fromAnchor;
-      delete draftRelationship.toAnchor;
-      setRelationshipEditor(Object.assign({}, defaults, draftRelationship, { isNew: Boolean(isNew) }));
+      setRelationshipEditor({
+        id: relationship.id,
+        from: relationship.from,
+        to: relationship.to,
+        categoryId: relationship.categoryId,
+        typeId: relationship.typeId,
+        label: relationship.displayLabel || relationship.label || "",
+        description: relationship.description || "",
+        gmNotes: relationship.gmNotes || "",
+        sourceHandle: relationship.sourceHandle || null,
+        targetHandle: relationship.targetHandle || null,
+        isNew: Boolean(isNew)
+      });
       setActivePanel("relationship-editor");
     }
 
-    function createRelationshipFromAnchors(fromId, toId) {
-      var defaults = relationshipTypeDefaults();
-      var id = makeRelationshipUiId("rel");
-      var relationship = Object.assign({
-        id: id,
-        from: fromId,
-        to: toId,
-        description: "",
-        gmNotes: "",
-        hiddenFromCollaborators: false,
-        visible: true,
-        opacity: 1,
-        labelColor: "#ffffff"
-      }, defaults);
-      commit(function (next) {
-        next.relationships.push(clone(relationship));
-      });
-      openRelationshipEditorFor(Object.assign({}, relationship), true);
+    function closeRelationshipEditor() {
+      setRelationshipEditor(null);
+      setActivePanel(null);
     }
 
-    function beginRelationshipDrag(event, character, anchor) {
-      if (event.button !== 0) {
+    function handleFlowConnect(connection) {
+      if (!connection || !connection.source || !connection.target || connection.source === connection.target) {
         return;
       }
-      if (selected.indexOf(character.id) < 0) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      var start = pointOnCanvas(event.clientX, event.clientY);
-      setRelationshipPreview({ from: character.id, x1: start.x, y1: start.y, x2: start.x, y2: start.y });
-      setRelationshipDropTarget(null);
+      var fallback = relationshipTypeDefaultsFromCategory(data.relationshipCategories, null, null);
+      openRelationshipEditorFor({
+        id: makeRelationshipUiId("rel"),
+        from: connection.source,
+        to: connection.target,
+        categoryId: fallback.categoryId,
+        typeId: fallback.typeId,
+        displayLabel: fallback.displayLabel,
+        // Remember exactly which handle the user dragged from/to so the
+        // edge reattaches to that same handle instead of React Flow's
+        // default (the first-declared handle, which happens to be "top").
+        sourceHandle: connection.sourceHandle || null,
+        targetHandle: connection.targetHandle || null
+      }, true);
+    }
 
-      function move(moveEvent) {
-        var point = pointOnCanvas(moveEvent.clientX, moveEvent.clientY);
-        setRelationshipPreview(function (current) {
-          return current ? Object.assign({}, current, { x2: point.x, y2: point.y }) : current;
-        });
-        var targetElement = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
-        var targetHandle = targetElement && targetElement.closest ? targetElement.closest("[data-relationship-anchor]") : null;
-        var targetCharacterId = targetHandle && targetHandle.getAttribute("data-character-id");
-        if (targetCharacterId && targetCharacterId !== character.id) {
-          setRelationshipDropTarget({
-            characterId: targetCharacterId,
-            anchor: targetHandle.getAttribute("data-relationship-anchor") || "left"
-          });
+    function onFlowEdgeClick(event, edge) {
+      var relationship = data.relationships.find(function (entry) { return entry.id === edge.id; });
+      if (relationship) {
+        openRelationshipEditorFor(relationship, false);
+      }
+    }
+
+    function saveRelationshipEditor() {
+      if (!relationshipEditor) {
+        return;
+      }
+      var normalized = normalizeRelationships([{
+        id: relationshipEditor.id,
+        from: relationshipEditor.from,
+        to: relationshipEditor.to,
+        categoryId: relationshipEditor.categoryId,
+        typeId: relationshipEditor.typeId,
+        displayLabel: String(relationshipEditor.label || "").trim(),
+        description: relationshipEditor.description,
+        gmNotes: relationshipEditor.gmNotes,
+        sourceHandle: relationshipEditor.sourceHandle || null,
+        targetHandle: relationshipEditor.targetHandle || null
+      }], data.relationshipCategories)[0];
+
+      setData(function (prev) {
+        var next = clone(prev);
+        var index = next.relationships.findIndex(function (entry) { return entry.id === normalized.id; });
+        if (index >= 0) {
+          next.relationships[index] = normalized;
         } else {
-          setRelationshipDropTarget(null);
+          next.relationships = next.relationships.concat([normalized]);
         }
-      }
+        return next;
+      });
+      closeRelationshipEditor();
+    }
 
-      function up(upEvent) {
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", up);
-        var target = document.elementFromPoint(upEvent.clientX, upEvent.clientY);
-        var handle = target && target.closest ? target.closest("[data-relationship-anchor]") : null;
-        var toId = handle && handle.getAttribute("data-character-id");
-        if (toId && toId !== character.id) {
-          createRelationshipFromAnchors(character.id, toId);
+    // Shared by the editor's own Delete button and the Relationships tab's
+    // per-card Delete action -- same setData call either way, so there's
+    // exactly one place that removes a relationship from `data`.
+    function removeRelationship(id) {
+      setData(function (prev) {
+        var next = clone(prev);
+        next.relationships = next.relationships.filter(function (entry) { return entry.id !== id; });
+        return next;
+      });
+    }
+
+    function deleteRelationshipEditor() {
+      if (!relationshipEditor) {
+        return;
+      }
+      removeRelationship(relationshipEditor.id);
+      closeRelationshipEditor();
+    }
+
+    function deleteRelationshipFromCard(relationship, event) {
+      if (event) {
+        event.stopPropagation();
+      }
+      var fromCharacter = data.characters.find(function (c) { return c.id === relationship.from; });
+      var toCharacter = data.characters.find(function (c) { return c.id === relationship.to; });
+      var label = (fromCharacter ? fromCharacter.name : "Unknown") + " → " + (toCharacter ? toCharacter.name : "Unknown");
+      if (!window.confirm("Delete relationship \"" + label + "\"? This cannot be undone.")) {
+        return;
+      }
+      removeRelationship(relationship.id);
+      if (relationshipEditor && relationshipEditor.id === relationship.id) {
+        closeRelationshipEditor();
+      }
+    }
+
+    // Relationship Type Manager mutators. Every one of these re-runs the
+    // full category list through normalizeRelationshipCategories before
+    // writing it to `data` -- the exact same normalization the app already
+    // uses on load and in the relationship editor, so a raw/partial edit
+    // (e.g. a brand-new category with no `types` yet) always comes out the
+    // other side fully validated (safe hex colors, clamped width, a
+    // guaranteed-non-empty types array, etc.) with zero new validation
+    // logic. Persistence is already automatic: relationshipCategories lives
+    // in `data`, and the existing persistStateToIndexedDb effect sweeps
+    // anything in `data` besides characters/relationships/zones into
+    // MapLayoutService.savePreferences on every change.
+    function updateRelationshipCategories(mutator) {
+      setData(function (prev) {
+        var next = clone(prev);
+        var categories = clone(next.relationshipCategories || []);
+        var mutated = mutator(categories) || categories;
+        next.relationshipCategories = normalizeRelationshipCategories(mutated);
+        return next;
+      });
+    }
+
+    function addRelationshipCategory() {
+      updateRelationshipCategories(function (categories) {
+        return categories.concat([{ name: "New Category" }]);
+      });
+    }
+
+    function renameRelationshipCategory(categoryId, name) {
+      updateRelationshipCategories(function (categories) {
+        return categories.map(function (category) {
+          return category.id === categoryId ? Object.assign({}, category, { name: name }) : category;
+        });
+      });
+    }
+
+    function recolorRelationshipCategory(categoryId, color) {
+      updateRelationshipCategories(function (categories) {
+        return categories.map(function (category) {
+          return category.id === categoryId ? Object.assign({}, category, { color: color }) : category;
+        });
+      });
+    }
+
+    function deleteRelationshipCategory(categoryId, categoryName) {
+      var inUse = (data.relationships || []).some(function (relationship) { return relationship.categoryId === categoryId; });
+      var warning = "Delete category \"" + (categoryName || "Untitled") + "\" and all its relationship types?" +
+        (inUse ? " Existing relationships using it will fall back to the default category on next save." : "") +
+        " This cannot be undone.";
+      if (!window.confirm(warning)) {
+        return;
+      }
+      updateRelationshipCategories(function (categories) {
+        return categories.filter(function (category) { return category.id !== categoryId; });
+      });
+    }
+
+    function addRelationshipType(categoryId) {
+      updateRelationshipCategories(function (categories) {
+        return categories.map(function (category) {
+          if (category.id !== categoryId) {
+            return category;
+          }
+          var types = (category.types || []).concat([{ name: "New Type" }]);
+          return Object.assign({}, category, { types: types });
+        });
+      });
+    }
+
+    function updateRelationshipType(categoryId, typeId, field, value) {
+      updateRelationshipCategories(function (categories) {
+        return categories.map(function (category) {
+          if (category.id !== categoryId) {
+            return category;
+          }
+          var types = (category.types || []).map(function (typeItem) {
+            if (typeItem.id !== typeId) {
+              return typeItem;
+            }
+            var patch = {};
+            patch[field] = value;
+            return Object.assign({}, typeItem, patch);
+          });
+          return Object.assign({}, category, { types: types });
+        });
+      });
+    }
+
+    function deleteRelationshipType(categoryId, typeId, typeName) {
+      var inUse = (data.relationships || []).some(function (relationship) { return relationship.typeId === typeId; });
+      var warning = "Delete relationship type \"" + (typeName || "Untitled") + "\"?" +
+        (inUse ? " Existing relationships using it will fall back to a default type on next save." : "") +
+        " This cannot be undone.";
+      if (!window.confirm(warning)) {
+        return;
+      }
+      updateRelationshipCategories(function (categories) {
+        return categories.map(function (category) {
+          if (category.id !== categoryId) {
+            return category;
+          }
+          return Object.assign({}, category, { types: (category.types || []).filter(function (typeItem) { return typeItem.id !== typeId; }) });
+        });
+      });
+      if (editingRelationshipType && editingRelationshipType.typeId === typeId) {
+        setEditingRelationshipType(null);
+      }
+    }
+
+    // Inline type editor: expand/collapse, edit the draft, commit or discard.
+    // Only one type can be mid-edit at a time since it's a single state
+    // value, not per-row -- opening a new one implicitly closes any other.
+    function startEditRelationshipType(categoryId, typeItem) {
+      setEditingRelationshipType({ categoryId: categoryId, typeId: typeItem.id, draft: clone(typeItem) });
+    }
+
+    function cancelEditRelationshipType() {
+      setEditingRelationshipType(null);
+    }
+
+    function updateEditingRelationshipTypeField(field, value) {
+      setEditingRelationshipType(function (prev) {
+        if (!prev) {
+          return prev;
         }
-        setRelationshipPreview(null);
-        setRelationshipDropTarget(null);
-      }
+        var patch = {};
+        patch[field] = value;
+        return Object.assign({}, prev, { draft: Object.assign({}, prev.draft, patch) });
+      });
+    }
 
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", up);
+    function saveEditingRelationshipType() {
+      if (!editingRelationshipType) {
+        return;
+      }
+      var categoryId = editingRelationshipType.categoryId;
+      var typeId = editingRelationshipType.typeId;
+      var draft = editingRelationshipType.draft;
+      updateRelationshipCategories(function (categories) {
+        return categories.map(function (category) {
+          if (category.id !== categoryId) {
+            return category;
+          }
+          var types = (category.types || []).map(function (typeItem) {
+            return typeItem.id === typeId ? Object.assign({}, typeItem, draft, { id: typeId }) : typeItem;
+          });
+          return Object.assign({}, category, { types: types });
+        });
+      });
+      setEditingRelationshipType(null);
+    }
+
+    // Add/remove characters from the map. Neither operation touches
+    // CharacterService -- adding never creates a character record, and
+    // removing only deletes this map's own layout entry for it.
+    function openAddCharacterModal() {
+      setAddCharacterSearch("");
+      setAddCharacterOpen(true);
+    }
+
+    function closeAddCharacterModal() {
+      setAddCharacterOpen(false);
+    }
+
+    function addCharacterToMap(characterId) {
+      setData(function (prev) {
+        var next = clone(prev);
+        var target = next.characters.find(function (character) { return character.id === characterId; });
+        if (!target || target.onMap) {
+          return prev;
+        }
+        var position = nextMapPosition(next.characters);
+        target.onMap = true;
+        target.hidden = false;
+        target.x = position.x;
+        target.y = position.y;
+        return next;
+      });
+      closeAddCharacterModal();
+    }
+
+    function removeCharacterFromMap(characterId) {
+      setData(function (prev) {
+        var next = clone(prev);
+        var target = next.characters.find(function (character) { return character.id === characterId; });
+        if (target) {
+          target.onMap = false;
+          delete target.x;
+          delete target.y;
+        }
+        return next;
+      });
+      mapLayoutService.deleteNodeLayout(characterId).catch(function () { return null; });
     }
 
     useEffect(function () {
@@ -2447,21 +2391,35 @@
             next.characters[index] = Object.assign({}, next.characters[index], incoming);
             return next;
           });
-
-          setCharacterDraft(function (current) {
-            if (!current || current.id !== incoming.id) {
-              return current;
-            }
-            var normalized = characterToDraft(incoming);
-            return Object.assign({}, current, normalized);
-          });
           return;
         }
 
         if (message.type === "characters-snapshot" && Array.isArray(message.characters)) {
           setData(function (prev) {
             var next = clone(prev);
-            next.characters = message.characters.map(normalizeCharacterRecord);
+            // The Characters page broadcasts its own CharacterService-sourced
+            // records, which never carry this map's view-state fields
+            // (onMap/x/y/hidden/outlineColor/nodeSize/nodeShape -- those are
+            // MapLayoutService's alone). Re-apply each character's existing
+            // view-state on top of the incoming snapshot so an already-open
+            // map tab doesn't lose track of who's on the map -- and doesn't
+            // start reporting mapped characters as available -- every time
+            // another tab creates or deletes a character.
+            var previousById = {};
+            next.characters.forEach(function (entry) { previousById[entry.id] = entry; });
+            next.characters = message.characters.map(function (incomingCharacter) {
+              var normalized = normalizeCharacterRecord(incomingCharacter);
+              var existing = previousById[normalized.id];
+              return existing ? Object.assign({}, normalized, {
+                onMap: existing.onMap,
+                hidden: existing.hidden,
+                x: existing.x,
+                y: existing.y,
+                outlineColor: existing.outlineColor,
+                nodeSize: existing.nodeSize,
+                nodeShape: existing.nodeShape
+              }) : normalized;
+            });
             if (Array.isArray(message.relationships)) {
               next.relationships = normalizeRelationships(message.relationships, next.relationshipCategories);
             }
@@ -2492,880 +2450,135 @@
     useEffect(function () {
       if (activePanel === "characters" && previousPanelRef.current !== "characters") {
         setCharacterView("directory");
-        setCharacterEditMode(false);
-        setCharacterDraft(null);
       }
       previousPanelRef.current = activePanel;
     }, [activePanel]);
-
-    useEffect(function () {
-      setTagGroupExpanded(function (prev) {
-        var next = {};
-        var changed = false;
-
-        (data.tagGroups || []).forEach(function (group) {
-          if (Object.prototype.hasOwnProperty.call(prev, group.id)) {
-            next[group.id] = prev[group.id];
-          } else {
-            next[group.id] = true;
-            changed = true;
-          }
-        });
-
-        Object.keys(prev).forEach(function (groupId) {
-          if (!Object.prototype.hasOwnProperty.call(next, groupId)) {
-            changed = true;
-          }
-        });
-
-        return changed ? next : prev;
-      });
-    }, [data.tagGroups]);
-
-    useEffect(function () {
-      setRelationshipCategoryExpanded(function (prev) {
-        var next = {};
-        var changed = false;
-
-        (data.relationshipCategories || []).forEach(function (category) {
-          if (Object.prototype.hasOwnProperty.call(prev, category.id)) {
-            next[category.id] = prev[category.id];
-          } else {
-            next[category.id] = true;
-            changed = true;
-          }
-        });
-
-        Object.keys(prev).forEach(function (categoryId) {
-          if (!Object.prototype.hasOwnProperty.call(next, categoryId)) {
-            changed = true;
-          }
-        });
-
-        return changed ? next : prev;
-      });
-    }, [data.relationshipCategories]);
 
     useEffect(function () {
       function onKey(event) {
         if (isEditableElement(document.activeElement)) {
           return;
         }
-
-        if (event.code === "Space") {
-          spacePanRef.current = true;
-          event.preventDefault();
-          return;
-        }
-
-        if (event.key === "Escape" && nodeDragRef.current.active) {
-          endNodeDrag();
-        }
         if (event.key === "Escape") {
-          if (drawingZone) {
-            cancelZoneDraft();
-            return;
-          }
-          if (relationshipPreview) {
-            setRelationshipPreview(null);
-            setRelationshipDropTarget(null);
-          }
-          finishZoneInteraction();
-          if (selectedZoneId || zoneEditorOpen) {
-            clearZoneSelection(true);
-            setContextMenu(null);
-            return;
-          }
+          setRelationshipEditor(null);
+          setAddCharacterOpen(false);
           setActivePanel(null);
-          setContextMenu(null);
-        }
-        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
-          event.preventDefault();
-          if (event.shiftKey) {
-            redo();
-          } else {
-            undo();
-          }
-        }
-        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
-          event.preventDefault();
-          redo();
-        }
-
-        if (event.key === "Delete") {
-          if (workspaceMode !== "map" || profileEditMode || characterEditMode || portraitWorkflow.open || !selected.length) {
-            return;
-          }
-          event.preventDefault();
-          commit(function (next) {
-            next.characters = next.characters.filter(function (c) { return selected.indexOf(c.id) < 0; });
-            next.relationships = next.relationships.filter(function (r) { return selected.indexOf(r.from) < 0 && selected.indexOf(r.to) < 0; });
-          });
-          setSelected([]);
         }
       }
-
-      function onKeyUp(event) {
-        if (event.code === "Space") {
-          spacePanRef.current = false;
-        }
-      }
-
-      function onBlur() {
-        spacePanRef.current = false;
-      }
-
       document.addEventListener("keydown", onKey);
-      document.addEventListener("keyup", onKeyUp);
-      window.addEventListener("blur", onBlur);
       return function () {
         document.removeEventListener("keydown", onKey);
-        document.removeEventListener("keyup", onKeyUp);
-        window.removeEventListener("blur", onBlur);
-      };
-    }, [selected, undoStack, redoStack, data, workspaceMode, profileEditMode, characterEditMode, portraitWorkflow.open, drawingZone, selectedZoneId, zoneEditorOpen, relationshipPreview]);
-
-    useEffect(function () {
-      return function () {
-        endNodeDrag();
       };
     }, []);
 
-    var focused = data.characters.find(function (c) { return c.id === focusedId; }) || null;
-
-    function pointOnCanvas(clientX, clientY) {
-      var rect = viewportRef.current.getBoundingClientRect();
-      return {
-        x: (clientX - rect.left - view.x) / view.scale,
-        y: (clientY - rect.top - view.y) / view.scale
-      };
-    }
-
-    function onCanvasMouseDown(event) {
-      if (event.button !== 0) {
-        return;
-      }
-      if (drawingZone) {
-        var pz = pointOnCanvas(event.clientX, event.clientY);
-        var draft = { x: pz.x, y: pz.y, width: 0, height: 0 };
-        zoneDraftRef.current = draft;
-        setZoneDraft(draft);
-        setSelectedZoneId(null);
-        return;
-      }
-      setContextMenu(null);
-      var isZoneTarget = Boolean(event.target && event.target.closest && event.target.closest(".zone"));
-      var isNodeTarget = Boolean(event.target && event.target.closest && event.target.closest(".node"));
-      if (!isZoneTarget && !isNodeTarget) {
-        setSelected([]);
-        setRelationshipPreview(null);
-        setRelationshipDropTarget(null);
-      }
-      if (!isZoneTarget && !isNodeTarget && (selectedZoneId || zoneEditorOpen)) {
-        clearZoneSelection(true);
-      }
-      setIsPanning(true);
-      panRef.current = { x: event.clientX - view.x, y: event.clientY - view.y };
-    }
-
-    function onCanvasMouseMove(event) {
-      var activeZoneDraft = zoneDraftRef.current || zoneDraft;
-      if (activeZoneDraft) {
-        var p = pointOnCanvas(event.clientX, event.clientY);
-        var width = p.x - activeZoneDraft.x;
-        var height = p.y - activeZoneDraft.y;
-        if (event.shiftKey) {
-          var side = Math.max(Math.abs(width), Math.abs(height));
-          width = (width < 0 ? -1 : 1) * side;
-          height = (height < 0 ? -1 : 1) * side;
-        }
-        var nextDraft = { x: activeZoneDraft.x, y: activeZoneDraft.y, width: width, height: height };
-        zoneDraftRef.current = nextDraft;
-        setZoneDraft(nextDraft);
-        return;
-      }
-
-      if (isPanning) {
-        setView({ x: event.clientX - panRef.current.x, y: event.clientY - panRef.current.y, scale: view.scale });
-      }
-    }
-
-    function endNodeDrag() {
-      var drag = nodeDragRef.current;
-      if (!drag.active && !drag.cleanup) {
-        return;
-      }
-
-      nodeDragRef.current.active = false;
-
-      if (typeof drag.cleanup === "function") {
-        drag.cleanup();
-      }
-
-      if (document && document.body) {
-        document.body.style.userSelect = drag.priorBodyUserSelect || "";
-        document.body.style.webkitUserSelect = drag.priorBodyWebkitUserSelect || "";
-      }
-
-      if (drag.captureElement && drag.pointerId !== null && drag.captureElement.releasePointerCapture) {
-        try {
-          drag.captureElement.releasePointerCapture(drag.pointerId);
-        } catch (_error) {
-          // Pointer capture may already be released; ignore.
-        }
-      }
-
-      nodeDragRef.current = {
-        active: false,
-        pointerId: null,
-        nodeId: null,
-        startPointerX: 0,
-        startPointerY: 0,
-        startNodeX: 0,
-        startNodeY: 0,
-        captureElement: null,
-        cleanup: null,
-        priorBodyUserSelect: "",
-        priorBodyWebkitUserSelect: ""
-      };
-
-      setDraggingId(null);
-    }
-
-    function onCanvasMouseUp() {
-      endNodeDrag();
-      setIsPanning(false);
-      if (zoneDraftRef.current || zoneDraft) {
-        finishZoneDraft();
-      }
-    }
-
-    function finishZoneInteraction() {
-      var interaction = zoneInteractionRef.current;
-      if (!interaction) {
-        return;
-      }
-      zoneInteractionRef.current = null;
-      if (zonePreviewRef.current) {
-        var finalZone = zonePreviewRef.current;
-        commit(function (next) {
-          var target = next.zones.find(function (zone) { return zone.id === finalZone.id; });
-          if (target) {
-            target.x = finalZone.x;
-            target.y = finalZone.y;
-            target.width = finalZone.width;
-            target.height = finalZone.height;
-          }
-        });
-        setZoneEditDraft(function (current) {
-          return current && current.id === finalZone.id ? Object.assign({}, current, finalZone) : current;
-        });
-      }
-      zonePreviewRef.current = null;
-      setZonePreview(null);
-    }
-
-    function beginZoneInteraction(event, zone, handle) {
-      if (event.button !== 0) {
-        return;
-      }
-      event.stopPropagation();
-      if (handle && handle !== "move") {
-        selectZone(zone.id, false);
-      }
-      if (zone.lock) {
-        return;
-      }
-      var start = pointOnCanvas(event.clientX, event.clientY);
-      var original = zoneWithDefaults(zone);
-      var pendingInteraction = {
-        id: zone.id,
-        handle: handle || "move",
-        startX: start.x,
-        startY: start.y,
-        startClientX: event.clientX,
-        startClientY: event.clientY,
-        original: original
-      };
-      var dragThresholdPixels = 4;
-      var dragThresholdPixelsSquared = dragThresholdPixels * dragThresholdPixels;
-
-      function onMove(moveEvent) {
-        var interaction = zoneInteractionRef.current;
-        if (!interaction) {
-          var dxPixels = moveEvent.clientX - pendingInteraction.startClientX;
-          var dyPixels = moveEvent.clientY - pendingInteraction.startClientY;
-          if ((dxPixels * dxPixels + dyPixels * dyPixels) < dragThresholdPixelsSquared) {
-            return;
-          }
-          zoneInteractionRef.current = {
-            id: pendingInteraction.id,
-            handle: pendingInteraction.handle,
-            startX: pendingInteraction.startX,
-            startY: pendingInteraction.startY,
-            original: pendingInteraction.original
+    // Re-sync React Flow's local nodes/edges whenever the canonical data
+    // changes (initial load, cross-tab sync, or a committed drag). During an
+    // in-progress drag, React Flow tracks position locally via
+    // `onFlowNodesChange` -- this effect does not run mid-drag.
+    useEffect(function () {
+      setFlowNodes(function () {
+        return (data.characters || []).filter(function (character) {
+          return character.onMap && !character.hidden;
+        }).map(function (character) {
+          var nodeSize = typeof character.nodeSize === "number" ? character.nodeSize : 1;
+          return {
+            id: character.id,
+            type: "characterNode",
+            position: {
+              x: typeof character.x === "number" ? character.x : 0,
+              y: typeof character.y === "number" ? character.y : 0
+            },
+            style: { width: 130 * nodeSize },
+            data: { character: character }
           };
-          interaction = zoneInteractionRef.current;
-        }
-        if (!interaction) {
-          return;
-        }
-        var point = pointOnCanvas(moveEvent.clientX, moveEvent.clientY);
-        var deltaX = point.x - interaction.startX;
-        var deltaY = point.y - interaction.startY;
-        var next = Object.assign({}, interaction.original);
-        var handleName = interaction.handle;
-        if (handleName === "move") {
-          next.x += deltaX;
-          next.y += deltaY;
-        } else {
-          if (handleName.indexOf("w") >= 0) {
-            next.x += deltaX;
-            next.width -= deltaX;
-          }
-          if (handleName.indexOf("e") >= 0) {
-            next.width += deltaX;
-          }
-          if (handleName.indexOf("n") >= 0) {
-            next.y += deltaY;
-            next.height -= deltaY;
-          }
-          if (handleName.indexOf("s") >= 0) {
-            next.height += deltaY;
-          }
-          if (next.width < 30) {
-            if (handleName.indexOf("w") >= 0) next.x = interaction.original.x + interaction.original.width - 30;
-            next.width = 30;
-          }
-          if (next.height < 30) {
-            if (handleName.indexOf("n") >= 0) next.y = interaction.original.y + interaction.original.height - 30;
-            next.height = 30;
-          }
-        }
-        zonePreviewRef.current = next;
-        setZonePreview(next);
-      }
-
-      function onUp() {
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
-        if (zoneInteractionRef.current) {
-          finishZoneInteraction();
-        }
-      }
-
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", onUp);
-    }
-
-    function onZoneMouseDown(event, zone) {
-      if (event.button !== 0) {
-        return;
-      }
-      var isSelectedZone = selectedZoneId === zone.id;
-      if (!isSelectedZone || spacePanRef.current || zone.lock) {
-        return;
-      }
-      beginZoneInteraction(event, zone, "move");
-    }
-
-    function onWheel(event) {
-      event.preventDefault();
-      var rect = viewportRef.current.getBoundingClientRect();
-      var ox = event.clientX - rect.left;
-      var oy = event.clientY - rect.top;
-      var zoom = event.deltaY < 0 ? 1.08 : 0.92;
-      var nextScale = Math.min(2.4, Math.max(0.2, view.scale * zoom));
-      var ratio = nextScale / view.scale;
-      setView({
-        scale: nextScale,
-        x: ox - (ox - view.x) * ratio,
-        y: oy - (oy - view.y) * ratio
-      });
-    }
-
-    function onNodePointerDown(event, character) {
-      if (event.button !== 0 || !event.isPrimary) {
-        return;
-      }
-
-      event.stopPropagation();
-      event.preventDefault();
-      clearZoneSelection(false);
-
-      if (nodeDragRef.current.active) {
-        endNodeDrag();
-      }
-
-      var startPoint = pointOnCanvas(event.clientX, event.clientY);
-
-      if (document && document.body) {
-        nodeDragRef.current.priorBodyUserSelect = document.body.style.userSelect || "";
-        nodeDragRef.current.priorBodyWebkitUserSelect = document.body.style.webkitUserSelect || "";
-        document.body.style.userSelect = "none";
-        document.body.style.webkitUserSelect = "none";
-      }
-
-      var onWindowPointerMove = function (moveEvent) {
-        var drag = nodeDragRef.current;
-        if (!drag.active || moveEvent.pointerId !== drag.pointerId) {
-          return;
-        }
-        if ((moveEvent.buttons & 1) !== 1) {
-          endNodeDrag();
-          return;
-        }
-        moveEvent.preventDefault();
-
-        var current = pointOnCanvas(moveEvent.clientX, moveEvent.clientY);
-        var nextX = Math.round(drag.startNodeX + (current.x - drag.startPointerX));
-        var nextY = Math.round(drag.startNodeY + (current.y - drag.startPointerY));
-
-        commit(function (next) {
-          var target = next.characters.find(function (c) { return c.id === drag.nodeId; });
-          if (target) {
-            target.x = nextX;
-            target.y = nextY;
-          }
         });
-      };
+      });
+    }, [data.characters]);
 
-      var onWindowPointerUp = function (upEvent) {
-        var drag = nodeDragRef.current;
-        if (drag.active && upEvent.pointerId === drag.pointerId) {
-          endNodeDrag();
+    // A relationship only renders as an edge once both characters it
+    // references are on the map -- removing a character from the map hides
+    // (but never deletes) any relationship attached to it. It reappears
+    // automatically as soon as that character is added back.
+    useEffect(function () {
+      var onMapIds = {};
+      (data.characters || []).forEach(function (character) {
+        if (character.onMap) {
+          onMapIds[character.id] = true;
         }
-      };
+      });
+      setFlowEdges(function () {
+        return (data.relationships || []).filter(function (relationship) {
+          return onMapIds[relationship.from] && onMapIds[relationship.to];
+        }).map(function (relationship) {
+          // Visual styling (color/thickness/style/animated/arrow/decoration)
+          // always comes fresh from the relationship's type -- never from
+          // fields cached on the relationship itself -- so editing a type
+          // immediately updates every relationship using it. See
+          // resolveRelationshipVisuals.
+          var resolved = resolveRelationshipVisuals(relationship, data.relationshipCategories);
+          return {
+            id: relationship.id,
+            source: relationship.from,
+            target: relationship.to,
+            // Existing relationships saved before per-handle tracking existed
+            // simply have no sourceHandle/targetHandle -- React Flow falls
+            // back to its own default in that case, which is fine since they
+            // never had a specific handle to preserve.
+            sourceHandle: relationship.sourceHandle || undefined,
+            targetHandle: relationship.targetHandle || undefined,
+            label: resolved.displayLabel || resolved.type || "",
+            type: "relationshipEdge",
+            animated: Boolean(resolved.animated),
+            data: {
+              color: resolved.color,
+              thickness: resolved.thickness,
+              style: resolved.style
+            },
+            markerStart: relationshipEdgeMarker("start", resolved),
+            markerEnd: relationshipEdgeMarker("end", resolved)
+          };
+        });
+      });
+    }, [data.relationships, data.characters, data.relationshipCategories]);
 
-      var onWindowMouseUp = function () {
-        if (nodeDragRef.current.active) {
-          endNodeDrag();
-        }
-      };
-
-      var onWindowPointerCancel = function (cancelEvent) {
-        var drag = nodeDragRef.current;
-        if (drag.active && cancelEvent.pointerId === drag.pointerId) {
-          endNodeDrag();
-        }
-      };
-
-      var onWindowMouseOut = function (outEvent) {
-        if (!outEvent.relatedTarget && nodeDragRef.current.active) {
-          endNodeDrag();
-        }
-      };
-
-      var onWindowBlur = function () {
-        if (nodeDragRef.current.active) {
-          endNodeDrag();
-        }
-      };
-
-      var cleanup = function () {
-        window.removeEventListener("pointermove", onWindowPointerMove, true);
-        window.removeEventListener("pointerup", onWindowPointerUp, true);
-        window.removeEventListener("mouseup", onWindowMouseUp, true);
-        window.removeEventListener("pointercancel", onWindowPointerCancel, true);
-        window.removeEventListener("mouseout", onWindowMouseOut, true);
-        window.removeEventListener("blur", onWindowBlur, true);
-      };
-
-      window.addEventListener("pointermove", onWindowPointerMove, true);
-      window.addEventListener("pointerup", onWindowPointerUp, true);
-      window.addEventListener("mouseup", onWindowMouseUp, true);
-      window.addEventListener("pointercancel", onWindowPointerCancel, true);
-      window.addEventListener("mouseout", onWindowMouseOut, true);
-      window.addEventListener("blur", onWindowBlur, true);
-
-      nodeDragRef.current.active = true;
-      nodeDragRef.current.pointerId = event.pointerId;
-      nodeDragRef.current.nodeId = character.id;
-      nodeDragRef.current.startPointerX = startPoint.x;
-      nodeDragRef.current.startPointerY = startPoint.y;
-      nodeDragRef.current.startNodeX = character.x;
-      nodeDragRef.current.startNodeY = character.y;
-      nodeDragRef.current.captureElement = event.currentTarget;
-      nodeDragRef.current.cleanup = cleanup;
-
-      if (event.currentTarget && event.currentTarget.setPointerCapture) {
-        try {
-          event.currentTarget.setPointerCapture(event.pointerId);
-        } catch (_error) {
-          // Continue with global listeners when pointer capture is unavailable.
-        }
-      }
-
-      setDraggingId(character.id);
-      if (event.shiftKey) {
-        setSelected(selected.indexOf(character.id) >= 0 ? selected.filter(function (id) { return id !== character.id; }) : selected.concat([character.id]));
-      } else {
-        setSelected([character.id]);
-      }
-    }
-
-    function onNodeLostPointerCapture(event) {
-      var drag = nodeDragRef.current;
-      if (drag.active && event.pointerId === drag.pointerId) {
-        endNodeDrag();
-      }
-    }
-
-    function updateCharacter(id, field, value) {
-      commit(function (next) {
-        var target = next.characters.find(function (c) { return c.id === id; });
+    function onNodeDragStop(event, node) {
+      setData(function (prev) {
+        var next = clone(prev);
+        var target = next.characters.find(function (character) { return character.id === node.id; });
         if (target) {
-          target[field] = value;
+          target.x = node.position.x;
+          target.y = node.position.y;
         }
-      });
-    }
-
-    function safeHexColor(value, fallback) {
-      var text = String(value || "").trim();
-      if (/^#[0-9a-fA-F]{6}$/.test(text)) {
-        return text.toLowerCase();
-      }
-      return fallback;
-    }
-
-    function rangeFillPercent(value, min, max) {
-      var minimum = Number(min);
-      var maximum = Number(max);
-      var current = Number(value);
-      if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || maximum <= minimum || !Number.isFinite(current)) {
-        return 0;
-      }
-      return Math.max(0, Math.min(100, ((current - minimum) / (maximum - minimum)) * 100));
-    }
-
-    function rangeFillStyle(value, min, max) {
-      return { "--fill": rangeFillPercent(value, min, max) + "%" };
-    }
-
-    function syncRangeFill(event) {
-      var input = event.currentTarget;
-      if (input) {
-        input.style.setProperty("--fill", rangeFillPercent(input.value, input.min, input.max) + "%");
-      }
-    }
-
-    function zoneFillColor(color, opacity) {
-      var hex = safeHexColor(color, "#d10d40").slice(1);
-      var red = parseInt(hex.slice(0, 2), 16);
-      var green = parseInt(hex.slice(2, 4), 16);
-      var blue = parseInt(hex.slice(4, 6), 16);
-      return "rgba(" + red + "," + green + "," + blue + "," + Math.max(0, Math.min(0.8, Number(opacity) || 0)) + ")";
-    }
-
-    function renderZoneResizeHandles(zone) {
-      if (!zone || zone.lock) {
-        return null;
-      }
-      var handles = [
-        ["nw", "0%", "0%"], ["n", "50%", "0%"], ["ne", "100%", "0%"],
-        ["w", "0%", "50%"], ["e", "100%", "50%"],
-        ["sw", "0%", "100%"], ["s", "50%", "100%"], ["se", "100%", "100%"]
-      ];
-      var size = 8 / view.scale;
-      return html`<div className="zone-resize-handles">${handles.map(function (handle) {
-        return html`<span key=${handle[0]} className=${"zone-resize-handle zone-resize-" + handle[0]} style=${{ left: handle[1], top: handle[2], width: size, height: size }} onMouseDown=${function (event) { beginZoneInteraction(event, zone, handle[0]); }}></span>`;
-      })}</div>`;
-    }
-
-    function makeUiId(prefix) {
-      return prefix + "-" + Date.now() + "-" + Math.floor(Math.random() * 1000);
-    }
-
-    function countTagUsage(tagName) {
-      return data.characters.filter(function (character) {
-        return (character.tags || []).indexOf(tagName) >= 0;
-      }).length;
-    }
-
-    function formatTagUsageCount(usageCount) {
-      if (usageCount <= 0) {
-        return "Unused";
-      }
-      if (usageCount === 1) {
-        return "1 character";
-      }
-      return usageCount + " characters";
-    }
-
-    function toggleTagGroup(groupId) {
-      setTagGroupExpanded(function (prev) {
-        var current = Object.prototype.hasOwnProperty.call(prev, groupId) ? prev[groupId] : true;
-        return Object.assign({}, prev, { [groupId]: !current });
-      });
-    }
-
-    function openTagGroupCreate() {
-      setTagGroupCreate({ open: true, name: "" });
-    }
-
-    function cancelTagGroupCreate() {
-      setTagGroupCreate({ open: false, name: "" });
-    }
-
-    function saveTagGroupCreate() {
-      var name = String(tagGroupCreate.name || "").trim();
-      if (!name) {
-        return;
-      }
-      var groupId = makeUiId("tg");
-      commit(function (next) {
-        next.tagGroups.push({ id: groupId, name: name, tags: [] });
-      });
-      setTagGroupExpanded(function (prev) { return Object.assign({}, prev, { [groupId]: true }); });
-      setTagGroupCreate({ open: false, name: "" });
-    }
-
-    function openTagGroupRename(group) {
-      setTagGroupRenameDraft({ groupId: group.id, name: group.name || "" });
-    }
-
-    function cancelTagGroupRename() {
-      setTagGroupRenameDraft({ groupId: null, name: "" });
-    }
-
-    function saveTagGroupRename() {
-      var targetGroupId = tagGroupRenameDraft.groupId;
-      var nextName = String(tagGroupRenameDraft.name || "").trim();
-      if (!targetGroupId || !nextName) {
-        cancelTagGroupRename();
-        return;
-      }
-
-      commit(function (next) {
-        var target = next.tagGroups.find(function (group) { return group.id === targetGroupId; });
-        if (target) {
-          target.name = nextName;
-        }
-      });
-
-      cancelTagGroupRename();
-    }
-
-    function deleteTagGroup(groupId) {
-      var group = (data.tagGroups || []).find(function (item) { return item.id === groupId; });
-      if (!group) {
-        return;
-      }
-
-      commit(function (next) {
-        next.tagGroups = next.tagGroups.filter(function (item) { return item.id !== groupId; });
-      });
-
-      setTagDraftsByGroup(function (prev) {
-        if (!Object.prototype.hasOwnProperty.call(prev, groupId)) {
-          return prev;
-        }
-        var next = Object.assign({}, prev);
-        delete next[groupId];
-        return next;
-      });
-
-      setTagGroupExpanded(function (prev) {
-        if (!Object.prototype.hasOwnProperty.call(prev, groupId)) {
-          return prev;
-        }
-        var next = Object.assign({}, prev);
-        delete next[groupId];
-        return next;
-      });
-
-      if (tagGroupRenameDraft.groupId === groupId) {
-        cancelTagGroupRename();
-      }
-      if (tagEditDialog.groupId === groupId) {
-        closeTagEditDialog();
-      }
-    }
-
-    function openTagCreate(groupId) {
-      setTagDraftsByGroup(function (prev) {
-        return Object.assign({}, prev, {
-          [groupId]: {
-            open: true,
-            name: "",
-            color: "#d10d40"
-          }
-        });
-      });
-    }
-
-    function closeTagCreate(groupId) {
-      setTagDraftsByGroup(function (prev) {
-        if (!Object.prototype.hasOwnProperty.call(prev, groupId)) {
-          return prev;
-        }
-        var next = Object.assign({}, prev);
-        next[groupId] = { open: false, name: "", color: "#d10d40" };
         return next;
       });
     }
 
-    function updateTagCreateDraft(groupId, field, value) {
-      setTagDraftsByGroup(function (prev) {
-        var current = prev[groupId] || { open: true, name: "", color: "#d10d40" };
-        return Object.assign({}, prev, {
-          [groupId]: Object.assign({}, current, { [field]: value })
+    // React Flow's own click-to-select toggle doesn't fire a "select"
+    // NodeChange for this node type/config (onNodeClick reliably fires, but
+    // no accompanying select change ever reaches onNodesChange -- confirmed
+    // by instrumenting it directly). Setting `selected` on flowNodes here
+    // is what actually drives the node's `.selected` styling and the
+    // toolbar's "Selected N" count.
+    function onFlowNodeClick(event, node) {
+      setFocusedId(node.id);
+      setFlowNodes(function (nodes) {
+        return nodes.map(function (entry) {
+          return entry.selected === (entry.id === node.id) ? entry : Object.assign({}, entry, { selected: entry.id === node.id });
         });
       });
     }
 
-    function saveTagCreate(groupId) {
-      var draft = tagDraftsByGroup[groupId] || { open: false, name: "", color: "#d10d40" };
-      var tagName = String(draft.name || "").trim();
-      if (!tagName) {
-        return;
-      }
-
-      commit(function (next) {
-        var group = next.tagGroups.find(function (item) { return item.id === groupId; });
-        if (!group) {
-          return;
-        }
-        group.tags = group.tags || [];
-        group.tags.push({
-          id: makeUiId("tag"),
-          name: tagName,
-          color: safeHexColor(draft.color, "#d10d40"),
-          icon: "",
-          description: "",
-          visible: true
-        });
-      });
-
-      closeTagCreate(groupId);
-    }
-
-    function updateTagColor(groupId, tagId, color) {
-      commit(function (next) {
-        var group = next.tagGroups.find(function (item) { return item.id === groupId; });
-        var tag = group && (group.tags || []).find(function (item) { return item.id === tagId; });
-        if (tag) {
-          tag.color = safeHexColor(color, "#d10d40");
-        }
+    function onFlowPaneClick() {
+      setFlowNodes(function (nodes) {
+        return nodes.some(function (entry) { return entry.selected; })
+          ? nodes.map(function (entry) { return entry.selected ? Object.assign({}, entry, { selected: false }) : entry; })
+          : nodes;
       });
     }
 
-    function openTagEditDialog(groupId, tagId) {
-      var group = (data.tagGroups || []).find(function (item) { return item.id === groupId; });
-      var tag = group && (group.tags || []).find(function (item) { return item.id === tagId; });
-      if (!tag) {
-        return;
-      }
-
-      setTagEditDialog({
-        open: true,
-        groupId: groupId,
-        tagId: tagId,
-        originalName: String(tag.name || ""),
-        name: String(tag.name || ""),
-        color: safeHexColor(tag.color, "#d10d40"),
-        icon: String(tag.icon || ""),
-        description: String(tag.description || "")
-      });
-    }
-
-    function closeTagEditDialog() {
-      setTagEditDialog({
-        open: false,
-        groupId: null,
-        tagId: null,
-        originalName: "",
-        name: "",
-        color: "#d10d40",
-        icon: "",
-        description: ""
-      });
-    }
-
-    function updateTagEditField(field, value) {
-      setTagEditDialog(function (prev) {
-        if (!prev.open) {
-          return prev;
-        }
-        return Object.assign({}, prev, { [field]: value });
-      });
-    }
-
-    function saveTagEditDialog() {
-      if (!tagEditDialog.open || !tagEditDialog.groupId || !tagEditDialog.tagId) {
-        return;
-      }
-
-      var nextTagName = String(tagEditDialog.name || "").trim();
-      if (!nextTagName) {
-        return;
-      }
-
-      commit(function (next) {
-        var group = next.tagGroups.find(function (item) { return item.id === tagEditDialog.groupId; });
-        var tag = group && (group.tags || []).find(function (item) { return item.id === tagEditDialog.tagId; });
-        if (!tag) {
-          return;
-        }
-
-        tag.name = nextTagName;
-        tag.color = safeHexColor(tagEditDialog.color, "#d10d40");
-        tag.icon = String(tagEditDialog.icon || "");
-        tag.description = String(tagEditDialog.description || "");
-      });
-
-      closeTagEditDialog();
-    }
-
-    function deleteTag(groupId, tagId) {
-      var group = (data.tagGroups || []).find(function (item) { return item.id === groupId; });
-      var tag = group && (group.tags || []).find(function (item) { return item.id === tagId; });
-      if (!tag) {
-        return;
-      }
-
-      commit(function (next) {
-        var nextGroup = next.tagGroups.find(function (item) { return item.id === groupId; });
-        if (nextGroup) {
-          nextGroup.tags = (nextGroup.tags || []).filter(function (item) { return item.id !== tagId; });
-        }
-      });
-
-      if (tagEditDialog.open && tagEditDialog.groupId === groupId && tagEditDialog.tagId === tagId) {
-        closeTagEditDialog();
-      }
-    }
-
-    function createCharacter() {
-      var id = "char-" + Date.now();
-      commit(function (next) {
-        next.characters.push({ id: id, name: "New Character", clan: "None", sect: "None", status: "Active", concept: "", generation: "", sire: "", predatorType: "", ambition: "", desire: "", convictions: "", touchstones: "", bio: "", timeline: [], gmNotes: "", storytellerNotes: "", gmOnlyInformation: "", dateOfBirth: "", dateOfDeath: "", tags: [], x: 960, y: 700, portrait: DEFAULT_PORTRAIT, outlineColor: "#d10d40", nodeSize: 1, nodeShape: "circle", hidden: false });
-      });
-      setFocusedId(id);
-      setSelected([id]);
+    function onFlowNodeDoubleClick(event, node) {
+      setFocusedId(node.id);
       setActivePanel("characters");
-      setCharacterView("details");
-      setCharacterEditMode(false);
-    }
-
-    function exportJson() {
-      return JSON.stringify(data, null, 2);
-    }
-
-    function importJson(raw) {
-      try {
-        var parsed = JSON.parse(raw);
-        var merged = Object.assign(initialState(), parsed);
-        delete merged.badges;
-        merged.characters = (merged.characters || []).map(normalizeCharacterRecord);
-        merged.relationshipCategories = normalizeRelationshipCategories(merged.relationshipCategories);
-        merged.relationships = normalizeRelationships(merged.relationships, merged.relationshipCategories);
-        setData(merged);
-        setUndoStack([]);
-        setRedoStack([]);
-      } catch (_e) {
-        window.alert("Invalid JSON");
-      }
     }
 
     function characterList() {
@@ -3388,6 +2601,8 @@
       return result;
     }
 
+    var focused = data.characters.find(function (c) { return c.id === focusedId; }) || null;
+
     function panelHeader(title) {
       return html`<div className="panel-header">
         <h2>${title}</h2>
@@ -3395,7 +2610,7 @@
       </div>`;
     }
 
-    function openCharacterProfile(openInEdit) {
+    function openCharacterProfile() {
       if (!focused) {
         return;
       }
@@ -3403,15 +2618,6 @@
         panel: activePanel || "characters",
         characterView: characterView || "details"
       };
-      setCharacterEditMode(false);
-      if (openInEdit) {
-        setCharacterDraft(characterToDraft(focused));
-        setProfileEditMode(true);
-      } else {
-        setCharacterDraft(null);
-        setProfileEditMode(false);
-      }
-      setTimelineExpandedIndex(null);
       setWorkspaceMode("profile");
     }
 
@@ -3420,465 +2626,46 @@
       setWorkspaceMode("map");
       setActivePanel(restore.panel || "characters");
       setCharacterView(restore.characterView || "details");
-      setCharacterEditMode(false);
-      setProfileEditMode(false);
-      setCharacterDraft(null);
-      setTimelineExpandedIndex(null);
     }
 
-    function updateDraftField(field, value) {
-      setCharacterDraft(function (prev) {
-        if (!prev) {
-          return prev;
-        }
-        var next = Object.assign({}, prev);
-        next[field] = value;
-        return next;
-      });
-    }
-
-    function updateTimelineEvent(index, field, value) {
-      setCharacterDraft(function (prev) {
-        if (!prev) {
-          return prev;
-        }
-        var events = (prev.timelineEvents || []).slice();
-        if (index < 0 || index >= events.length) {
-          return prev;
-        }
-        var updated = normalizeTimelineEvent(events[index]);
-        updated[field] = field === "date" ? normalizeIsoDate(value) : String(value || "");
-        events[index] = updated;
-        return Object.assign({}, prev, { timelineEvents: events });
-      });
-    }
-
-    function addTimelineEvent() {
-      setCharacterDraft(function (prev) {
-        if (!prev) {
-          return prev;
-        }
-        var events = (prev.timelineEvents || []).slice();
-        events.push({ date: "", title: "", description: "" });
-        setTimelineExpandedIndex(events.length - 1);
-        return Object.assign({}, prev, { timelineEvents: events });
-      });
-    }
-
-    function removeTimelineEvent(index) {
-      setCharacterDraft(function (prev) {
-        if (!prev) {
-          return prev;
-        }
-        var events = (prev.timelineEvents || []).slice();
-        if (index < 0 || index >= events.length) {
-          return prev;
-        }
-        events.splice(index, 1);
-        setTimelineExpandedIndex(function (current) {
-          if (current === null || current === undefined) {
-            return null;
-          }
-          if (current === index) {
-            return null;
-          }
-          if (current > index) {
-            return current - 1;
-          }
-          return current;
+    function renderAddCharacterModal() {
+      if (!addCharacterOpen) {
+        return null;
+      }
+      var query = addCharacterSearch.trim().toLowerCase();
+      var candidates = (data.characters || []).filter(function (character) { return !character.onMap; });
+      if (query) {
+        candidates = candidates.filter(function (character) {
+          return String(character.name || "").toLowerCase().indexOf(query) >= 0;
         });
-        return Object.assign({}, prev, { timelineEvents: events });
-      });
-    }
-
-    function moveTimelineEvent(index, direction) {
-      setCharacterDraft(function (prev) {
-        if (!prev) {
-          return prev;
-        }
-        var events = (prev.timelineEvents || []).slice();
-        var nextIndex = index + direction;
-        if (index < 0 || index >= events.length || nextIndex < 0 || nextIndex >= events.length) {
-          return prev;
-        }
-        var temp = events[index];
-        events[index] = events[nextIndex];
-        events[nextIndex] = temp;
-        return Object.assign({}, prev, { timelineEvents: events });
-      });
-    }
-
-    function sortDraftTimelineChronologically() {
-      setCharacterDraft(function (prev) {
-        if (!prev) {
-          return prev;
-        }
-        return Object.assign({}, prev, {
-          timelineEvents: sortTimelineEvents(prev.timelineEvents || [])
-        });
-      });
-    }
-
-    function startProfileEdit() {
-      if (!focused) {
-        return;
       }
-      setCharacterDraft(characterToDraft(focused));
-      setProfileEditMode(true);
-      var focusedTimeline = timelineEventsFromAny(focused.timeline);
-      setTimelineExpandedIndex(focusedTimeline.length ? 0 : null);
-    }
-
-    function cancelProfileEdit() {
-      setProfileEditMode(false);
-      setCharacterDraft(null);
-      setTimelineExpandedIndex(null);
-    }
-
-    function saveProfileEdit() {
-      if (!focused || !characterDraft) {
-        return;
-      }
-      commit(function (next) {
-        var target = next.characters.find(function (c) { return c.id === focused.id; });
-        if (!target) {
-          return;
-        }
-        target.name = characterDraft.name.trim() || "Unnamed Character";
-        var portraitCurrent = portraitState(characterDraft);
-        var portraitSource = portraitCurrent.source || DEFAULT_PORTRAIT;
-        var portraitZoom = portraitCurrent.zoom;
-        var portraitCropCenterX = portraitCurrent.cropCenterX;
-        var portraitCropCenterY = portraitCurrent.cropCenterY;
-        target.portrait = {
-          image: portraitSource,
-          imageWidth: portraitCurrent.imageWidth,
-          imageHeight: portraitCurrent.imageHeight,
-          cropCenterX: portraitCropCenterX,
-          cropCenterY: portraitCropCenterY,
-          zoom: portraitZoom,
-          // Backward compatible aliases.
-          cropX: portraitCropCenterX,
-          cropY: portraitCropCenterY
-        };
-        target.clan = normalizeClanValue(characterDraft.clan);
-        target.sect = normalizeSectValue(characterDraft.sect);
-        target.status = characterDraft.status;
-        target.concept = characterDraft.concept;
-        target.ambition = characterDraft.ambition;
-        target.desire = characterDraft.desire;
-        target.convictions = characterDraft.convictions;
-        target.touchstones = characterDraft.touchstones;
-        target.predatorType = characterDraft.predatorType;
-        target.generation = characterDraft.generation;
-        target.sire = characterDraft.sire;
-        target.trueAge = characterDraft.trueAge;
-        target.apparentAge = characterDraft.apparentAge;
-        target.dateOfBirth = normalizeIsoDate(characterDraft.dateOfBirth);
-        target.dateOfDeath = normalizeIsoDate(characterDraft.dateOfDeath);
-        target.storytellerNotes = String(characterDraft.storytellerNotes || "");
-        target.gmOnlyInformation = String(characterDraft.gmOnlyInformation || "");
-        target.gmNotes = String(characterDraft.storytellerNotes || "");
-        target.timeline = sortTimelineEvents((characterDraft.timelineEvents || []).map(normalizeTimelineEvent));
-        target.bioHtml = characterDraft.bioHtml;
-        target.bio = richHtmlToText(characterDraft.bioHtml);
-        target.tags = String(characterDraft.tagsText || "")
-          .split(",")
-          .map(function (t) { return t.trim(); })
-          .filter(function (t) { return t.length > 0; });
-      });
-      setProfileEditMode(false);
-      setCharacterDraft(null);
-      setTimelineExpandedIndex(null);
-    }
-
-    function closePortraitWorkflow() {
-      portraitDragRef.current = { active: false, pointerId: null, lastX: 0, lastY: 0 };
-      portraitPinchRef.current = { active: false, startDistance: 0, startZoom: 1 };
-      setPortraitWorkflow(function (prev) {
-        return Object.assign({}, prev, {
-          open: false,
-          step: "replace",
-          loading: false,
-          error: "",
-          urlInput: ""
-        });
-      });
-    }
-
-    function openPortraitWorkflow() {
-      if (!characterDraft) {
-        return;
-      }
-      var state = portraitState(characterDraft);
-      setPortraitWorkflow({
-        open: true,
-        step: "replace",
-        source: state.source,
-        zoom: state.zoom,
-        minZoom: 1,
-        cropCenterX: state.cropCenterX,
-        cropCenterY: state.cropCenterY,
-        imageWidth: state.imageWidth,
-        imageHeight: state.imageHeight,
-        urlInput: "",
-        loading: false,
-        error: ""
-      });
-    }
-
-    function loadPortraitForAdjust(source, keepExistingCrop) {
-      if (!source) {
-        return;
-      }
-      var current = keepExistingCrop ? portraitState(characterDraft || focused) : { zoom: 1, cropCenterX: 0.5, cropCenterY: 0.5 };
-      setPortraitWorkflow(function (prev) {
-        return Object.assign({}, prev, {
-          loading: true,
-          error: ""
-        });
+      candidates = candidates.slice().sort(function (a, b) {
+        return String(a.name || "").localeCompare(String(b.name || ""));
       });
 
-      var image = new Image();
-      image.onload = function () {
-        var minZoom = minimumPortraitZoom(image.width, image.height, PORTRAIT_EDITOR_SIZE);
-        var zoom = Math.max(minZoom, Number(current.zoom) || minZoom);
-        var clampedCenter = clampCropCenter(current.cropCenterX, current.cropCenterY, zoom, image.width, image.height);
-        setPortraitWorkflow(function (prev) {
-          return Object.assign({}, prev, {
-            open: true,
-            step: "adjust",
-            source: source,
-            zoom: zoom,
-            minZoom: minZoom,
-            cropCenterX: clampedCenter.x,
-            cropCenterY: clampedCenter.y,
-            imageWidth: image.width,
-            imageHeight: image.height,
-            loading: false,
-            error: ""
-          });
-        });
-      };
-      image.onerror = function () {
-        setPortraitWorkflow(function (prev) {
-          return Object.assign({}, prev, {
-            loading: false,
-            error: "Unable to load image. Please choose another file or URL."
-          });
-        });
-      };
-      image.crossOrigin = "anonymous";
-      image.src = renderPortraitSource(source);
-    }
-
-    function triggerPortraitUpload() {
-      if (profilePortraitInputRef.current) {
-        profilePortraitInputRef.current.click();
-      }
-    }
-
-    function onProfilePortraitSelected(event) {
-      var file = event.target.files && event.target.files[0];
-      if (!file) {
-        return;
-      }
-      if (!/^image\/(png|jpeg|jpg|webp|gif)$/i.test(file.type)) {
-        window.alert("Please choose a JPG, JPEG, PNG, WEBP, or GIF image.");
-        event.target.value = "";
-        return;
-      }
-      var reader = new FileReader();
-      reader.onload = function (loadEvent) {
-        var source = String(loadEvent.target && loadEvent.target.result ? loadEvent.target.result : "");
-        loadPortraitForAdjust(source, false);
-      };
-      reader.readAsDataURL(file);
-      event.target.value = "";
-    }
-
-    function applyPortraitFromUrl() {
-      var url = String(portraitWorkflow.urlInput || "").trim();
-      if (!url) {
-        setPortraitWorkflow(function (prev) {
-          return Object.assign({}, prev, { error: "Enter a public image URL first." });
-        });
-        return;
-      }
-      loadPortraitForAdjust(url, false);
-    }
-
-    function updatePortraitZoom(nextZoom) {
-      setPortraitWorkflow(function (prev) {
-        var minZoom = minimumPortraitZoom(prev.imageWidth, prev.imageHeight, PORTRAIT_EDITOR_SIZE);
-        var zoom = Math.max(minZoom, Math.min(4, Number(nextZoom) || minZoom));
-        var clampedCenter = clampCropCenter(prev.cropCenterX, prev.cropCenterY, zoom, prev.imageWidth, prev.imageHeight);
-        return Object.assign({}, prev, {
-          zoom: zoom,
-          cropCenterX: clampedCenter.x,
-          cropCenterY: clampedCenter.y
-        });
-      });
-    }
-
-    function nudgePortraitOffset(dx, dy) {
-      setPortraitWorkflow(function (prev) {
-        var model = portraitRenderModel({
-          imageWidth: prev.imageWidth,
-          imageHeight: prev.imageHeight,
-          cropCenterX: prev.cropCenterX,
-          cropCenterY: prev.cropCenterY,
-          zoom: prev.zoom
-        });
-        var stageSize = Math.max(1, portraitStageSizeRef.current || PORTRAIT_EDITOR_SIZE);
-        var deltaX = dx / (stageSize * model.widthScale);
-        var deltaY = dy / (stageSize * model.heightScale);
-        var clampedCenter = clampCropCenter(prev.cropCenterX - deltaX, prev.cropCenterY - deltaY, prev.zoom, prev.imageWidth, prev.imageHeight);
-        return Object.assign({}, prev, {
-          cropCenterX: clampedCenter.x,
-          cropCenterY: clampedCenter.y
-        });
-      });
-    }
-
-    function onPortraitAdjustPointerDown(event) {
-      if (event.pointerType === "touch") {
-        return;
-      }
-      portraitDragRef.current = {
-        active: true,
-        pointerId: event.pointerId,
-        lastX: event.clientX,
-        lastY: event.clientY
-      };
-      portraitStageSizeRef.current = Math.max(1, event.currentTarget.clientWidth || PORTRAIT_EDITOR_SIZE);
-      event.currentTarget.setPointerCapture(event.pointerId);
-      event.preventDefault();
-    }
-
-    function onPortraitAdjustPointerMove(event) {
-      var drag = portraitDragRef.current;
-      if (!drag.active || drag.pointerId !== event.pointerId) {
-        return;
-      }
-      var dx = event.clientX - drag.lastX;
-      var dy = event.clientY - drag.lastY;
-      portraitDragRef.current.lastX = event.clientX;
-      portraitDragRef.current.lastY = event.clientY;
-      nudgePortraitOffset(dx, dy);
-      event.preventDefault();
-    }
-
-    function onPortraitAdjustPointerUp(event) {
-      var drag = portraitDragRef.current;
-      if (drag.pointerId === event.pointerId) {
-        portraitDragRef.current = { active: false, pointerId: null, lastX: 0, lastY: 0 };
-      }
-    }
-
-    function onPortraitAdjustWheel(event) {
-      event.preventDefault();
-      var factor = event.deltaY < 0 ? 1.06 : 0.94;
-      updatePortraitZoom(portraitWorkflow.zoom * factor);
-    }
-
-    function touchDistance(t1, t2) {
-      var dx = t2.clientX - t1.clientX;
-      var dy = t2.clientY - t1.clientY;
-      return Math.sqrt(dx * dx + dy * dy);
-    }
-
-    function touchCenter(t1, t2) {
-      return {
-        x: (t1.clientX + t2.clientX) / 2,
-        y: (t1.clientY + t2.clientY) / 2
-      };
-    }
-
-    function onPortraitAdjustTouchStart(event) {
-      if (event.touches.length === 1) {
-        portraitDragRef.current = {
-          active: true,
-          pointerId: null,
-          lastX: event.touches[0].clientX,
-          lastY: event.touches[0].clientY
-        };
-        portraitStageSizeRef.current = Math.max(1, event.currentTarget.clientWidth || PORTRAIT_EDITOR_SIZE);
-      }
-      if (event.touches.length === 2) {
-        portraitPinchRef.current = {
-          active: true,
-          startDistance: touchDistance(event.touches[0], event.touches[1]),
-          startZoom: portraitWorkflow.zoom
-        };
-        portraitStageSizeRef.current = Math.max(1, event.currentTarget.clientWidth || PORTRAIT_EDITOR_SIZE);
-        var center = touchCenter(event.touches[0], event.touches[1]);
-        portraitDragRef.current.lastX = center.x;
-        portraitDragRef.current.lastY = center.y;
-      }
-      event.preventDefault();
-    }
-
-    function onPortraitAdjustTouchMove(event) {
-      if (event.touches.length === 2 && portraitPinchRef.current.active) {
-        var nextDistance = touchDistance(event.touches[0], event.touches[1]);
-        var ratio = nextDistance / Math.max(1, portraitPinchRef.current.startDistance);
-        updatePortraitZoom(portraitPinchRef.current.startZoom * ratio);
-      } else if (event.touches.length === 1 && portraitDragRef.current.active) {
-        var touch = event.touches[0];
-        var dx = touch.clientX - portraitDragRef.current.lastX;
-        var dy = touch.clientY - portraitDragRef.current.lastY;
-        portraitDragRef.current.lastX = touch.clientX;
-        portraitDragRef.current.lastY = touch.clientY;
-        nudgePortraitOffset(dx, dy);
-      }
-      event.preventDefault();
-    }
-
-    function onPortraitAdjustTouchEnd() {
-      if (!portraitWorkflow.open) {
-        return;
-      }
-      portraitPinchRef.current = { active: false, startDistance: 0, startZoom: portraitWorkflow.zoom };
-      if (portraitDragRef.current.active) {
-        portraitDragRef.current = { active: false, pointerId: null, lastX: 0, lastY: 0 };
-      }
-    }
-
-    function savePortraitWorkflow() {
-      if (!characterDraft || !portraitWorkflow.source) {
-        return;
-      }
-      var source = portraitWorkflow.source;
-      var scale = Math.max(1, Number(portraitWorkflow.zoom) || 1);
-      var center = clampCropCenter(
-        portraitWorkflow.cropCenterX,
-        portraitWorkflow.cropCenterY,
-        scale,
-        portraitWorkflow.imageWidth,
-        portraitWorkflow.imageHeight
-      );
-      var centerX = center.x;
-      var centerY = center.y;
-
-      setCharacterDraft(function (prev) {
-        if (!prev) {
-          return prev;
-        }
-        return Object.assign({}, prev, {
-          portrait: {
-            image: source,
-            imageWidth: portraitWorkflow.imageWidth,
-            imageHeight: portraitWorkflow.imageHeight,
-            cropCenterX: centerX,
-            cropCenterY: centerY,
-            zoom: scale,
-            cropX: centerX,
-            cropY: centerY
-          }
-        });
-      });
-      closePortraitWorkflow();
+      return html`<div className="tag-edit-dialog-backdrop" onClick=${closeAddCharacterModal}>
+        <div className="tag-edit-dialog" onClick=${function (event) { event.stopPropagation(); }}>
+          <header className="tag-edit-dialog-header"><h3>Add Character to Map</h3></header>
+          <div className="tag-edit-dialog-body">
+            <label>Search</label>
+            <input type="text" value=${addCharacterSearch} onInput=${function (e) { setAddCharacterSearch(e.target.value); }} placeholder="Search characters..." />
+            <div className="char-list">
+              ${!candidates.length ? html`<p className="hint">${(data.characters || []).length ? "All characters are already on the map." : "No characters found. Add characters from the Characters page first."}</p>` : null}
+              ${candidates.map(function (character) {
+                return html`<div className="char-card" key=${"add-char-" + character.id} onClick=${function () { addCharacterToMap(character.id); }}>
+                  <div className="character-summary-portrait-frame compact">
+                    <img className="character-summary-portrait media" src=${portraitState(character).src} alt=${character.name} style=${portraitMediaStyle(character)} />
+                  </div>
+                  <strong>${character.name}</strong>
+                </div>`;
+              })}
+            </div>
+          </div>
+          <footer className="tag-edit-dialog-actions">
+            <button type="button" onClick=${closeAddCharacterModal}>Close</button>
+          </footer>
+        </div>
+      </div>`;
     }
 
     function charactersPanel() {
@@ -3890,113 +2677,15 @@
         }
         setFocusedId(characterId);
         setCharacterView("details");
-        setCharacterEditMode(false);
-        setCharacterDraft(null);
       }
 
       function backToDirectory() {
-        setCharacterEditMode(false);
-        setCharacterDraft(null);
-        setCharacterEditOrigin("directory");
         setCharacterView("directory");
         window.requestAnimationFrame(function () {
           if (directoryListRef.current) {
             directoryListRef.current.scrollTop = directoryScrollRef.current;
           }
         });
-      }
-
-      function updateDraft(field, value) {
-        setCharacterDraft(function (prev) {
-          return Object.assign({}, prev, (function () { var o = {}; o[field] = value; return o; })());
-        });
-      }
-
-      function enterEditMode(origin, fromBioAction) {
-        if (!focused) {
-          return;
-        }
-        setCharacterEditOrigin(origin || "directory");
-        setCharacterDraft(characterToDraft(focused));
-        setCharacterEditMode(true);
-        setCharacterView("edit");
-        if (fromBioAction) {
-          window.requestAnimationFrame(function () {
-            var bioEditor = document.getElementById("characterBioEditor");
-            if (bioEditor) {
-              bioEditor.focus();
-            }
-          });
-        }
-      }
-
-      function cancelEditMode() {
-        setCharacterEditMode(false);
-        setCharacterDraft(null);
-        if (characterEditOrigin === "details") {
-          setCharacterView("details");
-        } else {
-          setCharacterView("directory");
-          window.requestAnimationFrame(function () {
-            if (directoryListRef.current) {
-              directoryListRef.current.scrollTop = directoryScrollRef.current;
-            }
-          });
-        }
-      }
-
-      function saveEditMode() {
-        if (!characterDraft || !focused) {
-          return;
-        }
-        var savedCharacterId = focused.id;
-        commit(function (next) {
-          var target = next.characters.find(function (c) { return c.id === savedCharacterId; });
-          if (!target) {
-            return;
-          }
-          target.name = characterDraft.name.trim() || "Unnamed Character";
-          target.portrait = characterDraft.portrait || target.portrait;
-          target.clan = normalizeClanValue(characterDraft.clan);
-          target.sect = normalizeSectValue(characterDraft.sect);
-          target.outlineColor = characterDraft.outlineColor || "#d10d40";
-          target.nodeSize = Math.max(0.7, Math.min(1.8, Number(characterDraft.nodeSize) || 1));
-          target.nodeShape = characterDraft.nodeShape || "circle";
-          target.hidden = Boolean(characterDraft.hidden);
-          target.tags = String(characterDraft.tagsText || "")
-            .split(",")
-            .map(function (t) { return t.trim(); })
-            .filter(function (t) { return t.length > 0; });
-        });
-        setFocusedId(savedCharacterId);
-        setCharacterEditMode(false);
-        setCharacterDraft(null);
-        setCharacterView("details");
-      }
-
-      function deleteCharacterFromEdit() {
-        if (!focused) {
-          return;
-        }
-        var deletingId = focused.id;
-        commit(function (next) {
-          next.characters = next.characters.filter(function (c) { return c.id !== deletingId; });
-          next.relationships = next.relationships.filter(function (r) { return r.from !== deletingId && r.to !== deletingId; });
-        });
-        setSelected(function (prev) { return prev.filter(function (id) { return id !== deletingId; }); });
-        var remaining = data.characters.filter(function (c) { return c.id !== deletingId; });
-        setFocusedId(remaining[0] ? remaining[0].id : null);
-        setCharacterEditMode(false);
-        setCharacterDraft(null);
-        if (characterEditOrigin === "details") {
-          setCharacterView(remaining.length ? "details" : "directory");
-        } else {
-          setCharacterView("directory");
-        }
-      }
-
-      function backFromEditPanel() {
-        cancelEditMode();
       }
 
       function renderDirectoryView() {
@@ -4007,10 +2696,8 @@
           </div>
           <div className="panel-body character-directory-body">
             <div className="character-directory-controls">
-              <button onClick=${function () { createCharacter(); }}>New Character</button>
               <input placeholder="Search" value=${search} onInput=${function (e) { setSearch(e.target.value); }} />
               <button>Filter</button>
-              <button onClick=${function () { if (focused) { enterEditMode("directory", false); } }} disabled=${!focused}>Edit Character</button>
             </div>
 
             <div className="char-list" ref=${directoryListRef}>
@@ -4083,8 +2770,10 @@
                   <span className="tag">${character.status || "Unknown"}</span>
                   ${(character.tags || []).map(function (tag, index) { return html`<span className="tag" key=${"summary-" + character.id + "-" + tag + "-" + index}>${tag}</span>`; })}
                 </div>
+                ${character.onMap
+                  ? html`<button className="destructive" onClick=${function () { removeCharacterFromMap(character.id); }}>Remove from Map</button>`
+                  : html`<button onClick=${function () { addCharacterToMap(character.id); }}>Add to Map</button>`}
               </div>
-              <button className="character-summary-edit" onClick=${function () { enterEditMode("details", false); }}>Edit</button>
             </div>
           </section>
 
@@ -4094,7 +2783,7 @@
               <div className="bio-preview-scroll">
                 <div className="character-rich-text" dangerouslySetInnerHTML=${{ __html: biographyHtml }}></div>
               </div>
-              <button className="bio-preview-action" onClick=${function () { openCharacterProfile(false); }}>Read Full Biography</button>
+              <button className="bio-preview-action" onClick=${function () { openCharacterProfile(); }}>Read Full Biography</button>
             </div>
           </section>
 
@@ -4109,207 +2798,6 @@
         </div>`;
       }
 
-      function renderDetailsEdit(character) {
-        if (!characterDraft) {
-          return renderDetailsView();
-        }
-        var currentPortrait = portraitState(characterDraft);
-        var nodeSizeValue = Math.max(0.7, Math.min(1.8, Number(characterDraft.nodeSize) || 1));
-        var isLargeNode = nodeSizeValue > 1.08;
-        var nodeShapeValue = characterDraft.nodeShape === "rounded" ? "square" : (characterDraft.nodeShape || "circle");
-        var previewSize = isLargeNode ? 116 : 96;
-
-        var outlineColor = String(characterDraft.outlineColor || "#d10d40").trim();
-        if (!/^#[0-9a-fA-F]{6}$/.test(outlineColor)) {
-          outlineColor = "#d10d40";
-        }
-
-        var previewFrameStyle = {
-          width: previewSize,
-          height: previewSize,
-          borderColor: outlineColor,
-          borderRadius: nodeShapeValue === "circle" ? "50%" : "10px",
-          clipPath: nodeShapeValue === "hexagon" ? "polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0 50%)" : "none"
-        };
-
-        var draftTags = String(characterDraft.tagsText || "")
-          .split(",")
-          .map(function (t) { return t.trim(); })
-          .filter(function (t) { return t.length > 0; });
-
-        var knownTags = [];
-        (data.tagGroups || []).forEach(function (group) {
-          (group.tags || []).forEach(function (tag) {
-            if (tag && tag.name && knownTags.indexOf(tag.name) < 0) {
-              knownTags.push(tag.name);
-            }
-          });
-        });
-        draftTags.forEach(function (tag) {
-          if (knownTags.indexOf(tag) < 0) {
-            knownTags.push(tag);
-          }
-        });
-
-        function toggleDraftTag(tagName) {
-          var currentTags = String(characterDraft.tagsText || "")
-            .split(",")
-            .map(function (t) { return t.trim(); })
-            .filter(function (t) { return t.length > 0; });
-          var nextTags = currentTags.indexOf(tagName) >= 0
-            ? currentTags.filter(function (t) { return t !== tagName; })
-            : currentTags.concat([tagName]);
-          updateDraft("tagsText", nextTags.join(", "));
-        }
-
-        function onOutlineHexInput(rawValue) {
-          var value = String(rawValue || "").trim();
-          if (value && value.charAt(0) !== "#") {
-            value = "#" + value;
-          }
-          if (/^#[0-9a-fA-F]{0,6}$/.test(value)) {
-            updateDraft("outlineColor", value.toUpperCase());
-          }
-        }
-
-        function clearPortrait() {
-          var defaultSource = DEFAULT_PORTRAIT;
-          var baseZoom = Math.max(1, Number(currentPortrait.zoom) || 1);
-          var baseX = Number(currentPortrait.cropCenterX);
-          var baseY = Number(currentPortrait.cropCenterY);
-          var nextX = Number.isFinite(baseX) ? baseX : 0.5;
-          var nextY = Number.isFinite(baseY) ? baseY : 0.5;
-          setCharacterDraft(function (prev) {
-            if (!prev) {
-              return prev;
-            }
-            return Object.assign({}, prev, {
-              portrait: {
-                image: defaultSource,
-                imageWidth: 1,
-                imageHeight: 1,
-                cropCenterX: nextX,
-                cropCenterY: nextY,
-                zoom: baseZoom,
-                cropX: nextX,
-                cropY: nextY
-              }
-            });
-          });
-        }
-
-        return html`<div key=${"edit-" + character.id} className="character-view character-view-details mode-edit edit-character-shell">
-          <div className="panel-header edit-character-header">
-            <h2>EDIT CHARACTER</h2>
-            ${IconButton({ onClick: function () { setActivePanel(null); }, ariaLabel: "Close panel", icon: "×", className: "icon-button-32 panel-close-button" })}
-          </div>
-          <div className="edit-character-content">
-            <section className="edit-character-section">
-              <label>Name</label>
-              <input value=${characterDraft.name} onInput=${function (e) { updateDraft("name", e.target.value); }} />
-            </section>
-
-            <section className="edit-character-section">
-              <label>Portrait</label>
-              <div className="edit-portrait-row">
-                <button className="edit-portrait-button" onClick=${openPortraitWorkflow}>
-                  <div className="edit-portrait-thumb">
-                    <img className="media" src=${currentPortrait.src} alt=${characterDraft.name || "Character portrait"} style=${portraitMediaStyle(characterDraft)} />
-                  </div>
-                  <span className="edit-portrait-text">
-                    <strong>Edit Image</strong>
-                    <small>Click to replace portrait</small>
-                  </span>
-                </button>
-                ${IconButton({ onClick: clearPortrait, ariaLabel: "Delete portrait", icon: "⌫", className: "icon-button-48 edit-portrait-delete" })}
-              </div>
-            </section>
-
-            <section className="edit-character-section">
-              ${ColorField({
-                label: "Outline Colour",
-                fieldName: "Outline Colour",
-                value: outlineColor,
-                fallback: "#d10d40",
-                textValue: String(characterDraft.outlineColor || "").toUpperCase(),
-                onChange: function (nextColor) {
-                  updateDraft("outlineColor", String(nextColor || "").toUpperCase());
-                },
-                onHexInput: onOutlineHexInput
-              })}
-            </section>
-
-            <section className="edit-character-section">
-              <label>Node Size</label>
-              <div className="edit-segmented-row size-row">
-                <button className=${"segment-button" + (!isLargeNode ? " active" : "")} onClick=${function () { updateDraft("nodeSize", 1); }}>Standard</button>
-                <button className=${"segment-button" + (isLargeNode ? " active" : "")} onClick=${function () { updateDraft("nodeSize", 1.35); }}>Large</button>
-              </div>
-            </section>
-
-            <section className="edit-character-section">
-              <label>Node Shape</label>
-              <div className="edit-segmented-row shape-row">
-                <button className=${"segment-button" + (nodeShapeValue === "circle" ? " active" : "")} onClick=${function () { updateDraft("nodeShape", "circle"); }}>Circle</button>
-                <button className=${"segment-button" + (nodeShapeValue === "square" ? " active" : "")} onClick=${function () { updateDraft("nodeShape", "square"); }}>Square</button>
-                <button className=${"segment-button" + (nodeShapeValue === "hexagon" ? " active" : "")} onClick=${function () { updateDraft("nodeShape", "hexagon"); }}>Hexagon</button>
-              </div>
-            </section>
-
-            <section className="edit-character-section">
-              <label>Sect</label>
-              <select value=${normalizeSectValue(characterDraft.sect)} onChange=${function (e) { updateDraft("sect", e.target.value); }}>
-                ${SECT_OPTIONS.map(function (option) {
-                  return html`<option key=${"edit-sect-" + option} value=${option}>${option}</option>`;
-                })}
-              </select>
-            </section>
-
-            <section className="edit-character-section">
-              <label>Clan</label>
-              <select value=${normalizeClanValue(characterDraft.clan)} onChange=${function (e) { updateDraft("clan", e.target.value); }}>
-                ${CLAN_OPTIONS.map(function (option) {
-                  return html`<option key=${"edit-clan-" + option} value=${option}>${option}</option>`;
-                })}
-              </select>
-            </section>
-
-            <section className="edit-character-section node-preview-section">
-              <div className="edit-node-preview-frame" style=${previewFrameStyle}>
-                <img className="media" src=${currentPortrait.src} alt=${characterDraft.name || "Character preview"} style=${portraitMediaStyle(characterDraft)} />
-              </div>
-              <div className="edit-node-preview-name">${(characterDraft.name || "Unnamed Character").toUpperCase()}</div>
-            </section>
-
-            <section className="edit-character-section">
-              <label>Tags</label>
-              <div className="edit-tags-row">
-                ${knownTags.map(function (tag) {
-                  var selectedTag = draftTags.indexOf(tag) >= 0;
-                  return html`<button className=${"tag-chip" + (selectedTag ? " active" : "")} key=${"draft-tag-" + tag} onClick=${function () { toggleDraftTag(tag); }}>${tag}</button>`;
-                })}
-              </div>
-            </section>
-
-            <section className="edit-character-section hide-character-section">
-              <div className="hide-character-row">
-                <div>
-                  <strong>Hide Character</strong>
-                  <small>Hide this character and its relationships from Collaborators.</small>
-                </div>
-                <button className=${"toggle-switch" + (characterDraft.hidden ? " on" : "")} onClick=${function () { updateDraft("hidden", !characterDraft.hidden); }} aria-label="Toggle hidden character"><span></span></button>
-              </div>
-            </section>
-          </div>
-
-          <div className="edit-character-footer">
-            <button type="button" className="primary" onClick=${saveEditMode}>Save</button>
-            <button type="button" className="destructive" onClick=${deleteCharacterFromEdit}>Delete Character</button>
-            <button type="button" className="secondary" onClick=${backFromEditPanel}>${characterEditOrigin === "details" ? "Back to Details" : "Back to List"}</button>
-          </div>
-        </div>`;
-      }
-
       function renderDetailsView() {
         if (!focused) {
           return html`<div key="details" className="character-view character-view-details">
@@ -4321,7 +2809,7 @@
             <div className="panel-body"><div className="card">No character selected.</div></div>
           </div>`;
         }
-        return html`<div key=${"details-" + (characterEditMode ? "edit" : "read") + "-" + focused.id} className=${"character-view character-view-details" + (characterEditMode ? " mode-edit" : " mode-read")}>
+        return html`<div key=${"details-read-" + focused.id} className="character-view character-view-details mode-read">
           <div className="panel-header details-header">
             <button onClick=${backToDirectory}>Directory</button>
             <h2>Character Details</h2>
@@ -4333,97 +2821,7 @@
         </div>`;
       }
 
-      return html`${characterView === "directory" ? renderDirectoryView() : (characterView === "edit" ? renderDetailsEdit(focused) : renderDetailsView())}`;
-    }
-
-    function renderPortraitWorkflowModal() {
-      if (!portraitWorkflow.open) {
-        return null;
-      }
-
-      var adjustPreviewStyle = portraitMediaStyle({
-        portrait: {
-          image: portraitWorkflow.source,
-          imageWidth: portraitWorkflow.imageWidth,
-          imageHeight: portraitWorkflow.imageHeight,
-          cropCenterX: portraitWorkflow.cropCenterX,
-          cropCenterY: portraitWorkflow.cropCenterY,
-          zoom: portraitWorkflow.zoom
-        }
-      });
-
-      return html`<div className="portrait-workflow-backdrop" onClick=${closePortraitWorkflow}>
-        <div className="portrait-workflow-modal" onClick=${function (event) { event.stopPropagation(); }}>
-          ${portraitWorkflow.step === "replace" ? html`<div className="portrait-workflow-step">
-            <header className="portrait-workflow-header">
-              <h3>REPLACE PORTRAIT</h3>
-            </header>
-            <div className="portrait-replace-grid">
-              <button className="portrait-replace-action" onClick=${triggerPortraitUpload}>
-                <strong>Upload from Computer</strong>
-                <span>JPEG, PNG, WebP, GIF</span>
-              </button>
-              <div className="portrait-replace-action url-action">
-                <strong>Import from URL</strong>
-                <span>Paste a public image URL</span>
-                <input
-                  type="url"
-                  value=${portraitWorkflow.urlInput}
-                  placeholder="https://example.com/portrait.jpg"
-                  onInput=${function (event) {
-                    var value = event.target.value;
-                    setPortraitWorkflow(function (prev) {
-                      return Object.assign({}, prev, { urlInput: value, error: "" });
-                    });
-                  }}
-                />
-                <button onClick=${applyPortraitFromUrl}>Load URL</button>
-              </div>
-            </div>
-            ${portraitWorkflow.source ? html`<button className="portrait-adjust-current" onClick=${function () { loadPortraitForAdjust(portraitWorkflow.source, true); }}>Adjust Current Portrait</button>` : null}
-            ${portraitWorkflow.error ? html`<p className="portrait-workflow-error">${portraitWorkflow.error}</p>` : null}
-            <footer className="portrait-workflow-actions">
-              <button onClick=${closePortraitWorkflow}>Cancel</button>
-            </footer>
-          </div>` : html`<div className="portrait-workflow-step">
-            <header className="portrait-workflow-header">
-              <h3>ADJUST PORTRAIT</h3>
-            </header>
-            <div
-              className="portrait-adjust-stage"
-              onPointerDown=${onPortraitAdjustPointerDown}
-              onPointerMove=${onPortraitAdjustPointerMove}
-              onPointerUp=${onPortraitAdjustPointerUp}
-              onPointerCancel=${onPortraitAdjustPointerUp}
-              onWheel=${onPortraitAdjustWheel}
-              onTouchStart=${onPortraitAdjustTouchStart}
-              onTouchMove=${onPortraitAdjustTouchMove}
-              onTouchEnd=${onPortraitAdjustTouchEnd}
-            >
-              ${portraitWorkflow.source ? html`<img className="portrait-adjust-image" src=${renderPortraitSource(portraitWorkflow.source)} alt="Portrait adjustment" style=${adjustPreviewStyle} />` : null}
-              <div className="portrait-adjust-mask"></div>
-            </div>
-            <div className="portrait-adjust-zoom-row">
-              <span aria-hidden="true">-</span>
-              <input
-                type="range"
-                min=${portraitWorkflow.minZoom || 1}
-                max="4"
-                step="0.01"
-                value=${portraitWorkflow.zoom}
-                style=${rangeFillStyle(portraitWorkflow.zoom, portraitWorkflow.minZoom || 1, 4)}
-                onInput=${function (event) { syncRangeFill(event); updatePortraitZoom(Number(event.target.value)); }}
-              />
-              <span aria-hidden="true">+</span>
-            </div>
-            ${portraitWorkflow.error ? html`<p className="portrait-workflow-error">${portraitWorkflow.error}</p>` : null}
-            <footer className="portrait-workflow-actions">
-              <button onClick=${function () { setPortraitWorkflow(function (prev) { return Object.assign({}, prev, { step: "replace", error: "" }); }); }}>Back</button>
-              <button onClick=${savePortraitWorkflow}>Save Portrait</button>
-            </footer>
-          </div>`}
-        </div>
-      </div>`;
+      return html`${characterView === "directory" ? renderDirectoryView() : renderDetailsView()}`;
     }
 
     function profileInfoCard(label, value) {
@@ -4443,95 +2841,35 @@
           character=${focused}
           characters=${data.characters}
           relationships=${data.relationships}
-          editable=${true}
-          startInEdit=${profileEditMode}
+          editable=${false}
           onRequestClose=${returnFromCharacterProfile}
           onOpenStoryNote=${function (note) {
             var focus = encodeURIComponent(String((note && note.focusText) || (note && note.title) || ""));
             window.location.href = "gm-notes.html?focus=" + focus;
           }}
-          onSave=${function (updatedCharacter) {
-            commit(function (next) {
-              var target = next.characters.find(function (entry) { return entry.id === focused.id; });
-              if (!target) {
-                return;
-              }
-              var normalized = normalizeCharacterRecord(updatedCharacter || {});
-              Object.assign(target, normalized);
-              target.name = String(target.name || "").trim() || "Unnamed Character";
-              target.clan = normalizeClanValue(target.clan);
-              target.sect = normalizeSectValue(target.sect);
-              target.storytellerNotes = String(target.storytellerNotes || "");
-              target.gmOnlyInformation = String(target.gmOnlyInformation || "");
-              target.gmNotes = String(target.storytellerNotes || "");
-              target.timeline = sortTimelineEvents((timelineEventsFromAny(target.timeline) || []).map(normalizeTimelineEvent));
-              target.bioHtml = String(target.bioHtml || "");
-              target.bio = richHtmlToText(target.bioHtml);
-              target.tags = (Array.isArray(target.tags) ? target.tags : String(target.tags || "").split(","))
-                .map(function (tag) { return String(tag || "").trim(); })
-                .filter(function (tag) { return tag.length > 0; });
-            });
-            setProfileEditMode(false);
-            setCharacterDraft(null);
-            setTimelineExpandedIndex(null);
-          }}
         />`;
       }
 
-      var linked = data.relationships.filter(function (r) { return r.from === focused.id || r.to === focused.id; });
-      var draft = profileEditMode ? characterDraft : null;
-      var profileSectIcon = resolveSectIcon(profileEditMode && draft ? draft.sect : focused.sect);
-      var profileClanIcon = resolveClanIcon(profileEditMode && draft ? draft.clan : focused.clan);
-      var profileRecord = draft ? {
-        id: focused.id,
-        name: draft.name,
-        portrait: draft.portrait,
-        clan: draft.clan,
-        sect: draft.sect,
-        status: draft.status,
-        tags: String(draft.tagsText || "").split(",").map(function (t) { return t.trim(); }).filter(function (t) { return t.length > 0; }),
-        bioHtml: draft.bioHtml,
-        timeline: sortTimelineEvents((draft.timelineEvents || []).map(normalizeTimelineEvent)),
-        storytellerNotes: draft.storytellerNotes,
-        gmOnlyInformation: draft.gmOnlyInformation,
-        gmNotes: draft.storytellerNotes,
-        concept: draft.concept,
-        ambition: draft.ambition,
-        desire: draft.desire,
-        convictions: draft.convictions,
-        touchstones: draft.touchstones,
-        predatorType: draft.predatorType,
-        generation: draft.generation,
-        sire: draft.sire,
-        trueAge: draft.trueAge,
-        apparentAge: draft.apparentAge,
-        dateOfBirth: normalizeIsoDate(draft.dateOfBirth),
-        dateOfDeath: normalizeIsoDate(draft.dateOfDeath)
-      } : normalizeCharacterRecord(focused);
-      var timelineDisplayEvents = profileEditMode
-        ? timelineEventsForDisplay(draft.timelineEvents || [], draft.dateOfBirth, draft.dateOfDeath)
-        : timelineEventsForDisplay(profileRecord.timeline || [], profileRecord.dateOfBirth, profileRecord.dateOfDeath);
+      var linked = data.relationships.filter(function (r) { return r.from === focused.id || r.to === focused.id; }).map(function (r) {
+        return resolveRelationshipVisuals(r, data.relationshipCategories);
+      });
+      var profileSectIcon = resolveSectIcon(focused.sect);
+      var profileClanIcon = resolveClanIcon(focused.clan);
+      var profileRecord = normalizeCharacterRecord(focused);
+      var timelineDisplayEvents = timelineEventsForDisplay(profileRecord.timeline || [], profileRecord.dateOfBirth, profileRecord.dateOfDeath);
 
       function sidebarField(label, key, multiline, inputType) {
         var value = profileRecord[key] || "";
-        var displayValue = (inputType === "date" && !profileEditMode) ? formatDisplayDate(value) : value;
-        if (!profileEditMode) {
-          if (key === "convictions" || key === "touchstones") {
-            return dossierEntryGroup({
-              title: label,
-              entryText: value,
-              accentColor: "#d10d40",
-              emptyText: "Not set"
-            });
-          }
-          return profileInfoCard(label, displayValue);
+        var displayValue = (inputType === "date") ? formatDisplayDate(value) : value;
+        if (key === "convictions" || key === "touchstones") {
+          return dossierEntryGroup({
+            title: label,
+            entryText: value,
+            accentColor: "#d10d40",
+            emptyText: "Not set"
+          });
         }
-        return html`<article className="profile-info-card" key=${"profile-" + label}>
-          <h4>${label}</h4>
-          ${multiline
-            ? html`<textarea rows="3" value=${value} onInput=${function (e) { updateDraftField(key, e.target.value); }}></textarea>`
-            : html`<input type=${inputType || "text"} value=${value} onInput=${function (e) { updateDraftField(key, e.target.value); }} />`}
-        </article>`;
+        return profileInfoCard(label, displayValue);
       }
 
       return html`<section className="character-profile-page">
@@ -4539,39 +2877,16 @@
         <div className="profile-content-container">
         <header className="profile-header">
           <div className="profile-header-main">
-            <div className=${"profile-portrait-shell" + (profileEditMode ? " editable" : "") } onClick=${function () { if (profileEditMode) { openPortraitWorkflow(); } }}>
+            <div className="profile-portrait-shell">
               <img className="profile-portrait-image" src=${portraitState(profileRecord).src} alt=${profileRecord.name} style=${portraitMediaStyle(profileRecord)} />
-              ${profileEditMode ? html`<div className="profile-portrait-overlay"><span>Change Portrait</span><span>Upload Image</span></div>` : null}
             </div>
             <div className="profile-title-block">
-              ${profileEditMode
-                ? html`<input className="profile-name-input" value=${profileRecord.name || ""} onInput=${function (e) { updateDraftField("name", e.target.value); }} />`
-                : html`<h1>${profileRecord.name}</h1>`}
-
+              <h1>${profileRecord.name}</h1>
               <p className="profile-subtitle">Character Profile</p>
-
-              ${profileEditMode ? html`<div className="profile-badge-editor">
-                <select value=${normalizeClanValue(profileRecord.clan)} onChange=${function (e) { updateDraftField("clan", e.target.value); }}>
-                  ${CLAN_OPTIONS.map(function (option) {
-                    return html`<option key=${"profile-clan-" + option} value=${option}>${option}</option>`;
-                  })}
-                </select>
-                <select value=${normalizeSectValue(profileRecord.sect)} onChange=${function (e) { updateDraftField("sect", e.target.value); }}>
-                  ${SECT_OPTIONS.map(function (option) {
-                    return html`<option key=${"profile-sect-" + option} value=${option}>${option}</option>`;
-                  })}
-                </select>
-                <input value=${profileRecord.status || ""} onInput=${function (e) { updateDraftField("status", e.target.value); }} placeholder="Status" />
-                <input value=${draft ? draft.tagsText : ""} onInput=${function (e) { updateDraftField("tagsText", e.target.value); }} placeholder="Tags (comma separated)" />
-              </div>` : null}
-
             </div>
           </div>
           <div className="profile-header-controls">
             ${IconButton({ onClick: returnFromCharacterProfile, ariaLabel: "Close biography view", icon: "×", className: "icon-button-34 profile-close-button" })}
-            ${profileEditMode
-              ? html`<div className="profile-header-actions"><button onClick=${saveProfileEdit}>Save</button><button onClick=${cancelProfileEdit}>Cancel</button></div>`
-              : null}
           </div>
         </header>
 
@@ -4580,25 +2895,14 @@
             <article className="profile-biography">
               <div className="profile-biography-head">
                 <h3>Biography</h3>
-                ${!profileEditMode ? html`<button className="profile-biography-edit-button" onClick=${startProfileEdit}>Edit</button>` : null}
               </div>
-              ${profileEditMode
-                ? (SharedBiographyWorkspace
-                    ? html`<${SharedBiographyWorkspace}
-                        editable=${true}
-                        value=${String(draft.bioHtml || "")}
-                        onChange=${function (htmlValue) { updateDraftField("bioHtml", htmlValue); }}
-                        editorClassName="rich-editor profile-rich-editor character-rich-text"
-                        viewerClassName="profile-biography-content character-rich-text"
-                      />`
-                    : html`<div className="profile-biography-content character-rich-text" dangerouslySetInnerHTML=${{ __html: characterBiographyHtml(profileRecord) }}></div>`)
-                : (SharedBiographyWorkspace
-                    ? html`<${SharedBiographyWorkspace}
-                        editable=${false}
-                        value=${String(characterBiographyHtml(profileRecord) || "")}
-                        viewerClassName="profile-biography-content character-rich-text"
-                      />`
-                    : html`<div className="profile-biography-content character-rich-text" dangerouslySetInnerHTML=${{ __html: characterBiographyHtml(profileRecord) }}></div>`)}
+              ${SharedBiographyWorkspace
+                ? html`<${SharedBiographyWorkspace}
+                    editable=${false}
+                    value=${String(characterBiographyHtml(profileRecord) || "")}
+                    viewerClassName="profile-biography-content character-rich-text"
+                  />`
+                : html`<div className="profile-biography-content character-rich-text" dangerouslySetInnerHTML=${{ __html: characterBiographyHtml(profileRecord) }}></div>`}
             </article>
 
             <section className="profile-section">
@@ -4614,50 +2918,7 @@
 
             <section className="profile-section">
               <h3>Timeline</h3>
-              ${profileEditMode ? html`<div className="timeline-log">
-                <div className="timeline-log-toolbar">
-                  <button onClick=${addTimelineEvent}>Add Event</button>
-                </div>
-                ${timelineDisplayEvents.length ? timelineDisplayEvents.map(function (entry) {
-                  var sourceIndex = entry.sourceIndex;
-                  var item = normalizeTimelineEvent(entry.event);
-                  var isSystem = entry.isSystem;
-                  var isExpanded = timelineExpandedIndex === sourceIndex;
-                  var label = timelineEventLabel(item);
-                  return html`<article className=${"timeline-log-item expandable" + (isSystem ? " timeline-system-item" : "") + (isExpanded ? " expanded" : "")} key=${"timeline-event-" + sourceIndex}>
-                    ${isSystem ? html`<div className="timeline-log-head">
-                      <div className="timeline-log-main" onClick=${function () { setTimelineExpandedIndex(isExpanded ? null : sourceIndex); }}>
-                        <p className="timeline-log-title-row"><span className="timeline-log-caret">${isExpanded ? "▼" : "▶"}</span><strong>${label}</strong><span className="timeline-system-badge">System Event</span></p>
-                        ${isExpanded ? html`<p className="timeline-log-date">${formatDisplayDate(item.date)}</p>` : null}
-                      </div>
-                      <div className="timeline-log-actions"><span className="timeline-system-readonly">Read-only</span></div>
-                    </div>` : html`<div className="timeline-log-head" onClick=${function () { setTimelineExpandedIndex(isExpanded ? null : sourceIndex); }}>
-                      <div className="timeline-log-main">
-                        <p className="timeline-log-title-row"><span className="timeline-log-caret">${isExpanded ? "▼" : "▶"}</span><strong>${label}</strong></p>
-                        ${isExpanded ? html`<p className="timeline-log-date">${item.date ? formatDisplayDate(item.date) : "Unknown Date"}</p>` : null}
-                        ${isExpanded ? (item.description
-                          ? html`<p className="timeline-log-description">${item.description}</p>`
-                          : html`<p className="timeline-log-description hint">No description provided.</p>`) : null}
-                      </div>
-                      ${isExpanded ? html`<div className="timeline-log-actions">
-                        <button className="timeline-action-button" onClick=${function (e) { e.stopPropagation(); setTimelineExpandedIndex(null); }}>Close</button>
-                        <button className="timeline-action-button" onClick=${function (e) { e.stopPropagation(); removeTimelineEvent(sourceIndex); }}>Delete</button>
-                      </div>` : null}
-                    </div>`}
-                    ${isExpanded && !isSystem ? html`<div className="timeline-log-editor">
-                      <label>Date</label>
-                      <input type="date" value=${item.date || ""} onInput=${function (e) { updateTimelineEvent(sourceIndex, "date", e.target.value); }} />
-                      <label>Event Title</label>
-                      <input value=${item.title || ""} onInput=${function (e) { updateTimelineEvent(sourceIndex, "title", e.target.value); }} placeholder="Event title" />
-                      <label>Description</label>
-                      <textarea rows="3" value=${item.description || ""} onInput=${function (e) { updateTimelineEvent(sourceIndex, "description", e.target.value); }} placeholder="Event details"></textarea>
-                      <div className="timeline-log-editor-actions">
-                        <button className="timeline-delete-button" onClick=${function () { removeTimelineEvent(sourceIndex); }}>Delete Event</button>
-                      </div>
-                    </div>` : null}
-                  </article>`;
-                }) : html`<p className="hint">No timeline events yet. Add your first event.</p>`}
-              </div>` : html`<div className="timeline-log">
+              <div className="timeline-log">
                 ${timelineDisplayEvents.length ? timelineDisplayEvents.map(function (entry) {
                   var sourceIndex = entry.sourceIndex;
                   var item = normalizeTimelineEvent(entry.event);
@@ -4678,7 +2939,7 @@
                           }
                         }}
                       >
-                        <p className="timeline-log-title-row"><span className="timeline-log-caret">${isExpanded ? "▼" : "▶"}</span><strong>${label}</strong><span className="timeline-system-badge">System Event</span></p>
+                        <p className="timeline-log-title-row"><strong>${label}</strong><span className="timeline-system-badge">System Event</span></p>
                         ${isExpanded ? html`<p className="timeline-log-date">${formatDisplayDate(item.date)}</p>` : null}
                       </div>
                       <div className="timeline-log-actions"><span className="timeline-system-readonly">Read-only</span></div>
@@ -4694,7 +2955,7 @@
                           }
                         }}
                       >
-                        <p className="timeline-log-title-row"><span className="timeline-log-caret">${isExpanded ? "▼" : "▶"}</span><strong>${label}</strong></p>
+                        <p className="timeline-log-title-row"><strong>${label}</strong></p>
                         ${isExpanded ? html`<p className="timeline-log-date">${item.date ? formatDisplayDate(item.date) : "Unknown Date"}</p>` : null}
                         ${isExpanded ? (item.description
                           ? html`<p className="timeline-log-description">${item.description}</p>`
@@ -4703,21 +2964,17 @@
                     </div>`}
                   </article>`;
                 }) : html`<p className="hint">No timeline entries yet.</p>`}
-              </div>`}
+              </div>
             </section>
 
             <section className="profile-section">
               <h3>Storyteller Notes</h3>
-              ${profileEditMode
-                ? html`<textarea rows="6" value=${draft.storytellerNotes || ""} onInput=${function (e) { updateDraftField("storytellerNotes", e.target.value); }} placeholder="Storyteller-facing notes"></textarea>`
-                : html`<p>${profileRecord.storytellerNotes || "No storyteller notes yet."}</p>`}
+              <p>${profileRecord.storytellerNotes || "No storyteller notes yet."}</p>
             </section>
 
             <section className="profile-section gm-only">
               <h3>GM-Only Information</h3>
-              ${profileEditMode
-                ? html`<textarea rows="6" value=${draft.gmOnlyInformation || ""} onInput=${function (e) { updateDraftField("gmOnlyInformation", e.target.value); }} placeholder="Private GM-only information"></textarea>`
-                : html`<p>${profileRecord.gmOnlyInformation || "No GM-only notes yet."}</p>`}
+              <p>${profileRecord.gmOnlyInformation || "No GM-only notes yet."}</p>
             </section>
           </main>
 
@@ -4758,896 +3015,337 @@
       </section>`;
     }
 
+    // Zones and Tags retain their toolbar entry points and panel shell, but
+    // zone drawing and tag management are not implemented in this
+    // rendering-engine phase -- these panels show a static placeholder.
+    function inertPanel(title, message) {
+      return html`<div className="character-view">
+        ${panelHeader(title)}
+        <div className="panel-body">
+          <div className="card"><p className="hint">${message}</p></div>
+        </div>
+      </div>`;
+    }
+
     function zonesPanel() {
-      var selectedZone = selectedZoneId ? data.zones.find(function (zone) { return zone.id === selectedZoneId; }) : null;
-      var draft = zoneEditorOpen && zoneEditDraft && selectedZone ? zoneEditDraft : null;
-      function updateField(field, value) {
-        setZoneEditDraft(function (current) { return current ? Object.assign({}, current, { [field]: value }) : current; });
-      }
-      function onColorHexInput(field, rawValue) {
-        var value = String(rawValue || "").trim();
-        if (value && value.charAt(0) !== "#") {
-          value = "#" + value;
-        }
-        if (/^#[0-9a-fA-F]{0,6}$/.test(value)) {
-          updateField(field, value.toUpperCase());
-        }
-      }
-      function saveZone() {
-        if (!draft || !selectedZone || draft.id !== selectedZone.id) return;
-        commit(function (next) {
-          var target = next.zones.find(function (zone) { return zone.id === draft.id; });
-          if (target) Object.assign(target, zoneWithDefaults(draft));
-        });
-        setZoneEditorOpen(false);
-      }
-      if (draft) {
-        return html`${panelHeader("Edit Zone")}
-        <div className="panel-body zone-editor-panel" ref=${zoneEditorPanelRef}>
-          <section className="zone-editor-group"><h4>General</h4>
-            <label>Zone Name</label><input value=${draft.name} onInput=${function (e) { updateField("name", e.target.value); }} />
-            <label>Description</label><textarea rows="3" value=${draft.description || ""} onInput=${function (e) { updateField("description", e.target.value); }} />
-          </section>
-          <section className="zone-editor-group"><h4>Appearance</h4>
-            <div className="split">
-              <div>
-                ${ColorField({
-                  label: "Fill Colour",
-                  fieldName: "Fill Colour",
-                  value: safeHexColor(draft.color, "#d10d40"),
-                  fallback: "#d10d40",
-                  textValue: String(draft.color || "").toUpperCase(),
-                  onChange: function (nextColor) { updateField("color", String(nextColor || "").toUpperCase()); },
-                  onHexInput: function (nextValue) { onColorHexInput("color", nextValue); }
-                })}
+      return inertPanel("Zones", "Zone editing isn't available yet in this rendering engine.");
+    }
+
+    function tagsPanel() {
+      return inertPanel("Tags", "Tag management isn't available yet in this rendering engine.");
+    }
+
+    function relationshipTypeManagerPanel() {
+      var categories = data.relationshipCategories || [];
+
+      return html`<div className="character-view">
+        ${panelHeader("Relationships")}
+        <div className="panel-body relationship-type-manager">
+          <button type="button" className="relationship-toolbar-action relationship-type-manager-back" onClick=${function () { setRelationshipsView("list"); }}>← Back to Relationships</button>
+          <h3 className="relationship-type-manager-title">Relationship Types</h3>
+
+          ${categories.map(function (category) {
+            return html`<div className="rtm-category" key=${"rtm-cat-" + category.id}>
+              <div className="rtm-category-header">
+                <input
+                  type="text"
+                  className="rtm-category-name"
+                  value=${category.name}
+                  onInput=${function (e) { renameRelationshipCategory(category.id, e.target.value); }}
+                  placeholder="Category name"
+                />
+                <input
+                  type="color"
+                  className="rtm-color-input"
+                  value=${category.color}
+                  onInput=${function (e) { recolorRelationshipCategory(category.id, e.target.value); }}
+                  title="Category color"
+                />
+                <button type="button" className="relationship-card-action-btn destructive" onClick=${function () { deleteRelationshipCategory(category.id, category.name); }}>Delete Category</button>
               </div>
-              <div>
-                ${ColorField({
-                  label: "Border Colour",
-                  fieldName: "Border Colour",
-                  value: safeHexColor(draft.borderColor || draft.color, "#d10d40"),
-                  fallback: "#d10d40",
-                  textValue: String((draft.borderColor || draft.color) || "").toUpperCase(),
-                  onChange: function (nextColor) { updateField("borderColor", String(nextColor || "").toUpperCase()); },
-                  onHexInput: function (nextValue) { onColorHexInput("borderColor", nextValue); }
+
+              <div className="rtm-types-list">
+                ${(category.types || []).map(function (typeItem) {
+                  var isEditing = Boolean(editingRelationshipType) && editingRelationshipType.categoryId === category.id && editingRelationshipType.typeId === typeItem.id;
+
+                  if (isEditing) {
+                    var draft = editingRelationshipType.draft;
+                    var draftPreviewShape = { color: draft.color, style: draft.style, thickness: draft.width, arrow: relationshipTypeArrowValue(draft) };
+                    return html`<div className="rtm-type-card rtm-type-card-editing" key=${"rtm-type-" + typeItem.id}>
+                      <label className="rtm-field-label">Type Name</label>
+                      <input type="text" value=${draft.name} onInput=${function (e) { updateEditingRelationshipTypeField("name", e.target.value); }} placeholder="Type name" />
+
+                      <label className="rtm-field-label">Display Label</label>
+                      <input type="text" value=${draft.label} onInput=${function (e) { updateEditingRelationshipTypeField("label", e.target.value); }} placeholder="Shown on the map" />
+
+                      <div className="rtm-field-row">
+                        <div className="rtm-field-col">
+                          <label className="rtm-field-label">Color</label>
+                          <input type="color" className="rtm-color-input" value=${draft.color} onInput=${function (e) { updateEditingRelationshipTypeField("color", e.target.value); }} />
+                        </div>
+                        <div className="rtm-field-col">
+                          <label className="rtm-field-label">Width</label>
+                          <input type="number" className="rtm-width-input" min="1" max="8" value=${draft.width} onInput=${function (e) { updateEditingRelationshipTypeField("width", Number(e.target.value)); }} />
+                        </div>
+                        <div className="rtm-field-col rtm-field-col-grow">
+                          <label className="rtm-field-label">Line Style</label>
+                          <select className="rtm-style-select" value=${draft.style} onChange=${function (e) { updateEditingRelationshipTypeField("style", e.target.value); }}>
+                            ${RELATIONSHIP_TYPE_STYLE_OPTIONS.map(function (styleOption) {
+                              return html`<option key=${"rtm-style-" + typeItem.id + "-" + styleOption} value=${styleOption}>${styleOption}</option>`;
+                            })}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="rtm-toggle-row">
+                        <label className="rtm-checkbox-label">
+                          <input type="checkbox" checked=${Boolean(draft.animated)} onChange=${function (e) { updateEditingRelationshipTypeField("animated", e.target.checked); }} />
+                          Animated
+                        </label>
+                        <label className="rtm-checkbox-label">
+                          <input type="checkbox" checked=${Boolean(draft.arrow)} onChange=${function (e) { updateEditingRelationshipTypeField("arrow", e.target.checked); }} />
+                          Arrow
+                        </label>
+                        <label className="rtm-checkbox-label">
+                          <input type="checkbox" checked=${Boolean(draft.bidirectional)} onChange=${function (e) { updateEditingRelationshipTypeField("bidirectional", e.target.checked); }} />
+                          Bidirectional
+                        </label>
+                      </div>
+
+                      <div className="rtm-type-editor-preview">${relationshipPreviewSvg(draftPreviewShape)}</div>
+
+                      <div className="rtm-type-editor-actions">
+                        <button type="button" onClick=${saveEditingRelationshipType}>Save</button>
+                        <button type="button" className="relationship-card-action-btn" onClick=${cancelEditRelationshipType}>Cancel</button>
+                      </div>
+                    </div>`;
+                  }
+
+                  return html`<div className="rtm-type-card" key=${"rtm-type-" + typeItem.id}>
+                    <div className="rtm-type-summary-row">
+                      <span className="rtm-type-color-dot" style=${{ background: typeItem.color }} aria-hidden="true"></span>
+                      <span className="rtm-type-summary-name">${typeItem.name}</span>
+                      <div className="rtm-type-summary-actions">
+                        <button type="button" className="rtm-icon-btn" title="Edit" aria-label="Edit" onClick=${function () { startEditRelationshipType(category.id, typeItem); }}>✏</button>
+                        <button type="button" className="rtm-icon-btn destructive" title="Delete" aria-label="Delete" onClick=${function () { deleteRelationshipType(category.id, typeItem.id, typeItem.name); }}>✕</button>
+                      </div>
+                    </div>
+                    <p className="rtm-type-summary-style">${relationshipTypeSummaryText(typeItem)}</p>
+                  </div>`;
                 })}
+                <button type="button" className="relationship-toolbar-action rtm-add-type" onClick=${function () { addRelationshipType(category.id); }}>+ New Type</button>
               </div>
+            </div>`;
+          })}
+
+          <button type="button" className="relationship-toolbar-action rtm-add-category" onClick=${addRelationshipCategory}>+ New Category</button>
+        </div>
+      </div>`;
+    }
+
+    function relationshipsPanel() {
+      if (relationshipsView === "manage-types") {
+        return relationshipTypeManagerPanel();
+      }
+
+      var categories = data.relationshipCategories || [];
+      // Cards render live-resolved visual data (color/style/thickness/arrow/
+      // category/type name) rather than anything cached on the relationship
+      // record, so an edited type is reflected immediately here too.
+      var list = (data.relationships || []).map(function (relationship) {
+        return resolveRelationshipVisuals(relationship, categories);
+      });
+      var characters = data.characters || [];
+      var selectedCategoryForFilter = categories.find(function (c) { return c.id === relationshipCategoryFilter; });
+      var typeFilterOptions = relationshipCategoryFilter === "all"
+        ? categories.reduce(function (acc, category) { return acc.concat(category.types || []); }, [])
+        : ((selectedCategoryForFilter && selectedCategoryForFilter.types) || []);
+
+      function onCategoryFilterChange(value) {
+        setRelationshipCategoryFilter(value);
+        setRelationshipTypeFilter("all");
+      }
+
+      var query = relationshipSearch.trim().toLowerCase();
+      var filteredList = list.filter(function (relationship) {
+        var fromCharacter = characters.find(function (c) { return c.id === relationship.from; });
+        var toCharacter = characters.find(function (c) { return c.id === relationship.to; });
+        if (relationshipCategoryFilter !== "all" && relationship.categoryId !== relationshipCategoryFilter) {
+          return false;
+        }
+        if (relationshipTypeFilter !== "all" && relationship.typeId !== relationshipTypeFilter) {
+          return false;
+        }
+        if (relationshipCharacterFilter !== "all" && relationship.from !== relationshipCharacterFilter && relationship.to !== relationshipCharacterFilter) {
+          return false;
+        }
+        if (query) {
+          var haystack = [
+            fromCharacter ? fromCharacter.name : "",
+            toCharacter ? toCharacter.name : "",
+            relationship.category || "",
+            relationship.type || "",
+            relationship.displayLabel || "",
+            relationship.description || ""
+          ].join(" ").toLowerCase();
+          if (haystack.indexOf(query) < 0) {
+            return false;
+          }
+        }
+        return true;
+      });
+
+      var hasAnyRelationships = Boolean(list.length);
+      var hasFiltersApplied = Boolean(query) || relationshipCategoryFilter !== "all" || relationshipTypeFilter !== "all" || relationshipCharacterFilter !== "all";
+
+      return html`<div className="character-view">
+        ${panelHeader("Relationships")}
+        <div className="panel-body">
+          <div className="relationship-toolbar">
+            <button type="button" className="relationship-toolbar-action" onClick=${function () { setRelationshipsView("manage-types"); }}>Manage Types</button>
+          </div>
+          <div className="relationship-filter-bar">
+            <input
+              type="text"
+              className="relationship-filter-search"
+              value=${relationshipSearch}
+              onInput=${function (e) { setRelationshipSearch(e.target.value); }}
+              placeholder="Search relationships..."
+            />
+            <div className="relationship-filter-bar-selects">
+              <select value=${relationshipCategoryFilter} onChange=${function (e) { onCategoryFilterChange(e.target.value); }}>
+                <option value="all">All Categories</option>
+                ${categories.map(function (category) {
+                  return html`<option key=${"rel-filter-cat-" + category.id} value=${category.id}>${category.name}</option>`;
+                })}
+              </select>
+              <select value=${relationshipTypeFilter} onChange=${function (e) { setRelationshipTypeFilter(e.target.value); }}>
+                <option value="all">All Types</option>
+                ${typeFilterOptions.map(function (typeItem) {
+                  return html`<option key=${"rel-filter-type-" + typeItem.id} value=${typeItem.id}>${typeItem.name}</option>`;
+                })}
+              </select>
+              <select value=${relationshipCharacterFilter} onChange=${function (e) { setRelationshipCharacterFilter(e.target.value); }}>
+                <option value="all">All Characters</option>
+                ${characters.slice().sort(function (a, b) { return String(a.name || "").localeCompare(String(b.name || "")); }).map(function (character) {
+                  return html`<option key=${"rel-filter-char-" + character.id} value=${character.id}>${character.name}</option>`;
+                })}
+              </select>
             </div>
-            <label>Fill Opacity <span className="hint">${Math.round(Number(draft.opacity || 0) * 100)}%</span></label><input type="range" min="0" max="0.8" step="0.01" value=${draft.opacity} style=${rangeFillStyle(draft.opacity, 0, 0.8)} onInput=${function (e) { syncRangeFill(e); updateField("opacity", Number(e.target.value)); }} />
-            <label>Border Thickness</label><input type="range" min="1" max="8" step="1" value=${draft.borderThickness} style=${rangeFillStyle(draft.borderThickness, 1, 8)} onInput=${function (e) { syncRangeFill(e); updateField("borderThickness", Number(e.target.value)); }} />
-            <label>Border Style</label><select value=${draft.borderStyle || "dashed"} onChange=${function (e) { updateField("borderStyle", e.target.value); }}><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select>
-          </section>
-          <section className="zone-editor-group"><h4>Behaviour</h4>
-            <article className="zone-lock-card">
-              <span className="zone-lock-icon" aria-hidden="true">${Icon({ icon: CAMPAIGN_ATLAS_ICON_ASSETS.lock, size: 17, className: "zone-lock-icon-glyph" })}</span>
-              <div className="zone-lock-copy">
-                <strong>Lock Zone</strong>
-                <p>Prevent this zone from being moved or resized on the Relationship Map.</p>
+          </div>
+
+          ${!hasAnyRelationships ? html`<div className="card"><p className="hint">No relationships yet. Drag from one character node's handle to another on the canvas to create one.</p></div>` : null}
+          ${hasAnyRelationships && !filteredList.length ? html`<div className="card"><p className="hint">${hasFiltersApplied ? "No relationships match the current filters." : "No relationships yet."}</p></div>` : null}
+
+          ${filteredList.map(function (relationship) {
+            var fromCharacter = characters.find(function (c) { return c.id === relationship.from; });
+            var toCharacter = characters.find(function (c) { return c.id === relationship.to; });
+            var description = String(relationship.description || "").trim();
+            return html`<div className="relationship-card" key=${"rel-card-" + relationship.id} onClick=${function () { openRelationshipEditorFor(relationship, false); }}>
+              <div className="relationship-card-connection">
+                <span className="relationship-card-character relationship-card-character-from" title=${fromCharacter ? fromCharacter.name : "Unknown"}>${fromCharacter ? fromCharacter.name : "Unknown"}</span>
+                <span className="relationship-card-preview-wrap">${relationshipPreviewSvg(relationship)}</span>
+                <span className="relationship-card-character relationship-card-character-to" title=${toCharacter ? toCharacter.name : "Unknown"}>${toCharacter ? toCharacter.name : "Unknown"}</span>
               </div>
-              <button
-                type="button"
-                className=${"toggle-switch zone-lock-toggle" + (draft.lock ? " on" : "")}
-                aria-pressed=${draft.lock ? "true" : "false"}
-                aria-label="Toggle lock zone"
-                onClick=${function () { updateField("lock", !draft.lock); }}
-              ><span></span></button>
-            </article>
-          </section>
-          <section className="zone-editor-group"><h4>Layer Controls</h4><div className="row">
-            <button onClick=${function () { updateField("layer", Math.max.apply(null, data.zones.map(function (zone) { return Number(zone.layer) || 0; })) + 1); }}>Bring Forward</button>
-            <button onClick=${function () { updateField("layer", Math.min.apply(null, data.zones.map(function (zone) { return Number(zone.layer) || 0; })) - 1); }}>Send Backward</button>
-          </div></section>
-          <div className="zone-editor-actions"><button onClick=${saveZone}>Save</button><button onClick=${function () { setZoneEditorOpen(false); }}>Back to Zone List</button><button className="destructive" onClick=${function () { commit(function (next) { next.zones = next.zones.filter(function (zone) { return zone.id !== draft.id; }); }); setSelectedZoneId(null); setZoneEditDraft(null); setZoneEditorOpen(false); }}>Delete Zone</button></div>
-        </div>`;
-      }
-      return html`${panelHeader("Zones")}
-      <div className="panel-body zone-list-panel">
-        <button className="zone-draw-button" onClick=${enterZoneDrawingMode}>Draw New Zone</button>
-        <div className="zone-list">${data.zones.map(function (zone) {
-          var current = zoneWithDefaults(zone);
-          return html`<button className="zone-list-item" key=${zone.id} onClick=${function () { focusZoneFromList(zone.id); }}><span className="zone-list-swatch" style=${{ backgroundColor: current.color }}></span><span className="zone-list-name">${current.name}</span><span className="zone-list-count">${zoneMemberCount(current)} members</span></button>`;
-        })}</div>
-        <button className="destructive zone-delete-all" disabled=${!data.zones.length} onClick=${function () { commit(function (next) { next.zones = []; }); setSelectedZoneId(null); setZoneEditDraft(null); setZoneEditorOpen(false); }}>Delete All Zones</button>
+              <div className="relationship-card-meta">
+                <p className="relationship-card-meta-line">
+                  <span className="relationship-card-meta-label">Category:</span>
+                  <span className="relationship-card-category">${relationship.category || "Uncategorized"}</span>
+                </p>
+                <p className="relationship-card-meta-line">
+                  <span className="relationship-card-meta-label">Type:</span>
+                  <span className="relationship-card-type">${relationship.displayLabel || relationship.type || "Connection"}</span>
+                </p>
+                ${description ? html`<p className="relationship-card-meta-line relationship-card-description">
+                  <span className="relationship-card-meta-label">Description:</span>
+                  <span>${description}</span>
+                </p>` : null}
+              </div>
+              <div className="relationship-card-actions">
+                <button type="button" className="relationship-card-action-btn" onClick=${function (e) { e.stopPropagation(); openRelationshipEditorFor(relationship, false); }}>Edit</button>
+                <button type="button" className="relationship-card-action-btn destructive" onClick=${function (e) { deleteRelationshipFromCard(relationship, e); }}>Delete</button>
+              </div>
+            </div>`;
+          })}
+        </div>
       </div>`;
     }
 
     function relationshipEditorPanel() {
-      var draft = relationshipEditor;
-      if (!draft) {
-        return null;
+      if (!relationshipEditor) {
+        return inertPanel("Relationship", "No relationship selected.");
       }
-      var from = data.characters.find(function (character) { return character.id === draft.from; });
-      var to = data.characters.find(function (character) { return character.id === draft.to; });
-      var selectedCategory = data.relationshipCategories.find(function (entry) {
-        return entry.id === draft.categoryId || entry.name === draft.category;
-      }) || data.relationshipCategories[0];
-      var availableTypes = selectedCategory ? (selectedCategory.types || []) : [];
 
-      function update(field, value) {
-        setRelationshipEditor(function (current) {
-          if (!current) {
-            return current;
+      var categories = data.relationshipCategories || [];
+      var selectedCategory = categories.find(function (c) { return c.id === relationshipEditor.categoryId; }) || categories[0];
+      var typesForCategory = (selectedCategory && selectedCategory.types) || [];
+      var fromCharacter = data.characters.find(function (c) { return c.id === relationshipEditor.from; });
+      var toCharacter = data.characters.find(function (c) { return c.id === relationshipEditor.to; });
+
+      function updateField(field, value) {
+        setRelationshipEditor(function (prev) { return prev ? Object.assign({}, prev, { [field]: value }) : prev; });
+      }
+
+      function onCategoryChange(categoryId) {
+        var category = categories.find(function (c) { return c.id === categoryId; }) || categories[0];
+        var firstType = category && category.types && category.types[0];
+        setRelationshipEditor(function (prev) {
+          if (!prev) {
+            return prev;
           }
-          return Object.assign({}, current, { [field]: value });
-        });
-      }
-
-      function chooseCategory(category) {
-        var firstType = (category.types || [])[0];
-        var defaults = relationshipTypeDefaults(category.id, firstType && firstType.id);
-        setRelationshipEditor(function (current) {
-          return current ? Object.assign({}, current, defaults) : current;
-        });
-      }
-
-      function chooseType(category, typeItem) {
-        var defaults = relationshipTypeDefaults(category.id, typeItem.id);
-        setRelationshipEditor(function (current) {
-          return current ? Object.assign({}, current, defaults) : current;
-        });
-      }
-
-      function save() {
-        var savedDraft = clone(draft);
-        delete savedDraft.sourceAnchor;
-        delete savedDraft.destinationAnchor;
-        delete savedDraft.fromAnchor;
-        delete savedDraft.toAnchor;
-        commit(function (next) {
-          var relationship = next.relationships.find(function (entry) { return entry.id === draft.id; });
-          if (relationship) {
-            Object.assign(relationship, savedDraft, { isNew: undefined });
-          }
-        });
-        setRelationshipEditor(null);
-        setActivePanel(null);
-      }
-
-      function cancel() {
-        if (draft.isNew) {
-          commit(function (next) {
-            next.relationships = next.relationships.filter(function (entry) { return entry.id !== draft.id; });
+          return Object.assign({}, prev, {
+            categoryId: category ? category.id : prev.categoryId,
+            typeId: firstType ? firstType.id : prev.typeId,
+            label: firstType ? firstType.label : prev.label
           });
-        }
-        setRelationshipEditor(null);
-        setActivePanel(null);
-      }
-
-      function remove() {
-        commit(function (next) {
-          next.relationships = next.relationships.filter(function (entry) { return entry.id !== draft.id; });
         });
-        setRelationshipEditor(null);
-        setActivePanel(null);
       }
 
-      return html`${panelHeader("Relationship Editor")}
-      <div className="panel-body relationship-editor-panel">
-        <div className="relationship-editor-parties">
-          <div><span>From</span><strong>${from ? from.name : "Unknown"}</strong></div>
-          <div><span>To</span><strong>${to ? to.name : "Unknown"}</strong></div>
-        </div>
-
-        <div className="relationship-editor-live-preview">
-          <span>Live Preview</span>
-          <svg viewBox="0 0 280 32" className="relationship-editor-preview-svg" aria-hidden="true">
-            <defs key="relationship-editor-preview-defs"><marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path></marker></defs>
-            ${(() => {
-              var draftResolvedAnchors = relationshipResolvedAnchors(from || { x: 18, y: 16, nodeSize: 1 }, to || { x: 262, y: 16, nodeSize: 1 });
-              return renderRelationshipStroke({
-                route: relationshipRouteSpec(
-                  relationshipAnchorPoint(from || { x: 18, y: 16, nodeSize: 1 }, draftResolvedAnchors.sourceAnchor),
-                  relationshipAnchorPoint(to || { x: 262, y: 16, nodeSize: 1 }, draftResolvedAnchors.destinationAnchor),
-                  draftResolvedAnchors.sourceAnchor,
-                  draftResolvedAnchors.destinationAnchor,
-                  draft.routingMode || "auto"
-                ),
-                style: draft.style,
-                color: draft.color,
-                width: Math.max(1, Number(draft.thickness) || 2),
-                opacity: Number(draft.opacity),
-                animated: Boolean(draft.animated),
-                markerEnd: draft.arrow === "end" || draft.arrow === "both" ? "url(#arrowHead)" : null,
-                markerStart: draft.arrow === "start" || draft.arrow === "both" ? "url(#arrowHead)" : null,
-                includeHitArea: false,
-                keyPrefix: "relationship-editor-preview"
-              });
-            })()}
-          </svg>
-        </div>
-
-        <h4>Relationship Category</h4>
-        <div className="relationship-category-buttons">
-          ${data.relationshipCategories.map(function (category) {
-            var isActive = category.id === draft.categoryId;
-            return html`<button key=${"rel-cat-option-" + category.id} className=${isActive ? "active" : ""} style=${{ borderColor: category.color }} onClick=${function () { chooseCategory(category); }}>${category.name}</button>`;
-          })}
-        </div>
-
-        <h4>Relationship Type</h4>
-        <div className="relationship-type-cards">
-          ${availableTypes.map(function (typeItem) {
-            var isActive = typeItem.id === draft.typeId;
-            var previewRoute = relationshipRouteSpec({ x: 4, y: 6 }, { x: 116, y: 6 }, "right", "left", "straight");
-            return html`<button key=${"rel-type-option-" + typeItem.id} className=${"relationship-type-card" + (isActive ? " active" : "")} onClick=${function () { chooseType(selectedCategory, typeItem); }}>
-              <span className="relationship-type-color" style=${{ backgroundColor: typeItem.color }}></span>
-              <strong>${typeItem.name}</strong>
-              <svg viewBox="0 0 120 12" className="relationship-type-preview" aria-hidden="true">
-                <defs key=${"type-preview-defs-" + typeItem.id}><marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path></marker></defs>
-                ${renderRelationshipStroke({
-                  route: previewRoute,
-                  style: typeItem.style,
-                  color: typeItem.color,
-                  width: Math.max(1, typeItem.width),
-                  opacity: 1,
-                  animated: Boolean(typeItem.animated),
-                  markerEnd: typeItem.arrow ? "url(#arrowHead)" : null,
-                  includeHitArea: false,
-                  keyPrefix: "type-preview-card-" + typeItem.id
-                })}
-              </svg>
-            </button>`;
-          })}
-        </div>
-
-        <label>Direction</label>
-        <select value=${draft.arrow || "end"} onChange=${function (event) { update("arrow", event.target.value); }}>
-          <option value="end">${from ? from.name : "Character A"} → ${to ? to.name : "Character B"}</option>
-          <option value="start">${to ? to.name : "Character B"} → ${from ? from.name : "Character A"}</option>
-          <option value="both">Bidirectional</option>
-        </select>
-
-        <label>Routing</label>
-        <select value=${draft.routingMode || "auto"} onChange=${function (event) { update("routingMode", event.target.value); }}>
-          <option value="auto">Auto</option>
-          <option value="straight">Straight</option>
-          <option value="curved">Curved</option>
-        </select>
-
-        <label className="zone-toggle"><input type="checkbox" checked=${Boolean(draft.hiddenFromCollaborators)} onChange=${function (event) { update("hiddenFromCollaborators", event.target.checked); }} /> Hide Relationship from Collaborators</label>
-        <label>Description</label>
-        <textarea rows="3" value=${draft.description || ""} onInput=${function (event) { update("description", event.target.value); }}></textarea>
-        <label>GM Notes</label>
-        <textarea rows="3" value=${draft.gmNotes || ""} onInput=${function (event) { update("gmNotes", event.target.value); }} placeholder="Future-ready storyteller notes"></textarea>
-
-        <div className="zone-editor-actions">
-          <button onClick=${save}>Save</button>
-          <button onClick=${cancel}>Cancel</button>
-          <button className="destructive" onClick=${remove}>Delete</button>
-        </div>
-      </div>`;
-    }
-
-    var RELATIONSHIP_CONNECTION_NODE_DIAMETER = 12;
-    var RELATIONSHIP_CONNECTION_NODE_OFFSET_X = -6;
-    var RELATIONSHIP_CONNECTION_NODE_OFFSET_Y = -6;
-
-    function relationshipNodeGeometry(character) {
-      var nodeSize = Math.max(0.7, Math.min(1.8, Number(character && character.nodeSize) || 1));
-      var shellDiameter = 74 * nodeSize;
-      return {
-        x: Number(character && character.x) || 0,
-        y: Number(character && character.y) || 0,
-        nodeSize: nodeSize,
-        shellDiameter: shellDiameter,
-        shellRadius: shellDiameter / 2,
-        nodeRadius: RELATIONSHIP_CONNECTION_NODE_DIAMETER / 2
-      };
-    }
-
-    function relationshipConnectionNodeLocalPoint(geometry, anchor) {
-      var offsetX = RELATIONSHIP_CONNECTION_NODE_OFFSET_X;
-      var offsetY = RELATIONSHIP_CONNECTION_NODE_OFFSET_Y;
-      var topBottomShiftX = 4;
-      var bottomShiftY = -2;
-      switch (String(anchor || "").toLowerCase()) {
-        case "top": return { x: geometry.shellRadius + offsetX + topBottomShiftX, y: offsetY };
-        case "right": return { x: geometry.shellDiameter + offsetX, y: geometry.shellRadius + offsetY };
-        case "bottom": return { x: geometry.shellRadius + offsetX + topBottomShiftX, y: geometry.shellDiameter + offsetY + bottomShiftY };
-        case "left": return { x: offsetX, y: geometry.shellRadius + offsetY };
-        default: return { x: geometry.shellRadius + offsetX, y: geometry.shellRadius + offsetY };
-      }
-    }
-
-    function relationshipAnchorPoint(character, anchor) {
-      var geometry = relationshipNodeGeometry(character);
-      var localPoint = relationshipConnectionNodeLocalPoint(geometry, anchor);
-      return {
-        x: geometry.x - geometry.shellRadius + localPoint.x,
-        y: geometry.y - geometry.shellRadius + localPoint.y
-      };
-    }
-
-    function relationshipAnchorVector(anchor) {
-      switch (String(anchor || "").toLowerCase()) {
-        case "top": return { x: 0, y: -1 };
-        case "right": return { x: 1, y: 0 };
-        case "bottom": return { x: 0, y: 1 };
-        case "left": return { x: -1, y: 0 };
-        default: return { x: 1, y: 0 };
-      }
-    }
-
-    function relationshipRouteStraight(fromPoint, toPoint) {
-      var mid = {
-        x: (fromPoint.x + toPoint.x) / 2,
-        y: (fromPoint.y + toPoint.y) / 2
-      };
-      return {
-        kind: "straight",
-        from: { x: fromPoint.x, y: fromPoint.y },
-        to: { x: toPoint.x, y: toPoint.y },
-        d: "M " + fromPoint.x + " " + fromPoint.y + " L " + toPoint.x + " " + toPoint.y,
-        labelPoint: mid
-      };
-    }
-
-    function cubicBezierPoint(p0, p1, p2, p3, t) {
-      var mt = 1 - t;
-      var mt2 = mt * mt;
-      var t2 = t * t;
-      return {
-        x: mt2 * mt * p0.x + 3 * mt2 * t * p1.x + 3 * mt * t2 * p2.x + t2 * t * p3.x,
-        y: mt2 * mt * p0.y + 3 * mt2 * t * p1.y + 3 * mt * t2 * p2.y + t2 * t * p3.y
-      };
-    }
-
-    function relationshipRouteCurved(fromPoint, toPoint, fromAnchor, toAnchor, mode) {
-      var dx = toPoint.x - fromPoint.x;
-      var dy = toPoint.y - fromPoint.y;
-      var distance = Math.sqrt(dx * dx + dy * dy);
-      var sourceVector = relationshipAnchorVector(fromAnchor);
-      var targetVector = relationshipAnchorVector(toAnchor);
-
-      var pull = clamp(distance * (mode === "curved" ? 0.28 : 0.22), 24, 210);
-      if (mode === "auto") {
-        if (distance < 180) {
-          pull *= 0.62;
-        } else if (distance > 760) {
-          pull *= 1.2;
-        }
-      }
-
-      var control1 = {
-        x: fromPoint.x + sourceVector.x * pull,
-        y: fromPoint.y + sourceVector.y * pull
-      };
-      var control2 = {
-        x: toPoint.x + targetVector.x * pull,
-        y: toPoint.y + targetVector.y * pull
-      };
-      var label = cubicBezierPoint(fromPoint, control1, control2, toPoint, 0.5);
-
-      return {
-        kind: "curved",
-        from: { x: fromPoint.x, y: fromPoint.y },
-        to: { x: toPoint.x, y: toPoint.y },
-        control1: control1,
-        control2: control2,
-        d: "M " + fromPoint.x + " " + fromPoint.y + " C " + control1.x + " " + control1.y + ", " + control2.x + " " + control2.y + ", " + toPoint.x + " " + toPoint.y,
-        labelPoint: label
-      };
-    }
-
-    var RELATIONSHIP_ROUTE_ENGINES = {
-      straight: function (fromPoint, toPoint) {
-        return relationshipRouteStraight(fromPoint, toPoint);
-      },
-      curved: function (fromPoint, toPoint, fromAnchor, toAnchor) {
-        return relationshipRouteCurved(fromPoint, toPoint, fromAnchor, toAnchor, "curved");
-      },
-      auto: function (fromPoint, toPoint, fromAnchor, toAnchor) {
-        var dx = Math.abs(toPoint.x - fromPoint.x);
-        var dy = Math.abs(toPoint.y - fromPoint.y);
-        var distance = Math.sqrt(dx * dx + dy * dy);
-        var alignTolerance = Math.max(24, Math.min(56, distance * 0.08));
-        var approximatelyAligned = dx <= alignTolerance || dy <= alignTolerance;
-        if (approximatelyAligned) {
-          return relationshipRouteStraight(fromPoint, toPoint);
-        }
-        return relationshipRouteCurved(fromPoint, toPoint, fromAnchor, toAnchor, "auto");
-      }
-    };
-
-    function relationshipRouteSpec(fromPoint, toPoint, fromAnchor, toAnchor, routingMode) {
-      var mode = String(routingMode || "auto").toLowerCase();
-      var engine = RELATIONSHIP_ROUTE_ENGINES[mode] || RELATIONSHIP_ROUTE_ENGINES.auto;
-      return engine(fromPoint, toPoint, fromAnchor, toAnchor);
-    }
-
-    function relationshipRouteSample(route, t) {
-      var clampedT = clamp(Number(t) || 0, 0, 1);
-      if (!route || route.kind === "straight") {
-        var fromPoint = route && route.from ? route.from : { x: 0, y: 0 };
-        var toPoint = route && route.to ? route.to : { x: 0, y: 0 };
-        var dx = toPoint.x - fromPoint.x;
-        var dy = toPoint.y - fromPoint.y;
-        return {
-          point: {
-            x: fromPoint.x + dx * clampedT,
-            y: fromPoint.y + dy * clampedT
-          },
-          tangent: { x: dx, y: dy }
-        };
-      }
-
-      var p0 = route.from;
-      var p1 = route.control1;
-      var p2 = route.control2;
-      var p3 = route.to;
-      var point = cubicBezierPoint(p0, p1, p2, p3, clampedT);
-      var mt = 1 - clampedT;
-      var tangent = {
-        x: (3 * mt * mt * (p1.x - p0.x)) + (6 * mt * clampedT * (p2.x - p1.x)) + (3 * clampedT * clampedT * (p3.x - p2.x)),
-        y: (3 * mt * mt * (p1.y - p0.y)) + (6 * mt * clampedT * (p2.y - p1.y)) + (3 * clampedT * clampedT * (p3.y - p2.y))
-      };
-      return { point: point, tangent: tangent };
-    }
-
-    function relationshipRouteArcTable(route, segments) {
-      var count = Math.max(8, Number(segments) || 32);
-      var entries = [];
-      var total = 0;
-      var first = relationshipRouteSample(route, 0).point;
-      entries.push({ t: 0, length: 0, point: first });
-      var previous = first;
-      for (var i = 1; i <= count; i += 1) {
-        var t = i / count;
-        var sample = relationshipRouteSample(route, t).point;
-        var segmentLength = Math.sqrt(Math.pow(sample.x - previous.x, 2) + Math.pow(sample.y - previous.y, 2));
-        total += segmentLength;
-        entries.push({ t: t, length: total, point: sample });
-        previous = sample;
-      }
-      return { entries: entries, total: total };
-    }
-
-    function relationshipRouteSampleAtDistance(route, arcTable, distance) {
-      var table = arcTable || relationshipRouteArcTable(route, 32);
-      var target = clamp(Number(distance) || 0, 0, table.total || 0);
-      var entries = table.entries;
-      if (!entries || entries.length < 2) {
-        return relationshipRouteSample(route, 0);
-      }
-      var right = entries[entries.length - 1];
-      var left = entries[0];
-      for (var i = 1; i < entries.length; i += 1) {
-        if (entries[i].length >= target) {
-          right = entries[i];
-          left = entries[i - 1];
-          break;
-        }
-      }
-      var span = right.length - left.length;
-      var ratio = span <= 0 ? 0 : (target - left.length) / span;
-      var t = left.t + (right.t - left.t) * ratio;
-      return relationshipRouteSample(route, t);
-    }
-
-    function relationshipDashArray(styleName) {
-      switch (String(styleName || "").toLowerCase()) {
-        case "dashed": return "10 6";
-        case "dotted": return "2 6";
-        default: return "";
-      }
-    }
-
-    function relationshipPatternStep(styleName, lineWidth) {
-      var width = Math.max(1, Number(lineWidth) || 2);
-      if (styleName === "chain") {
-        return Math.max(6, width * 2.2);
-      }
-      if (styleName === "droplets") {
-        return Math.max(8, width * 3.2);
-      }
-      return 0;
-    }
-
-    function relationshipPatternShape(styleName, index, color, lineWidth, opacity, animated) {
-      var width = Math.max(1, Number(lineWidth) || 2);
-      if (styleName === "chain") {
-        var linkWidth = Math.max(8, width * 3.6);
-        var linkHeight = Math.max(3.8, width * 1.35);
-        return html`<g className=${animated ? "relationship-pattern-shape animated" : "relationship-pattern-shape"} opacity=${opacity}>
-          <rect x=${-linkWidth / 2} y=${-linkHeight / 2} width=${linkWidth} height=${linkHeight} rx=${linkHeight / 2} ry=${linkHeight / 2} fill="none" stroke=${color} strokeWidth=${Math.max(1, width * 0.55)}></rect>
-        </g>`;
-      }
-      if (styleName === "droplets") {
-        var sizeFactors = [1.0, 0.82, 1.12, 0.9];
-        var factor = sizeFactors[index % sizeFactors.length];
-        var radius = Math.max(2.2, width * 0.9) * factor;
-        var dropletPath = "M 0 " + (-radius) +
-          " C " + (radius * 0.68) + " " + (-radius * 0.44) + ", " + (radius * 0.98) + " " + (radius * 0.34) + ", 0 " + (radius * 1.08) +
-          " C " + (-radius * 0.98) + " " + (radius * 0.34) + ", " + (-radius * 0.68) + " " + (-radius * 0.44) + ", 0 " + (-radius) + " Z";
-        return html`<g className=${animated ? "relationship-pattern-shape animated" : "relationship-pattern-shape"} opacity=${opacity}>
-          <path d=${dropletPath} fill=${color}></path>
-        </g>`;
-      }
-      return null;
-    }
-
-    function renderRelationshipStroke(options) {
-      var opts = options && typeof options === "object" ? options : {};
-      var route = opts.route;
-      if (!route || !route.d) {
-        return null;
-      }
-
-      var styleName = String(opts.style || "solid").toLowerCase();
-      var color = safeHexColor(opts.color, "#d10d40");
-      var opacity = Number.isFinite(Number(opts.opacity)) ? Number(opts.opacity) : 1;
-      var lineWidth = Math.max(1, Number(opts.width) || 2);
-      var markerEnd = opts.markerEnd || null;
-      var markerStart = opts.markerStart || null;
-      var animated = Boolean(opts.animated);
-      var keyPrefix = String(opts.keyPrefix || "rel");
-      var onDoubleClick = typeof opts.onDoubleClick === "function" ? opts.onDoubleClick : null;
-      var includeHitArea = opts.includeHitArea !== false;
-
-      var elements = [];
-      if (includeHitArea) {
-        elements.push(html`<path key=${keyPrefix + "-hit"} className="relationship-line-hit" d=${route.d} stroke=${color} strokeWidth=${Math.max(lineWidth, 10)} strokeOpacity="0" fill="none" onDoubleClick=${onDoubleClick}></path>`);
-      }
-
-      if (styleName === "chain" || styleName === "droplets") {
-        elements.push(html`<path key=${keyPrefix + "-carrier"} className=${animated ? "relationship-line relationship-line-carrier animated" : "relationship-line relationship-line-carrier"} d=${route.d} stroke=${color} strokeWidth=${lineWidth} strokeOpacity="0" opacity=${opacity} markerEnd=${markerEnd} markerStart=${markerStart} fill="none"></path>`);
-        var arcTable = relationshipRouteArcTable(route, styleName === "chain" ? 38 : 34);
-        var step = relationshipPatternStep(styleName, lineWidth);
-        var inset = Math.max(2, lineWidth * 1.25);
-        var travel = Math.max(0, arcTable.total - inset * 2);
-        var count = step > 0 ? Math.max(1, Math.floor(travel / step)) : 0;
-        for (var i = 0; i <= count; i += 1) {
-          var distance = inset + i * step;
-          var sample = relationshipRouteSampleAtDistance(route, arcTable, distance);
-          var tangent = sample.tangent || { x: 1, y: 0 };
-          var angle = Math.atan2(tangent.y || 0, tangent.x || 0) * 180 / Math.PI;
-          var rotate = styleName === "droplets" ? angle + 90 : angle;
-          var shape = relationshipPatternShape(styleName, i, color, lineWidth, opacity, animated);
-          if (!shape) {
-            continue;
+      function onTypeChange(typeId) {
+        var type = typesForCategory.find(function (t) { return t.id === typeId; });
+        setRelationshipEditor(function (prev) {
+          if (!prev) {
+            return prev;
           }
-          elements.push(html`<g key=${keyPrefix + "-pattern-" + i} className=${animated ? "relationship-pattern relationship-pattern-animated" : "relationship-pattern"} transform=${"translate(" + sample.point.x + " " + sample.point.y + ") rotate(" + rotate + ")"}>${shape}</g>`);
-        }
-      } else {
-        elements.push(html`<path key=${keyPrefix + "-stroke"} className=${animated ? "relationship-line animated" : "relationship-line"} d=${route.d} stroke=${color} strokeWidth=${lineWidth} strokeDasharray=${relationshipDashArray(styleName)} opacity=${opacity} markerEnd=${markerEnd} markerStart=${markerStart} fill="none"></path>`);
+          return Object.assign({}, prev, { typeId: typeId, label: type ? type.label : prev.label });
+        });
       }
 
-      return elements;
-    }
+      return html`<div className="character-view">
+        ${panelHeader(relationshipEditor.isNew ? "New Relationship" : "Edit Relationship")}
+        <div className="panel-body">
+          <div className="card">
+            <p className="hint">${fromCharacter ? fromCharacter.name : "Unknown"} → ${toCharacter ? toCharacter.name : "Unknown"}</p>
 
-    function relationshipsPanel() {
-      return html`${panelHeader("Relationship Manager")}
-      <div className="panel-body relationship-manager-body">
-        <div className="relationship-manager-scroll">
-        <div className="tag-group-create-root relationship-category-create-root">
-          <button onClick=${openRelationshipCategoryCreate}>+ New Category</button>
-          <div className=${"tag-inline-editor-shell" + (relationshipCategoryCreate.open ? " expanded" : "") }>
-            <div className="tag-inline-editor-grid">
-              <label>Category Name</label>
-              <input value=${relationshipCategoryCreate.name} onInput=${function (event) { setRelationshipCategoryCreate({ open: true, name: event.target.value, color: relationshipCategoryCreate.color }); }} placeholder="Political Relations" />
-              ${ColorField({
-                label: "Colour",
-                fieldName: "Category Colour",
-                value: relationshipCategoryCreate.color,
-                fallback: "#d10d40",
-                onChange: function (nextColor) { setRelationshipCategoryCreate({ open: true, name: relationshipCategoryCreate.name, color: nextColor }); }
+            <label>Category</label>
+            <select value=${relationshipEditor.categoryId} onChange=${function (e) { onCategoryChange(e.target.value); }}>
+              ${categories.map(function (category) {
+                return html`<option key=${"rel-cat-" + category.id} value=${category.id}>${category.name}</option>`;
               })}
-              <div className="tag-inline-editor-actions">
-                <button type="button" onClick=${cancelRelationshipCategoryCreate}>Cancel</button>
-                <button type="button" onClick=${saveRelationshipCategoryCreate}>Add Category</button>
-              </div>
+            </select>
+
+            <label>Type</label>
+            <select value=${relationshipEditor.typeId} onChange=${function (e) { onTypeChange(e.target.value); }}>
+              ${typesForCategory.map(function (typeItem) {
+                return html`<option key=${"rel-type-" + typeItem.id} value=${typeItem.id}>${typeItem.name}</option>`;
+              })}
+            </select>
+
+            <label>Label</label>
+            <input type="text" value=${relationshipEditor.label} onInput=${function (e) { updateField("label", e.target.value); }} placeholder="Displayed on the map" />
+
+            <label>Description</label>
+            <textarea rows="3" value=${relationshipEditor.description} onInput=${function (e) { updateField("description", e.target.value); }} placeholder="Shared description"></textarea>
+
+            <label>GM Notes</label>
+            <textarea rows="3" value=${relationshipEditor.gmNotes} onInput=${function (e) { updateField("gmNotes", e.target.value); }} placeholder="Storyteller-only notes"></textarea>
+
+            <div className="zone-editor-actions">
+              <button onClick=${saveRelationshipEditor}>Save</button>
+              <button onClick=${closeRelationshipEditor}>Cancel</button>
+              ${!relationshipEditor.isNew ? html`<button className="destructive" onClick=${deleteRelationshipEditor}>Delete Relationship</button>` : null}
             </div>
           </div>
-        </div>
-
-        ${data.relationshipCategories.map(function (category) {
-          var isExpanded = relationshipCategoryExpanded[category.id] !== false;
-          var typeCount = (category.types || []).length;
-          var typeDraft = makeRelationshipTypeDraft(relationshipTypeDraftsByCategory[category.id] || { open: false, color: category.color });
-          var editingCategory = relationshipCategoryEdit.categoryId === category.id;
-          return html`<section className="tag-group-shell relationship-category-shell" key=${category.id}>
-            <header className="tag-group-header relationship-category-header">
-              <button className="tag-group-toggle" onClick=${function () { toggleRelationshipCategory(category.id); }} aria-expanded=${String(isExpanded)}>
-                <span className="tag-group-caret">${isExpanded ? "▼" : "▶"}</span>
-                <span className="relationship-category-chip" style=${{ backgroundColor: category.color }}></span>
-                <strong>${category.name}</strong>
-              </button>
-              <div className="tag-group-actions">
-                <span className="hint">${typeCount} types</span>
-                ${IconButton({ onClick: function () { openRelationshipCategoryEdit(category); }, ariaLabel: "Edit category", icon: "✎", className: "icon-button-24 tag-icon-button" })}
-                ${IconButton({ onClick: function () { deleteRelationshipCategory(category.id); }, ariaLabel: "Delete category", icon: "✕", className: "icon-button-24 tag-icon-button" })}
-              </div>
-            </header>
-
-            <div className=${"tag-group-content" + (isExpanded ? " expanded" : "") }>
-              <div className="tag-group-content-inner">
-                <div className=${"tag-inline-editor-shell" + (editingCategory ? " expanded" : "") }>
-                  <div className="tag-inline-editor-grid">
-                    <label>Category Name</label>
-                    <input value=${editingCategory ? relationshipCategoryEdit.name : ""} onInput=${function (event) { setRelationshipCategoryEdit({ categoryId: category.id, name: event.target.value, color: relationshipCategoryEdit.color }); }} placeholder="Category name" />
-                    ${ColorField({
-                      label: "Colour",
-                      fieldName: "Category Colour",
-                      value: editingCategory ? relationshipCategoryEdit.color : category.color,
-                      fallback: "#d10d40",
-                      onChange: function (nextColor) {
-                        setRelationshipCategoryEdit({
-                          categoryId: category.id,
-                          name: editingCategory ? relationshipCategoryEdit.name : category.name,
-                          color: nextColor
-                        });
-                      }
-                    })}
-                    <div className="tag-inline-editor-actions">
-                      <button type="button" onClick=${cancelRelationshipCategoryEdit}>Cancel</button>
-                      <button type="button" onClick=${saveRelationshipCategoryEdit}>Save Category</button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="relationship-type-list">
-                  ${(category.types || []).map(function (typeItem) {
-                    var miniRoute = relationshipRouteSpec({ x: 2, y: 5 }, { x: 94, y: 5 }, "right", "left", "straight");
-                    return html`<article className="tag-row relationship-type-row" key=${typeItem.id}>
-                      <div className="tag-row-main">
-                        <span className="relationship-category-chip" style=${{ backgroundColor: typeItem.color }}></span>
-                        <span className="tag-row-name">${typeItem.name}</span>
-                        <svg viewBox="0 0 96 10" className="relationship-type-mini-preview" aria-hidden="true">
-                          <defs key=${"type-mini-defs-" + typeItem.id}><marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path></marker></defs>
-                          ${renderRelationshipStroke({
-                            route: miniRoute,
-                            style: typeItem.style,
-                            color: typeItem.color,
-                            width: Math.max(1, typeItem.width),
-                            opacity: 1,
-                            animated: Boolean(typeItem.animated),
-                            markerEnd: typeItem.arrow ? "url(#arrowHead)" : null,
-                            includeHitArea: false,
-                            keyPrefix: "type-preview-mini-" + typeItem.id
-                          })}
-                        </svg>
-                      </div>
-                      <div className="tag-row-actions">
-                        ${IconButton({ onClick: function () { openRelationshipTypeEdit(category.id, typeItem); }, ariaLabel: "Edit " + typeItem.name, icon: "✎", className: "icon-button-24 tag-icon-button" })}
-                        ${IconButton({ onClick: function () { deleteRelationshipType(category, typeItem); }, ariaLabel: "Delete " + typeItem.name, icon: "✕", className: "icon-button-24 tag-icon-button" })}
-                      </div>
-                    </article>`;
-                  })}
-                </div>
-
-                <button className="tag-add-button" onClick=${function () { openRelationshipTypeCreate(category.id, category.color); }}>+ Add Type</button>
-
-                <div className=${"tag-inline-editor-shell" + (typeDraft.open ? " expanded" : "") }>
-                  <div className="tag-inline-editor-grid relationship-type-editor-grid">
-                    <label>Type Name</label>
-                    <input value=${typeDraft.name} onInput=${function (event) { updateRelationshipTypeDraft(category.id, "name", event.target.value); }} placeholder="Sire" />
-                    <label>Display Label</label>
-                    <input value=${typeDraft.label} onInput=${function (event) { updateRelationshipTypeDraft(category.id, "label", event.target.value); }} placeholder="If blank, Type Name is used" />
-
-                    ${ColorField({
-                      label: "Colour",
-                      fieldName: "Type Colour",
-                      value: typeDraft.color,
-                      fallback: "#d10d40",
-                      onChange: function (nextColor) { updateRelationshipTypeDraft(category.id, "color", nextColor); }
-                    })}
-
-                    <label>Line Style</label>
-                    <select value=${typeDraft.style} onChange=${function (event) { updateRelationshipTypeDraft(category.id, "style", event.target.value); }}>
-                      <option value="solid">Solid</option>
-                      <option value="dashed">Dashed</option>
-                      <option value="dotted">Dotted</option>
-                      <option value="chain">Chain</option>
-                      <option value="droplets">Droplets</option>
-                    </select>
-
-                    <label>Width</label>
-                    <input type="number" min="1" max="8" step="1" value=${typeDraft.width} onInput=${function (event) { updateRelationshipTypeDraft(category.id, "width", Number(event.target.value)); }} />
-
-                    <label className="zone-toggle"><input type="checkbox" checked=${Boolean(typeDraft.animated)} onChange=${function (event) { updateRelationshipTypeDraft(category.id, "animated", event.target.checked); }} /> Animated</label>
-                    <label className="zone-toggle"><input type="checkbox" checked=${Boolean(typeDraft.arrow)} onChange=${function (event) { updateRelationshipTypeDraft(category.id, "arrow", event.target.checked); }} /> Arrow</label>
-
-                    <label>Preview</label>
-                    <svg viewBox="0 0 280 20" className="relationship-type-editor-preview" aria-hidden="true">
-                      <defs key=${"type-editor-defs"}><marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path></marker></defs>
-                      ${renderRelationshipStroke({
-                        route: relationshipRouteSpec({ x: 8, y: 10 }, { x: 272, y: 10 }, "right", "left", "straight"),
-                        style: typeDraft.style,
-                        color: typeDraft.color,
-                        width: Math.max(1, Number(typeDraft.width) || 2),
-                        opacity: 1,
-                        animated: Boolean(typeDraft.animated),
-                        markerEnd: typeDraft.arrow ? "url(#arrowHead)" : null,
-                        includeHitArea: false,
-                        keyPrefix: "type-preview-editor-" + category.id
-                      })}
-                    </svg>
-
-                    <div className="tag-inline-editor-actions">
-                      <button type="button" onClick=${function () { cancelRelationshipTypeDraft(category.id); }}>Cancel</button>
-                      <button type="button" onClick=${function () { saveRelationshipTypeDraft(category); }}>${typeDraft.mode === "edit" ? "Save Type" : "Add Type"}</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>`;
-        })}
-        </div>
-
-        <footer className="relationship-manager-footer">
-          <div className="relationship-reset-card">
-            <h4>Reset Relationship Defaults</h4>
-            <p>Restore the built-in Campaign Atlas relationship categories and relationship types.</p>
-            <button type="button" className="destructive relationship-reset-button" onClick=${function () { setRelationshipResetDialogOpen(true); }}>
-              <span className="relationship-reset-button-icon" aria-hidden="true">${Icon({ icon: CAMPAIGN_ATLAS_ICON_ASSETS.delete, size: 14, className: "relationship-reset-icon-glyph" })}</span>
-              <span>Reset to Defaults</span>
-            </button>
-          </div>
-        </footer>
-      </div>`;
-    }
-
-    function tagsPanel() {
-      return html`${panelHeader("Tag Manager")}
-      <div className="panel-body tag-manager-body">
-        <div className="tag-group-create-root">
-          <button onClick=${openTagGroupCreate}>+ New Tag Group</button>
-          <div className=${"tag-inline-editor-shell" + (tagGroupCreate.open ? " expanded" : "") }>
-            <div className="tag-inline-editor-grid">
-              <label>Group Name</label>
-              <input value=${tagGroupCreate.name} onInput=${function (e) { setTagGroupCreate({ open: true, name: e.target.value }); }} placeholder="Politics" />
-              <div className="tag-inline-editor-actions">
-                <button type="button" onClick=${cancelTagGroupCreate}>Cancel</button>
-                <button type="button" onClick=${saveTagGroupCreate}>Add Group</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        ${data.tagGroups.map(function (group) {
-          var isExpanded = tagGroupExpanded[group.id] !== false;
-          var createTagDraft = tagDraftsByGroup[group.id] || { open: false, name: "", color: "#d10d40" };
-          var groupTagCount = (group.tags || []).length;
-          var isRenaming = tagGroupRenameDraft.groupId === group.id;
-
-          return html`<section className="tag-group-shell" key=${group.id}>
-            <header className="tag-group-header">
-              <button className="tag-group-toggle" onClick=${function () { toggleTagGroup(group.id); }} aria-expanded=${String(isExpanded)}>
-                <span className="tag-group-caret">${isExpanded ? "▼" : "▶"}</span>
-                <strong>${group.name}</strong>
-              </button>
-              <div className="tag-group-actions">
-                <span className="hint">${groupTagCount} tags</span>
-                ${IconButton({ onClick: function () { openTagGroupRename(group); }, ariaLabel: "Rename tag group", icon: "✎", className: "icon-button-24 tag-icon-button" })}
-                ${IconButton({ onClick: function () { deleteTagGroup(group.id); }, ariaLabel: "Delete tag group", icon: "✕", className: "icon-button-24 tag-icon-button" })}
-              </div>
-            </header>
-
-            <div className=${"tag-group-content" + (isExpanded ? " expanded" : "") }>
-              <div className="tag-group-content-inner">
-                <div className=${"tag-inline-editor-shell" + (isRenaming ? " expanded" : "") }>
-                  <div className="tag-inline-editor-grid">
-                    <label>Group Name</label>
-                    <input value=${isRenaming ? tagGroupRenameDraft.name : ""} onInput=${function (e) { setTagGroupRenameDraft({ groupId: group.id, name: e.target.value }); }} placeholder="Group name" />
-                    <div className="tag-inline-editor-actions">
-                      <button type="button" onClick=${cancelTagGroupRename}>Cancel</button>
-                      <button type="button" onClick=${saveTagGroupRename}>Save Group</button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="tag-row-list">
-                  ${(group.tags || []).map(function (tag) {
-                    var usageCount = countTagUsage(tag.name);
-                    return html`<article className="tag-row" key=${tag.id}>
-                      <div className="tag-row-main">
-                        <div className="tag-color-cell">
-                          <span className="tag-color-square" style=${{ backgroundColor: safeHexColor(tag.color, "#d10d40") }} aria-hidden="true"></span>
-                          <input className="tag-color-input tag-row-color-input" type="color" value=${safeHexColor(tag.color, "#d10d40")} onInput=${function (event) { updateTagColor(group.id, tag.id, event.target.value); if (tagEditDialog.open && tagEditDialog.groupId === group.id && tagEditDialog.tagId === tag.id) { updateTagEditField("color", event.target.value); } }} aria-label=${"Tag color for " + tag.name} />
-                        </div>
-                        <span className="tag-row-name">${tag.name}</span>
-                      </div>
-                      <div className="tag-row-actions">
-                        <span className="tag-row-usage">${formatTagUsageCount(usageCount)}</span>
-                        ${IconButton({ onClick: function () { openTagEditDialog(group.id, tag.id); }, ariaLabel: "Edit " + tag.name, icon: "✎", className: "icon-button-24 tag-icon-button" })}
-                        ${IconButton({ onClick: function () { deleteTag(group.id, tag.id); }, ariaLabel: "Delete " + tag.name, icon: "✕", className: "icon-button-24 tag-icon-button" })}
-                      </div>
-                    </article>`;
-                  })}
-                </div>
-
-                <button className="tag-add-button" onClick=${function () { openTagCreate(group.id); }}>+ Add Tag</button>
-
-                <div className=${"tag-inline-editor-shell" + (createTagDraft.open ? " expanded" : "") }>
-                  <div className="tag-inline-editor-grid">
-                    <label>Tag Name</label>
-                    <input value=${createTagDraft.name} onInput=${function (event) { updateTagCreateDraft(group.id, "name", event.target.value); }} placeholder="Sheriff" />
-                    ${ColorField({
-                      label: "Colour",
-                      fieldName: "Colour",
-                      value: createTagDraft.color,
-                      fallback: "#d10d40",
-                      onChange: function (nextColor) {
-                        updateTagCreateDraft(group.id, "color", nextColor);
-                      }
-                    })}
-                    <div className="tag-inline-editor-actions">
-                      <button type="button" onClick=${function () { closeTagCreate(group.id); }}>Cancel</button>
-                      <button type="button" onClick=${function () { saveTagCreate(group.id); }}>Add Tag</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>`;
-        })}
-      </div>`;
-    }
-
-    function renderTagEditDialog() {
-      if (!tagEditDialog.open) {
-        return null;
-      }
-
-      var usageCount = countTagUsage(tagEditDialog.originalName || tagEditDialog.name);
-
-      return html`<div className="tag-edit-dialog-backdrop" onClick=${closeTagEditDialog}>
-        <div className="tag-edit-dialog" onClick=${function (event) { event.stopPropagation(); }}>
-          <header className="tag-edit-dialog-header">
-            <h3>Edit Tag</h3>
-          </header>
-          <div className="tag-edit-dialog-body">
-            <label>Tag Name</label>
-            <input value=${tagEditDialog.name} onInput=${function (event) { updateTagEditField("name", event.target.value); }} placeholder="Tag name" />
-
-            ${ColorField({
-              label: "Colour Picker",
-              fieldName: "Colour Picker",
-              value: tagEditDialog.color,
-              fallback: "#d10d40",
-              onChange: function (nextColor) {
-                updateTagEditField("color", nextColor);
-                updateTagColor(tagEditDialog.groupId, tagEditDialog.tagId, nextColor);
-              }
-            })}
-
-            <label>Icon (future use)</label>
-            <input value=${tagEditDialog.icon} onInput=${function (event) { updateTagEditField("icon", event.target.value); }} placeholder="e.g. ♛" />
-
-            <label>Description (future use)</label>
-            <textarea rows="3" value=${tagEditDialog.description} onInput=${function (event) { updateTagEditField("description", event.target.value); }} placeholder="Optional description"></textarea>
-
-            <label>Usage Count</label>
-            <p className="tag-edit-usage">${usageCount} ${usageCount === 1 ? "character" : "characters"}</p>
-          </div>
-          <footer className="tag-edit-dialog-actions">
-            <button type="button" onClick=${saveTagEditDialog}>Save</button>
-            <button type="button" onClick=${closeTagEditDialog}>Cancel</button>
-            <button type="button" className="destructive" onClick=${function () { deleteTag(tagEditDialog.groupId, tagEditDialog.tagId); }}>Delete Tag</button>
-          </footer>
-        </div>
-      </div>`;
-    }
-
-    function renderRelationshipResetDialog() {
-      if (!relationshipResetDialogOpen) {
-        return null;
-      }
-      return html`<div className="tag-edit-dialog-backdrop" onClick=${function () { setRelationshipResetDialogOpen(false); }}>
-        <div className="tag-edit-dialog relationship-reset-dialog" onClick=${function (event) { event.stopPropagation(); }}>
-          <header className="tag-edit-dialog-header">
-            <h3>Reset Relationship Defaults?</h3>
-          </header>
-          <div className="tag-edit-dialog-body">
-            <p>This will restore the default Campaign Atlas relationship categories and relationship types.</p>
-            <p>Any custom categories or relationship types you have created will be permanently removed.</p>
-            <p>Existing relationships between characters will NOT be deleted, but any relationship using a removed custom type will be reassigned to its closest matching default type where possible. If no suitable default exists, it will be marked as "Custom Relationship" so no data is lost.</p>
-          </div>
-          <footer className="tag-edit-dialog-actions relationship-reset-dialog-actions">
-            <button type="button" onClick=${function () { setRelationshipResetDialogOpen(false); }}>Cancel</button>
-            <button type="button" className="destructive" onClick=${resetRelationshipDefaults}>Reset to Defaults</button>
-          </footer>
         </div>
       </div>`;
     }
@@ -5664,14 +3362,30 @@
     }
 
     if (workspaceMode === "profile") {
-      return html`<div className="map-workspace-shell profile-mode" onClick=${function () { setContextMenu(null); }}>
+      return html`<div className="map-workspace-shell profile-mode">
         ${characterProfileView()}
-        <input ref=${profilePortraitInputRef} type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/gif" hidden onChange=${onProfilePortraitSelected} />
-        ${renderPortraitWorkflowModal()}
       </div>`;
     }
 
-    return html`<div className="map-workspace-shell" onClick=${function () { setContextMenu(null); }}>
+    function zoomIn() {
+      if (reactFlowInstance) {
+        reactFlowInstance.zoomIn();
+      }
+    }
+
+    function zoomOut() {
+      if (reactFlowInstance) {
+        reactFlowInstance.zoomOut();
+      }
+    }
+
+    function onFlowMove(event, viewport) {
+      setZoomPercent(Math.round(viewport.zoom * 100));
+    }
+
+    var selectedNodeCount = flowNodes.filter(function (node) { return node.selected; }).length;
+
+    return html`<div className="map-workspace-shell">
       <section className=${"workspace" + (activePanel ? " panel-open" : "") }>
         <aside className="workspace-rail-slot" aria-label="Relationship map tools">
           <nav className="workspace-tool-rail">
@@ -5686,151 +3400,59 @@
 
         <div className="canvas-wrap">
           <div className="canvas-toolbar">
-            <button onClick=${function () { setView({ x: view.x, y: view.y, scale: Math.min(2.4, view.scale * 1.1) }); }}>Zoom In</button>
-            <button onClick=${function () { setView({ x: view.x, y: view.y, scale: Math.max(0.2, view.scale * 0.9) }); }}>Zoom Out</button>
-            <span className="badge">${Math.round(view.scale * 100)}%</span>
-            <span className="badge">Selected ${selected.length}</span>
-            <button onClick=${undo} disabled=${undoStack.length === 0}>Undo</button>
-            <button onClick=${redo} disabled=${redoStack.length === 0}>Redo</button>
-            ${drawingZone ? html`<${React.Fragment}>
-              <span className="badge">Drawing Zone: drag on canvas</span>
-              <button onClick=${cancelZoneDraft}>Cancel Zone</button>
-            </${React.Fragment}>` : null}
+            <button onClick=${openAddCharacterModal}>Add Character</button>
+            <button onClick=${zoomIn}>Zoom In</button>
+            <button onClick=${zoomOut}>Zoom Out</button>
+            <span className="badge">${zoomPercent}%</span>
+            <span className="badge">Selected ${selectedNodeCount}</span>
+            <button disabled=${true} title="Undo is not available in this rendering engine">Undo</button>
+            <button disabled=${true} title="Redo is not available in this rendering engine">Redo</button>
           </div>
 
-          <div className=${"canvas-viewport" + (isPanning ? " panning" : "") + (drawingZone ? " drawing-zone" : "")} ref=${viewportRef} onMouseDown=${onCanvasMouseDown} onMouseMove=${onCanvasMouseMove} onMouseUp=${onCanvasMouseUp} onMouseLeave=${onCanvasMouseUp} onWheel=${onWheel} onContextMenu=${function (e) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, type: "canvas" }); }}>
-            <div className="canvas-surface" style=${{ transform: "translate(" + view.x + "px," + view.y + "px) scale(" + view.scale + ")" }}>
-              <div className="zone-layer">
-                ${data.zones.filter(function (zone) { return !zone.hidden; }).map(function (zone) {
-                  var current = zoneWithDefaults(zone);
-                  if (zoneEditDraft && zoneEditDraft.id === current.id) {
-                    current = zoneWithDefaults(Object.assign({}, current, zoneEditDraft));
-                  }
-                  if (zonePreview && zonePreview.id === current.id) {
-                    current = Object.assign({}, current, {
-                      x: zonePreview.x,
-                      y: zonePreview.y,
-                      width: zonePreview.width,
-                      height: zonePreview.height
-                    });
-                  }
-                  var isSelected = selectedZoneId === current.id;
-                  return html`<div key=${current.id} className=${"zone" + (isSelected ? " selected" : "")} style=${{ left: current.x, top: current.y, width: current.width, height: current.height, borderWidth: current.borderThickness, borderStyle: current.borderStyle, borderColor: safeHexColor(current.borderColor || current.color, "#d10d40"), backgroundColor: zoneFillColor(current.color, current.opacity), borderRadius: current.cornerRadius || 12, zIndex: Number(current.layer) || 0 }} onMouseDown=${function (event) { onZoneMouseDown(event, current); }} onDoubleClick=${function (event) { event.stopPropagation(); selectZone(current.id, true); }}>
-                    <span className="zone-title">${current.name}</span>
-                    ${isSelected ? html`<span className="zone-selection-outline"></span>` : null}
-                    ${isSelected ? renderZoneResizeHandles(current) : null}
-                  </div>`;
-                })}
-                ${zoneDraft ? html`<div className="zone zone-drawing-preview" style=${{ left: Math.min(zoneDraft.x, zoneDraft.x + zoneDraft.width), top: Math.min(zoneDraft.y, zoneDraft.y + zoneDraft.height), width: Math.abs(zoneDraft.width), height: Math.abs(zoneDraft.height) }}><span className="zone-title">Drawing Zone</span></div>` : null}
-              </div>
-              <svg className="link-layer" viewBox="0 0 2000 1400" preserveAspectRatio="none">
-                <defs key="map-arrow-defs"><marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path></marker></defs>
-                ${data.relationships.filter(function (r) { return r.visible; }).map(function (r) {
-                  var from = data.characters.find(function (c) { return c.id === r.from; });
-                  var to = data.characters.find(function (c) { return c.id === r.to; });
-                  if (!from || !to) {
-                    return null;
-                  }
-                  var resolvedAnchors = relationshipResolvedAnchors(from, to);
-                  var fromPoint = relationshipAnchorPoint(from, resolvedAnchors.sourceAnchor);
-                  var toPoint = relationshipAnchorPoint(to, resolvedAnchors.destinationAnchor);
-                  var route = relationshipRouteSpec(fromPoint, toPoint, resolvedAnchors.sourceAnchor, resolvedAnchors.destinationAnchor, r.routingMode || "auto");
-                  var mx = route.labelPoint.x;
-                  var my = route.labelPoint.y;
-                  var markerEnd = r.arrow === "end" || r.arrow === "both" ? "url(#arrowHead)" : null;
-                  var markerStart = r.arrow === "start" || r.arrow === "both" ? "url(#arrowHead)" : null;
-                  var lineWidth = Math.max(1, Number(r.thickness) || 2);
-                  return html`<g key=${r.id}>
-                    ${renderRelationshipStroke({
-                      route: route,
-                      style: r.style,
-                      color: r.color,
-                      width: lineWidth,
-                      opacity: Number(r.opacity),
-                      animated: Boolean(r.animated),
-                      markerEnd: markerEnd,
-                      markerStart: markerStart,
-                      includeHitArea: true,
-                      keyPrefix: "relationship-" + r.id,
-                      onDoubleClick: function (event) { event.stopPropagation(); openRelationshipEditorFor(Object.assign({}, r), false); }
-                    })}
-                    <rect x=${mx - 24} y=${my - 11} width="48" height="18" rx="5" fill="rgba(10,10,15,0.9)" stroke="rgba(255,255,255,0.15)"></rect>
-                    <text x=${mx} y=${my + 2} fill=${r.labelColor || "#ffffff"} fontSize="11" textAnchor="middle">${r.displayLabel || r.type}</text>
-                  </g>`;
-                })}
-                ${relationshipPreview ? html`<line className="relationship-preview-line" x1=${relationshipPreview.x1} y1=${relationshipPreview.y1} x2=${relationshipPreview.x2} y2=${relationshipPreview.y2}></line>` : null}
-              </svg>
-
-              <div className="node-layer">
-                ${characterList().filter(function (c) { return !c.hidden; }).map(function (c) {
-                  var geometry = relationshipNodeGeometry(c);
-                  var nodeSize = geometry.nodeSize;
-                  var outlineColor = c.outlineColor || "#d10d40";
-                  var shape = c.nodeShape === "rounded" ? "square" : (c.nodeShape || "circle");
-                  var radius = shape === "circle" ? "50%" : "8px";
-                  var clip = shape === "hexagon" ? "polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0 50%)" : "none";
-                  var portraitDiameter = geometry.shellDiameter;
-                  var nodeBadges = characterNodeBadges(c, portraitDiameter);
-                  var isSelectedNode = selected.indexOf(c.id) >= 0;
-                  var isDropCharacter = relationshipDropTarget && relationshipDropTarget.characterId === c.id;
-                  var layerStateClass = isSelectedNode
-                    ? " active"
-                    : (relationshipPreview ? " destination-ready" : "");
-                  if (isDropCharacter) {
-                    layerStateClass += " drop-character";
-                  }
-                  return html`<div key=${c.id} className=${"node" + (isSelectedNode ? " selected" : "")} style=${{ left: c.x, top: c.y, width: 130 * nodeSize }} onPointerDown=${function (e) { onNodePointerDown(e, c); }} onLostPointerCapture=${onNodeLostPointerCapture} onMouseDown=${function (e) { e.stopPropagation(); }} onClick=${function (e) { e.stopPropagation(); setFocusedId(c.id); if (!e.shiftKey) setSelected([c.id]); }} onDoubleClick=${function (e) { e.stopPropagation(); setFocusedId(c.id); setActivePanel("characters"); }} onContextMenu=${function (e) { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, type: "node", id: c.id }); }}>
-                    <div className="node-portrait-shell">
-                      <div className="node-portrait-frame" style=${{ width: portraitDiameter, height: portraitDiameter, borderColor: outlineColor, borderRadius: radius, clipPath: clip }}>
-                        <img className="node-portrait media" src=${portraitState(c).src} alt=${c.name} style=${portraitMediaStyle(c)} />
-                      </div>
-                      ${renderNodeBadgeAnchors(nodeBadges)}
-                      <div className=${"relationship-handle-layer" + layerStateClass }>
-                        ${["top", "right", "bottom", "left"].map(function (anchor) {
-                          var localPoint = relationshipConnectionNodeLocalPoint(geometry, anchor);
-                          var isDropAnchor = Boolean(isDropCharacter && relationshipDropTarget && relationshipDropTarget.anchor === anchor);
-                          return html`<span key=${anchor} className=${"relationship-handle relationship-handle-" + anchor + (isDropAnchor ? " drop-target" : "")} style=${{ left: localPoint.x, top: localPoint.y }} data-relationship-anchor=${anchor} data-character-id=${c.id} onPointerDown=${function (event) { beginRelationshipDrag(event, c, anchor); }}></span>`;
-                        })}
-                      </div>
-                    </div>
-                    <span>${c.name.toUpperCase()}</span>
-                  </div>`;
-                })}
-              </div>
-            </div>
+          <div className="canvas-viewport">
+            ${ReactFlowComponent ? html`<${ReactFlowComponent}
+              className=${isConnectingRelationship ? "rf-connecting" : ""}
+              nodes=${flowNodes}
+              edges=${flowEdges}
+              nodeTypes=${FLOW_NODE_TYPES}
+              edgeTypes=${FLOW_EDGE_TYPES}
+              onNodesChange=${onFlowNodesChange}
+              onEdgesChange=${onFlowEdgesChange}
+              onNodeDragStop=${onNodeDragStop}
+              onNodeClick=${onFlowNodeClick}
+              onNodeDoubleClick=${onFlowNodeDoubleClick}
+              onPaneClick=${onFlowPaneClick}
+              onConnect=${handleFlowConnect}
+              onConnectStart=${handleFlowConnectStart}
+              onConnectEnd=${handleFlowConnectEnd}
+              onEdgeClick=${onFlowEdgeClick}
+              onMove=${onFlowMove}
+              nodesConnectable=${true}
+              elementsSelectable=${true}
+              connectionMode=${ReactFlowConnectionMode.Loose}
+              deleteKeyCode=${null}
+              defaultViewport=${{ x: 80, y: 60, zoom: 0.58 }}
+              minZoom=${0.2}
+              maxZoom=${2.4}
+              proOptions=${{ hideAttribution: true }}
+            />` : html`<div className="card"><p className="hint">React Flow failed to load.</p></div>`}
           </div>
         </div>
 
         ${activePanel ? html`<aside className="right-panel">${renderPanel()}</aside>` : null}
       </section>
 
-      ${contextMenu ? html`<div className="context-menu" style=${{ left: contextMenu.x, top: contextMenu.y }} onClick=${function (e) { e.stopPropagation(); }}>
-        ${contextMenu.type === "node" ? html`<div className="context-menu-group">
-          <button onClick=${function () { setFocusedId(contextMenu.id); setActivePanel("characters"); setContextMenu(null); }}>Edit Character</button>
-          <button onClick=${function () { setSelected(selected.concat([contextMenu.id]).filter(function (v, i, a) { return a.indexOf(v) === i; })); setContextMenu(null); }}>Multi-select add</button>
-          <button onClick=${function () { commit(function (next) { next.characters = next.characters.filter(function (c) { return c.id !== contextMenu.id; }); next.relationships = next.relationships.filter(function (r) { return r.from !== contextMenu.id && r.to !== contextMenu.id; }); }); setContextMenu(null); }}>Delete Character</button>
-        </div>` : html`<div className="context-menu-group">
-          <button onClick=${function () { createCharacter(); setContextMenu(null); }}>New Character</button>
-          <button onClick=${function () { enterZoneDrawingMode(); setContextMenu(null); }}>Draw Zone</button>
-          <button onClick=${function () { setView({ x: 80, y: 60, scale: 0.58 }); setContextMenu(null); }}>Reset View</button>
-        </div>`}
-      </div>` : null}
-
-      ${renderTagEditDialog()}
-      ${renderRelationshipResetDialog()}
-
-      <input ref=${profilePortraitInputRef} type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/gif" hidden onChange=${onProfilePortraitSelected} />
-      ${renderPortraitWorkflowModal()}
+      ${renderAddCharacterModal()}
     </div>`;
   }
 
   loadInitialState()
     .then(function (seedState) {
-      ReactDOM.createRoot(document.getElementById("app")).render(html`<${App} initialData=${seedState} />`);
+      ReactDOM.createRoot(document.getElementById("app")).render(html`<${ReactFlowProvider}><${App} initialData=${seedState} /></${ReactFlowProvider}>`);
     })
     .catch(function (error) {
       console.warn("Failed to bootstrap Campaign Atlas state.", error);
-      ReactDOM.createRoot(document.getElementById("app")).render(html`<${App} initialData=${initialState()} />`);
+      ReactDOM.createRoot(document.getElementById("app")).render(html`<${ReactFlowProvider}><${App} initialData=${initialState()} /></${ReactFlowProvider}>`);
     });
 })();
 

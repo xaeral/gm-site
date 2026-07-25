@@ -11,6 +11,7 @@
 
   var notebook = window.ChronicleNotebook;
   var shared = window.CampaignAtlasCharactersShared || {};
+  var characterService = window.CharacterService || null;
 
   if (!notebook) {
     var target = document.getElementById("gmNotebookApp");
@@ -219,7 +220,7 @@
       var cancelled = false;
       Promise.all([
         notebook.readNotebookState(),
-        shared.readCampaignAtlasState ? shared.readCampaignAtlasState() : Promise.resolve({ characters: [] }),
+        characterService ? characterService.getAll() : Promise.resolve([]),
         shared.readLocationRecords ? shared.readLocationRecords() : Promise.resolve([])
       ]).then(function (results) {
         if (cancelled) {
@@ -227,12 +228,12 @@
         }
 
         var notebookState = results[0] || { folders: [], notes: [] };
-        var characterState = results[1] || { characters: [] };
+        var characterList = results[1] || [];
         var locationState = results[2] || [];
         var notes = notebookState.notes || [];
 
         setState({ folders: notebookState.folders || [], notes: notes });
-        setCharacters(Array.isArray(characterState.characters) ? characterState.characters : []);
+        setCharacters(Array.isArray(characterList) ? characterList : []);
         setLocations(Array.isArray(locationState) ? locationState : []);
         setStatus(notes.length ? "Notebook ready." : "Notebook ready. Create your first note.");
 
@@ -699,7 +700,6 @@
                 }}
               >
                 <button type="button" className="notebook-folder-header" onClick=${function () { toggleFolder(folder); }}>
-                  <span className="notebook-folder-caret">${folder.collapsed ? ">" : "v"}</span>
                   <span className="notebook-folder-title">${folder.title}</span>
                   <span className="notebook-folder-count">${folderNotes.length}</span>
                 </button>

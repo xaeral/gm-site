@@ -10,7 +10,10 @@
   var html = htm.bind(React.createElement);
 
   var shared = window.CampaignAtlasCharactersShared || {};
-  if (!shared.readCampaignAtlasState || !shared.CharacterBiographyWorkspace || !shared.CharacterProfileWorkspace || !shared.CharacterProfilePortrait) {
+  var characterService = window.CharacterService;
+  var relationshipService = window.RelationshipService;
+  var mapLayoutService = window.MapLayoutService;
+  if (!characterService || !relationshipService || !shared.CharacterBiographyWorkspace || !shared.CharacterProfileWorkspace || !shared.CharacterProfilePortrait) {
     return;
   }
 
@@ -18,6 +21,24 @@
   var CharacterProfilePortrait = shared.CharacterProfilePortrait;
   var CHANNEL_NAME = "campaign-atlas-characters";
   var sourceId = "characters-page-" + Date.now() + "-" + Math.floor(Math.random() * 100000);
+
+  // Renders assets/Icons/delete.svg as a solid currentColor icon (matching
+  // the mask technique used for icons elsewhere in the app) so it stays
+  // visible against the dark UI and inherits the button's hover color.
+  var DELETE_ICON_MASK_STYLE = {
+    display: "inline-block",
+    width: "15px",
+    height: "15px",
+    backgroundColor: "currentColor",
+    WebkitMaskImage: "url('../assets/Icons/delete.svg')",
+    maskImage: "url('../assets/Icons/delete.svg')",
+    WebkitMaskRepeat: "no-repeat",
+    maskRepeat: "no-repeat",
+    WebkitMaskPosition: "center",
+    maskPosition: "center",
+    WebkitMaskSize: "contain",
+    maskSize: "contain"
+  };
 
   function normalizeString(value, fallback) {
     var next = String(value || "").trim();
@@ -49,6 +70,10 @@
     return selected.length + " Selected";
   }
 
+  function generateCharacterId() {
+    return "char-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+  }
+
   function initialSelectedCharacterId() {
     try {
       var params = new URLSearchParams(window.location.search || "");
@@ -70,6 +95,14 @@
     var _selectedId = useState(initialSelectedCharacterId());
     var selectedId = _selectedId[0];
     var setSelectedId = _selectedId[1];
+
+    // A brand-new character being created. Only exists in local state --
+    // and is never added to the Relationship Map -- until the Storyteller
+    // saves it, at which point it's persisted exclusively via
+    // CharacterService and appears in the Character List like any other.
+    var _draftNewCharacter = useState(null);
+    var draftNewCharacter = _draftNewCharacter[0];
+    var setDraftNewCharacter = _draftNewCharacter[1];
 
     var _search = useState("");
     var search = _search[0];
@@ -103,13 +136,13 @@
 
     useEffect(function () {
       var cancelled = false;
-      shared.readCampaignAtlasState()
-        .then(function (state) {
+      Promise.all([characterService.getAll(), relationshipService.getAll()])
+        .then(function (results) {
           if (cancelled) {
             return;
           }
-          var nextCharacters = Array.isArray(state.characters) ? state.characters : [];
-          var nextRelationships = Array.isArray(state.relationships) ? state.relationships : [];
+          var nextCharacters = Array.isArray(results[0]) ? results[0] : [];
+          var nextRelationships = Array.isArray(results[1]) ? results[1] : [];
           setCharacters(nextCharacters);
           setRelationships(nextRelationships);
           setSelectedId(function (current) {
@@ -486,7 +519,7 @@
       }
       saveTimerRef.current = window.setTimeout(function () {
         saveTimerRef.current = null;
-        shared.saveCharacterToCampaignAtlas(nextCharacter).catch(function () { return null; });
+        characterService.save(nextCharacter).catch(function () { return null; });
       }, 120);
 
       var channel = channelRef.current;
@@ -499,6 +532,14 @@
       }
     }
 
+    function togglePinned(entry) {
+      var nextCharacter = Object.assign({}, entry, { pinned: !entry.pinned });
+      setCharacters(function (prev) {
+        return prev.map(function (item) { return item.id === entry.id ? nextCharacter : item; });
+      });
+      persistCharacterUpdate(nextCharacter);
+    }
+
     function saveSelectedCharacter(updatedCharacter) {
       if (!selectedCharacter) {
         return;
@@ -508,20 +549,90 @@
           if (entry.id !== selectedCharacter.id) {
             return entry;
           }
+          // The Characters page is the canonical editor, including portraits
+          // -- whatever the workspace produced (name/clan/sect/status/bio/
+          // portrait/etc.) is persisted as-is.
           var candidate = Object.assign({}, shared.clone(updatedCharacter || {}));
-          // Relationship Map remains the portrait authority unless portrait editing is explicitly enabled here.
-          delete candidate.portrait;
-          delete candidate.portraitUploadSource;
-          delete candidate.portraitScale;
-          delete candidate.portraitOffsetX;
-          delete candidate.portraitOffsetY;
-          var nextCharacter = Object.assign({}, entry, candidate, {
-            portrait: shared.clone(entry.portrait)
-          });
+          var nextCharacter = Object.assign({}, entry, candidate);
           persistCharacterUpdate(nextCharacter);
           return nextCharacter;
         });
       });
+    }
+
+    function broadcastSnapshot(nextCharacters, nextRelationships) {
+      var channel = channelRef.current;
+      if (!channel) {
+        return;
+      }
+      channel.postMessage({
+        type: "characters-snapshot",
+        source: sourceId,
+        characters: nextCharacters.map(function (entry) { return shared.clone(entry); }),
+        relationships: nextRelationships.map(function (entry) { return shared.clone(entry); })
+      });
+    }
+
+    // Character creation. The Characters page is the only place a character
+    // record can be created -- the draft only exists in local state (never
+    // added to the Relationship Map) until explicitly saved, at which point
+    // it's persisted exclusively through CharacterService.
+    function startNewCharacter() {
+      setDraftNewCharacter({ id: generateCharacterId(), name: "" });
+      setSelectedId(null);
+    }
+
+    function cancelNewCharacter() {
+      setDraftNewCharacter(null);
+    }
+
+    function saveNewCharacter(newCharacterRecord) {
+      if (!draftNewCharacter) {
+        return;
+      }
+      var normalized = Object.assign({}, shared.clone(newCharacterRecord || {}), { id: draftNewCharacter.id });
+      normalized.name = normalizeString(normalized.name, "Unnamed Character");
+
+      var nextCharacters = characters.concat([normalized]);
+      setCharacters(nextCharacters);
+      setDraftNewCharacter(null);
+      setSelectedId(normalized.id);
+
+      characterService.save(normalized).catch(function () { return null; });
+      broadcastSnapshot(nextCharacters, relationships);
+    }
+
+    // Character deletion. Only the Characters page can delete a character
+    // record. Deleting cleans up every other module's references to it so
+    // nothing is left orphaned: the character itself (CharacterService),
+    // its Relationship Map layout entry (MapLayoutService), and any
+    // relationships that name it (RelationshipService).
+    function deleteCharacter(entry) {
+      if (!entry || !entry.id) {
+        return;
+      }
+      if (!window.confirm("Delete " + (entry.name || "this character") + "? This cannot be undone and will remove them from any relationships and the Relationship Map.")) {
+        return;
+      }
+
+      var characterId = entry.id;
+      var nextCharacters = characters.filter(function (item) { return item.id !== characterId; });
+      var nextRelationships = relationships.filter(function (rel) { return rel.from !== characterId && rel.to !== characterId; });
+
+      setCharacters(nextCharacters);
+      setRelationships(nextRelationships);
+      setSelectedId(function (current) { return current === characterId ? (nextCharacters[0] ? nextCharacters[0].id : null) : current; });
+      if (draftNewCharacter && draftNewCharacter.id === characterId) {
+        setDraftNewCharacter(null);
+      }
+
+      characterService.delete(characterId).catch(function () { return null; });
+      relationshipService.saveAll(nextRelationships).catch(function () { return null; });
+      if (mapLayoutService && mapLayoutService.deleteNodeLayout) {
+        mapLayoutService.deleteNodeLayout(characterId).catch(function () { return null; });
+      }
+
+      broadcastSnapshot(nextCharacters, nextRelationships);
     }
 
     return html`
@@ -530,6 +641,7 @@
           <label htmlFor="characterSearch">Search Characters</label>
           <div className="search-row">
             <input id="characterSearch" type="search" placeholder="Search by name, clan, sect..." autoComplete="off" value=${search} onInput=${function (event) { setSearch(event.target.value); }} />
+            <button type="button" className="location-add-button" title="New Character" aria-label="New Character" onClick=${startNewCharacter}>+</button>
           </div>
           ${React.createElement(
             "div",
@@ -566,6 +678,52 @@
                     React.createElement("strong", null, entry.name || "Unnamed Character"),
                     React.createElement("span", null, normalizeString(entry.clan, "None") + " - " + normalizeString(entry.sect, "None")),
                     React.createElement("span", null, (entry.generation ? "Generation " + entry.generation : "Generation unknown") + " - " + relCount + " relationships")
+                  ),
+                  React.createElement(
+                    "span",
+                    { className: "character-db-list-actions" },
+                    React.createElement(
+                      "span",
+                      {
+                        role: "button",
+                        tabIndex: 0,
+                        className: "character-db-list-pin" + (entry.pinned ? " pinned" : ""),
+                        "aria-label": entry.pinned ? "Unpin character" : "Pin character",
+                        title: entry.pinned ? "Unpin character" : "Pin character",
+                        onClick: function (event) { event.stopPropagation(); togglePinned(entry); },
+                        onKeyDown: function (event) {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            togglePinned(entry);
+                          }
+                        }
+                      },
+                      entry.pinned ? "★" : "☆"
+                    ),
+                    React.createElement(
+                      "span",
+                      {
+                        role: "button",
+                        tabIndex: 0,
+                        className: "character-db-list-pin character-db-list-delete",
+                        "aria-label": "Delete character",
+                        title: "Delete character",
+                        onClick: function (event) { event.stopPropagation(); deleteCharacter(entry); },
+                        onKeyDown: function (event) {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            deleteCharacter(entry);
+                          }
+                        }
+                      },
+                      React.createElement("span", {
+                        className: "character-db-list-delete-icon",
+                        "aria-hidden": "true",
+                        style: DELETE_ICON_MASK_STYLE
+                      })
+                    )
                   )
                 );
               })}
@@ -573,19 +731,35 @@
           </aside>
 
           <article className="character-db-profile-panel card">
-            ${selectedCharacter
+            ${draftNewCharacter
               ? html`<${CharacterProfileWorkspace}
-                  character=${selectedCharacter}
+                  character=${draftNewCharacter}
                   characters=${characters}
                   relationships=${relationships}
                   editable=${true}
-                  onSave=${saveSelectedCharacter}
+                  allowPortraitEdit=${true}
+                  startInEdit=${true}
+                  onSave=${saveNewCharacter}
+                  onRequestClose=${cancelNewCharacter}
                   onOpenStoryNote=${function (note) {
                     var focus = encodeURIComponent(String((note && note.focusText) || (note && note.title) || ""));
                     window.location.href = "gm-notes.html?focus=" + focus;
                   }}
                 />`
-              : html`<div className="character-db-empty"><h3>Select a Character</h3><p>Choose a character from the list to open the complete shared profile workspace.</p></div>`}
+              : (selectedCharacter
+                  ? html`<${CharacterProfileWorkspace}
+                      character=${selectedCharacter}
+                      characters=${characters}
+                      relationships=${relationships}
+                      editable=${true}
+                      allowPortraitEdit=${true}
+                      onSave=${saveSelectedCharacter}
+                      onOpenStoryNote=${function (note) {
+                        var focus = encodeURIComponent(String((note && note.focusText) || (note && note.title) || ""));
+                        window.location.href = "gm-notes.html?focus=" + focus;
+                      }}
+                    />`
+                  : html`<div className="character-db-empty"><h3>Select a Character</h3><p>Choose a character from the list to open the complete shared profile workspace.</p></div>`)}
           </article>
         </section>
       </div>

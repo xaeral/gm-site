@@ -38,9 +38,7 @@
         if (!db.objectStoreNames.contains(STORE_SESSION_META)) {
           db.createObjectStore(STORE_SESSION_META, { keyPath: "id" });
         }
-        if (!db.objectStoreNames.contains(STORE_SESSION_BODY)) {
-          db.createObjectStore(STORE_SESSION_BODY, { keyPath: "id" });
-        }
+        if (!db.objectStoreNames.contains(STORE_SESSION_BODY)) {y}
       };
       request.onsuccess = function () { resolve(request.result); };
       request.onerror = function () { reject(request.error || new Error("Unable to open Session Journal IndexedDB.")); };
@@ -249,7 +247,10 @@
   }
 
   window.ChronicleSessionJournal = {
+    DB_NAME: DB_NAME,
+    DB_VERSION: DB_VERSION,
     clone: clone,
+    openSessionJournalDb: openSessionJournalDb,
     readSessionJournalState: readSessionJournalState,
     readSessionById: readSessionById,
     saveSession: saveSession,
