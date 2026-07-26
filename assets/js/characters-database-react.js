@@ -27,24 +27,6 @@
   var CHANNEL_NAME = "campaign-atlas-characters";
   var sourceId = "characters-page-" + Date.now() + "-" + Math.floor(Math.random() * 100000);
 
-  // Renders assets/Icons/delete.svg as a solid currentColor icon (matching
-  // the mask technique used for icons elsewhere in the app) so it stays
-  // visible against the dark UI and inherits the button's hover color.
-  var DELETE_ICON_MASK_STYLE = {
-    display: "inline-block",
-    width: "15px",
-    height: "15px",
-    backgroundColor: "currentColor",
-    WebkitMaskImage: "url('../assets/Icons/delete.svg')",
-    maskImage: "url('../assets/Icons/delete.svg')",
-    WebkitMaskRepeat: "no-repeat",
-    maskRepeat: "no-repeat",
-    WebkitMaskPosition: "center",
-    maskPosition: "center",
-    WebkitMaskSize: "contain",
-    maskSize: "contain"
-  };
-
   function normalizeString(value, fallback) {
     var next = String(value || "").trim();
     return next || String(fallback || "");
@@ -82,6 +64,22 @@
     var selectedId = _selectedId[0];
     var setSelectedId = _selectedId[1];
 
+    // CharacterProfileWorkspace owns its own view/edit toggle internally,
+    // seeded once from `startInEdit` whenever its `character.id` changes --
+    // it has no external "force edit mode" API. To let the list's pencil
+    // icon jump straight into edit mode (even for the character that's
+    // already selected), we key the workspace on this request's id+nonce:
+    // a new nonce forces React to unmount/remount it, which re-seeds
+    // editMode from startInEdit exactly once per request.
+    var _editRequest = useState(null);
+    var editRequest = _editRequest[0];
+    var setEditRequest = _editRequest[1];
+
+    function requestEditCharacter(characterId) {
+      setSelectedId(characterId);
+      setEditRequest({ id: characterId, nonce: Date.now() + "-" + Math.random().toString(36).slice(2, 8) });
+    }
+
     // A brand-new character being created. Only exists in local state --
     // and is never added to the Relationship Map -- until the Storyteller
     // saves it, at which point it's persisted exclusively via
@@ -102,7 +100,7 @@
     // -- all owned by the shared hook (see character-directory-filters.js)
     // so this page and the Relationship Map's Character Directory can
     // never drift apart.
-    var characterFilters = characterDirectoryFilters.useCharacterDirectoryFilters();
+    var characterFilters = characterDirectoryFilters.useCharacterDirectoryFilters(characters);
 
     var saveTimerRef = useRef(null);
     var channelRef = useRef(null);
@@ -362,52 +360,11 @@
                     React.createElement("span", null, normalizeString(entry.clan, "None") + " - " + normalizeString(entry.sect, "None")),
                     React.createElement("span", null, (entry.generation ? "Generation " + entry.generation : "Generation unknown") + " - " + relCount + " relationships")
                   ),
-                  React.createElement(
-                    "span",
-                    { className: "character-db-list-actions" },
-                    React.createElement(
-                      "span",
-                      {
-                        role: "button",
-                        tabIndex: 0,
-                        className: "character-db-list-pin" + (entry.pinned ? " pinned" : ""),
-                        "aria-label": entry.pinned ? "Unpin character" : "Pin character",
-                        title: entry.pinned ? "Unpin character" : "Pin character",
-                        onClick: function (event) { event.stopPropagation(); togglePinned(entry); },
-                        onKeyDown: function (event) {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            togglePinned(entry);
-                          }
-                        }
-                      },
-                      entry.pinned ? "★" : "☆"
-                    ),
-                    React.createElement(
-                      "span",
-                      {
-                        role: "button",
-                        tabIndex: 0,
-                        className: "character-db-list-pin character-db-list-delete",
-                        "aria-label": "Delete character",
-                        title: "Delete character",
-                        onClick: function (event) { event.stopPropagation(); deleteCharacter(entry); },
-                        onKeyDown: function (event) {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            deleteCharacter(entry);
-                          }
-                        }
-                      },
-                      React.createElement("span", {
-                        className: "character-db-list-delete-icon",
-                        "aria-hidden": "true",
-                        style: DELETE_ICON_MASK_STYLE
-                      })
-                    )
-                  )
+                  html`<${shared.ListCardActions} actions=${[
+                    { key: "favorite", icon: entry.pinned ? "★" : "☆", label: entry.pinned ? "Unpin character" : "Pin character", active: entry.pinned, onClick: function () { togglePinned(entry); } },
+                    { key: "edit", icon: "✎", label: "Edit " + (entry.name || "character"), onClick: function () { requestEditCharacter(entry.id); } },
+                    { key: "delete", icon: "🗑", label: "Delete " + (entry.name || "character"), destructive: true, onClick: function () { deleteCharacter(entry); } }
+                  ]} />`
                 );
               })}
             </div>
@@ -431,11 +388,13 @@
                 />`
               : (selectedCharacter
                   ? html`<${CharacterProfileWorkspace}
+                      key=${selectedCharacter.id + "-" + (editRequest && editRequest.id === selectedCharacter.id ? editRequest.nonce : "view")}
                       character=${selectedCharacter}
                       characters=${characters}
                       relationships=${relationships}
                       editable=${true}
                       allowPortraitEdit=${true}
+                      startInEdit=${Boolean(editRequest && editRequest.id === selectedCharacter.id)}
                       onSave=${saveSelectedCharacter}
                       onOpenStoryNote=${function (note) {
                         var focus = encodeURIComponent(String((note && note.focusText) || (note && note.title) || ""));

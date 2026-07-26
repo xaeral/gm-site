@@ -13,7 +13,7 @@
   var shared = window.CampaignAtlasCharactersShared || {};
   var characterService = window.CharacterService || null;
 
-  if (!notebook) {
+  if (!notebook || !shared.CharacterBiographyWorkspace || !window.MentionEditor) {
     var target = document.getElementById("gmNotebookApp");
     if (target) {
       target.textContent = "Notebook data store unavailable.";
@@ -492,8 +492,22 @@
       });
     }
 
+    // Keeps the raw text the user is typing (tagsInput) separate from the
+    // parsed tag array (tags) -- the input's displayed value always mirrors
+    // tagsInput verbatim, so commas/spaces/trailing-comma-while-typing are
+    // never silently eaten by round-tripping through split/join on every
+    // keystroke. `tags` (used for search/filter elsewhere) still stays
+    // continuously parsed in the background.
     function updateTags(value) {
-      updateDraftField("tags", String(value || "").split(",").map(function (tag) { return tag.trim(); }).filter(Boolean));
+      setDraft(function (current) {
+        if (!current) {
+          return current;
+        }
+        var next = clone(current);
+        next.tagsInput = value;
+        next.tags = String(value || "").split(",").map(function (tag) { return tag.trim(); }).filter(Boolean);
+        return next;
+      });
     }
 
     async function selectNote(noteId) {
@@ -571,7 +585,10 @@
       }
 
       var textBeforeCaret = range.toString();
-      var match = /(?:^|\s)([@#])([\w-]*)$/.exec(textBeforeCaret);
+      // "@" is now handled by the Mention Editor (inline, structured
+      // mentions in the body text itself) -- this popup only owns "#" for
+      // the separate "Location Tags" sidebar list.
+      var match = /(?:^|\s)(#)([\w-]*)$/.exec(textBeforeCaret);
       if (!match) {
         setMentionState(null);
         return;
@@ -752,7 +769,7 @@
                 <input list="notebook-sessions" value=${draft.sessionLabel || ""} onInput=${function (event) { updateDraftField("sessionLabel", event.target.value); }} placeholder="Session 4" />
               </label>
               <label>General Tags
-                <input value=${(draft.tags || []).join(", ")} onInput=${function (event) { updateTags(event.target.value); }} placeholder="prep, rumor, important" />
+                <input value=${draft.tagsInput !== undefined ? draft.tagsInput : (draft.tags || []).join(", ")} onInput=${function (event) { updateTags(event.target.value); }} placeholder="prep, rumor, important" />
               </label>
             </div>
 
@@ -780,9 +797,9 @@
             <section className="notebook-body-card">
               <div className="section-heading notebook-writing-heading">
                 <h3>Rich Text Note Editor</h3>
-                <span className="note-subtitle">Type @ for characters or # for locations • ${status}</span>
+                <span className="note-subtitle">Type @ to mention Characters, Locations, Tags, Clans, Sects & Timeline Events • # for quick location tags • ${status}</span>
               </div>
-              <${shared.CharacterBiographyWorkspace}
+              <${window.MentionEditor.MentionRichTextEditor}
                 editable=${true}
                 value=${String(draft.bodyHtml || "")}
                 onChange=${function (htmlValue) { updateDraftField("bodyHtml", htmlValue); }}
@@ -793,15 +810,15 @@
 
               ${mentionState ? html`<div className="notebook-mention-picker">
                 <div className="section-heading">
-                  <h3>${mentionState.trigger === "@" ? "Character Tags" : "Location Tags"}</h3>
+                  <h3>Location Tags</h3>
                   <span className="note-subtitle">${mentionState.query ? "Filtering: " + mentionState.query : "Start typing to filter"}</span>
                 </div>
                 <div className="notebook-mention-results">
-                  ${(mentionState.trigger === "@" ? characterOptions : locationOptions)
+                  ${locationOptions
                     .filter(function (option) { return !mentionState.query || option.label.toLowerCase().indexOf(mentionState.query.toLowerCase()) >= 0; })
                     .slice(0, 12)
                     .map(function (option, index) {
-                      return html`<button key=${"mention-option-" + option.value + "-" + index} type="button" className="notebook-mention-option" onClick=${function () { addReference(mentionState.trigger === "@" ? "character" : "location", { id: option.value, label: option.label }); }}>
+                      return html`<button key=${"mention-option-" + option.value + "-" + index} type="button" className="notebook-mention-option" onClick=${function () { addReference("location", { id: option.value, label: option.label }); }}>
                         <strong>${option.label}</strong>
                       </button>`;
                     })}

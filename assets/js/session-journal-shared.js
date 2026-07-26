@@ -38,7 +38,9 @@
         if (!db.objectStoreNames.contains(STORE_SESSION_META)) {
           db.createObjectStore(STORE_SESSION_META, { keyPath: "id" });
         }
-        if (!db.objectStoreNames.contains(STORE_SESSION_BODY)) {y}
+        if (!db.objectStoreNames.contains(STORE_SESSION_BODY)) {
+          db.createObjectStore(STORE_SESSION_BODY, { keyPath: "id" });
+        }
       };
       request.onsuccess = function () { resolve(request.result); };
       request.onerror = function () { reject(request.error || new Error("Unable to open Session Journal IndexedDB.")); };

@@ -15,6 +15,38 @@
     return next || String(fallback || "");
   }
 
+  // "No value assigned" sentinels used by one caller or another when a
+  // record is normalized before this hook ever sees it (e.g. the
+  // Relationship Map stores "None"/"Unknown" rather than "" for an
+  // unassigned clan/sect/status) -- treated exactly like a blank field so
+  // the same character never produces a real option on one page and a
+  // "None" ghost option on the other.
+  var EMPTY_VALUE_SENTINELS = { "none": true, "unknown": true };
+
+  // Builds the sorted, deduplicated option list a filter section displays
+  // -- e.g. ["Gangrel", "Nosferatu"] -- from whatever characters are
+  // currently passed to the hook. getValues returns an array of raw
+  // (possibly blank/sentinel) values per character; blanks are always
+  // dropped. dropSentinels additionally drops the "no value assigned"
+  // sentinels above -- used for Clan/Sect/Status (which can legitimately be
+  // normalized to "None"/"Unknown" upstream) but not Tags (where "None"
+  // could theoretically be a real tag name a Storyteller typed into the Tag
+  // Manager).
+  function collectSortedOptions(characters, getValues, dropSentinels) {
+    var seen = {};
+    (characters || []).forEach(function (entry) {
+      var values = getValues(entry) || [];
+      values.forEach(function (raw) {
+        var value = String(raw || "").trim();
+        if (!value || (dropSentinels && EMPTY_VALUE_SENTINELS[value.toLowerCase()])) {
+          return;
+        }
+        seen[value] = true;
+      });
+    });
+    return Object.keys(seen).sort(function (a, b) { return a.localeCompare(b); });
+  }
+
   // Single source of truth for Character Directory filtering (Clan/Sect/
   // Status/Tags), shared between the standalone Characters page
   // (characters-database-react.js) and the Relationship Map's own
@@ -27,9 +59,15 @@
   // sort), so this only owns the four filter categories. Callers combine
   // matchesFilters(entry) with their own search predicate when filtering
   // their character list.
-  function useCharacterDirectoryFilters() {
-    var shared = window.CampaignAtlasCharactersShared || {};
-    var mapLayoutService = window.MapLayoutService;
+  //
+  // `characters` is the caller's own live character array (state). Filter
+  // options are derived from it every render -- never from the app's full
+  // configured Clan/Sect/Status lists or the Tag Manager's tag list -- so
+  // only values currently assigned to at least one character ever appear,
+  // and options update automatically the instant a character is created,
+  // deleted, or edited, with no separate refresh logic needed.
+  function useCharacterDirectoryFilters(characters) {
+    var directoryCharacters = Array.isArray(characters) ? characters : [];
 
     var _clanFilters = useState({});
     var clanFilters = _clanFilters[0];
@@ -73,52 +111,26 @@
     var filterPanelAlign = _filterPanelAlign[0];
     var setFilterPanelAlign = _filterPanelAlign[1];
 
-    // Tag Manager tag names, fetched once for the Tags filter section --
-    // same MapLayoutService.getPreferences() read used by the Tags panel
-    // and the character editor's tag picker, so filter options always
-    // match whatever the Tag Manager currently defines (never hardcoded).
-    var _allTagNames = useState([]);
-    var allTagNames = _allTagNames[0];
-    var setAllTagNames = _allTagNames[1];
-
     var filterButtonRef = useRef(null);
     var filterPanelRef = useRef(null);
     var filterChipsRowRef = useRef(null);
 
-    // Filter options come from the configured lists (the same ones the
-    // character editor's own Clan/Sect/Status dropdowns use), never from
-    // whatever happens to already be in use -- so a clan with zero current
-    // characters still shows up as a filterable option, and nothing here
-    // is hardcoded separately from that single source of truth.
-    var clanOptions = shared.CLAN_OPTIONS || [];
-    var sectOptions = shared.SECT_OPTIONS || [];
-    var statusOptions = shared.STATUS_OPTIONS || [];
-
+    // Options are derived straight from the live character list -- alpha
+    // sorted, deduplicated -- so a value only ever appears once at least
+    // one character currently carries it, and disappears again the moment
+    // the last character carrying it is deleted/edited away.
+    var clanOptions = useMemo(function () {
+      return collectSortedOptions(directoryCharacters, function (entry) { return [entry.clan]; }, true);
+    }, [directoryCharacters]);
+    var sectOptions = useMemo(function () {
+      return collectSortedOptions(directoryCharacters, function (entry) { return [entry.sect]; }, true);
+    }, [directoryCharacters]);
+    var statusOptions = useMemo(function () {
+      return collectSortedOptions(directoryCharacters, function (entry) { return [entry.status]; }, true);
+    }, [directoryCharacters]);
     var tagOptions = useMemo(function () {
-      return allTagNames.slice().sort(function (a, b) { return a.localeCompare(b); });
-    }, [allTagNames]);
-
-    useEffect(function () {
-      var cancelled = false;
-      if (!mapLayoutService || typeof mapLayoutService.getPreferences !== "function") {
-        return;
-      }
-      mapLayoutService.getPreferences().then(function (prefs) {
-        if (cancelled) {
-          return;
-        }
-        var names = [];
-        (Array.isArray(prefs.tagGroups) ? prefs.tagGroups : []).forEach(function (group) {
-          (Array.isArray(group.tags) ? group.tags : []).forEach(function (tag) {
-            if (tag && tag.name && names.indexOf(tag.name) === -1) {
-              names.push(tag.name);
-            }
-          });
-        });
-        setAllTagNames(names);
-      }).catch(function () { return null; });
-      return function () { cancelled = true; };
-    }, []);
+      return collectSortedOptions(directoryCharacters, function (entry) { return Array.isArray(entry.tags) ? entry.tags : []; }, false);
+    }, [directoryCharacters]);
 
     // Single combined filter panel (Filter button + one panel, all four
     // categories together) -- closes on outside click or Escape, same as

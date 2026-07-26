@@ -447,12 +447,31 @@
     var travelRoutes = Array.isArray(source.travelRoutes) ? clone(source.travelRoutes) : [];
     var encounterNotes = Array.isArray(source.encounterNotes) ? clone(source.encounterNotes) : [];
     var relatedCharacterIds = Array.isArray(source.relatedCharacterIds) ? source.relatedCharacterIds.map(String) : [];
+    // Multi-owner support: ownerIds is the source of truth. A record saved
+    // before this existed only has the legacy singular `ownerId` -- migrate
+    // it into a one-item ownerIds array the first time the record is
+    // normalized (read OR write), so old data keeps working with no
+    // separate migration step required. The legacy ownerId/ownerName
+    // fields are kept (derived from ownerIds) only for any code that might
+    // still read them directly; nothing in this app writes them anymore.
+    var ownerIdsSource = Array.isArray(source.ownerIds)
+      ? source.ownerIds
+      : (source.ownerId ? [source.ownerId] : []);
+    var seenOwnerIds = {};
+    var ownerIds = ownerIdsSource.map(function (ownerId) { return String(ownerId || "").trim(); }).filter(function (ownerId) {
+      if (!ownerId || seenOwnerIds[ownerId]) {
+        return false;
+      }
+      seenOwnerIds[ownerId] = true;
+      return true;
+    });
     var now = new Date().toISOString();
     return {
       id: String(source.id || source.name || "location-" + Date.now() + "-" + Math.floor(Math.random() * 100000)),
       name: String(source.name || source.title || "Unnamed Location"),
       type: String(source.type || "Notable Place"),
-      ownerId: String(source.ownerId || ""),
+      ownerIds: ownerIds,
+      ownerId: ownerIds[0] || "",
       ownerName: String(source.ownerName || ""),
       description: String(source.description || source.details || ""),
       detailsHtml: String(source.detailsHtml || source.descriptionHtml || source.details || source.description || "<p></p>"),
@@ -477,6 +496,7 @@
         String(source.name || ""),
         String(source.type || ""),
         String(source.ownerName || ""),
+        ownerIds.join(" "),
         String(source.description || ""),
         String(source.detailsHtml || ""),
         tags.join(" "),
@@ -2639,6 +2659,51 @@
     </section>`;
   }
 
+  // Reusable list-card action row -- a small overlay of icon buttons
+  // pinned to the top-right corner of a list card (favorite/edit/delete,
+  // or any subset thereof), shown on hover (always visible on touch
+  // devices, via the `@media (hover: none)` rule in styles.css since CSS
+  // can't otherwise detect "no mouse"). One shared component/stylesheet so
+  // every entity list (Characters, Locations, ...) gets the exact same
+  // sizing, spacing, and interaction behavior instead of each page
+  // reimplementing its own hover-icon row.
+  //
+  // Usage: render as a child of a `position: relative` list-item button,
+  // e.g. `<${ListCardActions} actions=${[
+  //   { key: "favorite", icon: "★", label: "Favorite", active: entry.pinned, onClick: () => toggle(entry) },
+  //   { key: "edit", icon: "✎", label: "Edit", onClick: () => edit(entry) },
+  //   { key: "delete", icon: "🗑", label: "Delete", destructive: true, onClick: () => remove(entry) }
+  // ]} />`. Every action's click (mouse or keyboard) stops propagation so
+  // it never also triggers the card's own onClick.
+  function ListCardActions(props) {
+    var actions = (Array.isArray(props && props.actions) ? props.actions : []).filter(function (action) {
+      return action && typeof action.onClick === "function";
+    });
+    if (!actions.length) {
+      return null;
+    }
+    return html`<span className="list-card-actions" onClick=${function (event) { event.stopPropagation(); }}>
+      ${actions.map(function (action, index) {
+        return html`<span
+          key=${action.key || index}
+          role="button"
+          tabIndex="0"
+          className=${"list-card-action" + (action.active ? " active" : "") + (action.destructive ? " destructive" : "")}
+          aria-label=${action.label || ""}
+          title=${action.label || ""}
+          onClick=${function (event) { event.stopPropagation(); action.onClick(event); }}
+          onKeyDown=${function (event) {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              event.stopPropagation();
+              action.onClick(event);
+            }
+          }}
+        >${action.icon}</span>`;
+      })}
+    </span>`;
+  }
+
   window.CampaignAtlasCharactersShared = {
     DB_NAME: DB_NAME,
     DB_VERSION: DB_VERSION,
@@ -2678,6 +2743,7 @@
     saveRelationships: saveRelationships,
     CharacterBiographyWorkspace: CharacterBiographyWorkspace,
     CharacterProfilePortrait: CharacterProfilePortrait,
-    CharacterProfileWorkspace: CharacterProfileWorkspace
+    CharacterProfileWorkspace: CharacterProfileWorkspace,
+    ListCardActions: ListCardActions
   };
 })();

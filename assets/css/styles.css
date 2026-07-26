@@ -932,13 +932,14 @@ button:focus-visible {
 }
 
 .character-db-list-item {
+  position: relative;
   width: 100%;
   border: 1px solid rgba(209, 13, 64, 0.35);
   background: rgba(14, 14, 20, 0.86);
   border-radius: 0.7rem;
   padding: 0.5rem;
   display: grid;
-  grid-template-columns: 56px 1fr auto;
+  grid-template-columns: 56px 1fr;
   gap: 0.65rem;
   align-items: center;
   text-align: left;
@@ -978,6 +979,7 @@ button:focus-visible {
 }
 
 .location-db-layout .character-db-list-item {
+  position: relative;
   grid-template-columns: 1fr;
   align-items: start;
 }
@@ -985,6 +987,7 @@ button:focus-visible {
 .location-list-text {
   display: grid;
   gap: 0.15rem;
+  padding-right: 3.6rem;
 }
 
 .location-list-text strong {
@@ -997,6 +1000,63 @@ button:focus-visible {
   font-size: 0.82rem;
 }
 
+/* Shared list-card action row (favorite/edit/delete icons) -- reused by
+   every entity list (Characters, Locations, ...) via
+   window.CampaignAtlasCharactersShared.ListCardActions. Positioned inside
+   any `position: relative` list-item card; hidden until hover/focus, and
+   always visible on touch devices since they have no hover state. */
+.list-card-actions {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.character-db-list-item:hover .list-card-actions,
+.character-db-list-item:focus-within .list-card-actions,
+.list-card-actions:focus-within {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .list-card-actions {
+    opacity: 1;
+  }
+}
+
+.list-card-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.list-card-action:hover,
+.list-card-action:focus-visible {
+  background: rgba(209, 13, 64, 0.16);
+  color: #ffffff;
+}
+
+.list-card-action.active {
+  color: #d10d40;
+}
+
+.list-card-action.destructive:hover,
+.list-card-action.destructive:focus-visible {
+  background: rgba(168, 50, 79, 0.28);
+  color: #ff8ea8;
+}
+
 .location-overview-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1006,6 +1066,33 @@ button:focus-visible {
 .location-overview-grid label {
   display: grid;
   gap: 0.25rem;
+}
+
+.location-overview-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.location-readonly-field {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.location-readonly-label {
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.location-readonly-value {
+  color: #ffffff;
+  font-size: 0.95rem;
+}
+
+.location-imagery-empty {
+  margin: 0;
 }
 
 .location-future-grid {
@@ -1030,6 +1117,88 @@ button:focus-visible {
 .location-future-card span {
   color: var(--text-muted);
   font-size: 0.82rem;
+}
+
+.location-imagery-field {
+  gap: 0.5rem;
+}
+
+.location-imagery-upload-button {
+  border: 1px dashed var(--accent-gold);
+  background: transparent;
+  border-radius: 0.5rem;
+  padding: 0.7rem 0.5rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: center;
+}
+
+.location-imagery-upload-button:hover {
+  color: var(--text-main);
+  background: rgba(209, 13, 64, 0.1);
+}
+
+.location-imagery-thumb-wrap {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.location-imagery-thumb-button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 1px solid var(--border-line);
+  border-radius: 0.5rem;
+  overflow: hidden;
+  background: none;
+  cursor: pointer;
+}
+
+.location-imagery-thumb {
+  display: block;
+  width: 100%;
+  height: 96px;
+  object-fit: cover;
+}
+
+.location-imagery-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.location-imagery-actions button {
+  flex: 1 1 auto;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.4rem;
+}
+
+.location-imagery-actions .destructive {
+  border-color: #622031;
+  color: #ff8ea8;
+}
+
+.location-imagery-actions .destructive:hover {
+  border-color: #a8324f;
+  background: rgba(168, 50, 79, 0.2);
+}
+
+.location-imagery-lightbox-panel {
+  width: min(1100px, 92vw);
+  max-height: 90vh;
+}
+
+.location-imagery-lightbox-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+}
+
+.location-imagery-lightbox-image {
+  max-width: 100%;
+  max-height: 75vh;
+  object-fit: contain;
+  border-radius: 0.4rem;
 }
 
 .location-db-profile-panel .location-profile-content {
@@ -1095,6 +1264,7 @@ button:focus-visible {
 .character-db-list-meta {
   display: grid;
   gap: 0.14rem;
+  padding-right: 4.6rem;
 }
 
 .character-db-list-meta strong {
@@ -1105,40 +1275,6 @@ button:focus-visible {
 .character-db-list-meta span {
   color: var(--text-muted);
   font-size: 0.82rem;
-}
-
-.character-db-list-pin {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.9rem;
-  height: 1.9rem;
-  border-radius: 999px;
-  color: var(--text-muted);
-  font-size: 1.05rem;
-  cursor: pointer;
-}
-
-.character-db-list-pin:hover {
-  background: rgba(209, 13, 64, 0.16);
-  color: #ffffff;
-}
-
-.character-db-list-pin.pinned {
-  color: #d10d40;
-}
-
-.character-db-list-delete:hover {
-  background: rgba(209, 13, 64, 0.28);
-  color: #ffffff;
-}
-
-.character-db-list-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  align-self: start;
-  justify-self: end;
 }
 
 .character-db-profile-head {
@@ -2097,6 +2233,16 @@ button:focus-visible {
   padding: 0.32rem 0.6rem;
 }
 
+.location-link-chip {
+  cursor: pointer;
+}
+
+.location-link-chip:hover,
+.location-link-chip:focus-visible {
+  background: rgba(209, 13, 64, 0.3);
+  border-color: #d10d40;
+}
+
 .notebook-chip strong {
   color: #f7d7df;
 }
@@ -2131,6 +2277,150 @@ button:focus-visible {
 
 .notebook-body-card .profile-rich-editor {
   min-height: 360px;
+}
+
+/* Mention Editor -- reusable across GM Notes, Session Notes, and any future
+   rich-text field (see assets/js/mention-editor.js). Chip styling is
+   identical regardless of entity type, per spec. */
+
+.mention-editor-wrapper {
+  position: relative;
+}
+
+.mention-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.15rem;
+  padding: 0.02rem 0.36rem;
+  border-radius: 0.4rem;
+  background: rgba(209, 13, 64, 0.18);
+  border: 1px solid rgba(209, 13, 64, 0.4);
+  color: #ffd7e0;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mention-chip:hover {
+  background: rgba(209, 13, 64, 0.3);
+}
+
+.mention-chip.mention-chip-missing {
+  opacity: 0.6;
+  border-style: dashed;
+  cursor: default;
+}
+
+.mention-chip-label {
+  color: inherit;
+}
+
+.mention-editor-dropdown {
+  position: absolute;
+  z-index: 60;
+  min-width: 260px;
+  max-width: 340px;
+  max-height: 280px;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.4rem;
+  background: linear-gradient(170deg, rgba(16, 16, 23, 0.98), rgba(10, 10, 16, 0.99));
+  border: 1px solid var(--border-line);
+  border-radius: 0.6rem;
+  box-shadow: var(--shadow);
+}
+
+.mention-editor-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border-radius: 0.4rem;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-main);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mention-editor-option:hover,
+.mention-editor-option.active {
+  background: rgba(209, 13, 64, 0.16);
+  border-color: rgba(209, 13, 64, 0.4);
+}
+
+.mention-editor-option-icon {
+  flex: 0 0 auto;
+  font-size: 1rem;
+}
+
+.mention-editor-option-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-editor-option-type {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mention-editor-empty {
+  margin: 0;
+  padding: 0.4rem 0.5rem;
+}
+
+.mention-editor-dropdown-heading {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0.1rem 0.3rem 0.4rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border-line);
+}
+
+.mention-editor-dropdown-heading label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mention-editor-name-input {
+  width: 100%;
+}
+
+.mention-editor-option-create {
+  color: #ffd7e0;
+  font-weight: 600;
+}
+
+.mention-editor-option:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.mention-editor-created-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.5rem;
+}
+
+.mention-editor-created-message {
+  color: #9ee6a8;
+  font-size: 0.85rem;
+}
+
+.mention-editor-created-open {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .session-journal-toolbar {

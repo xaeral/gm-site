@@ -13,7 +13,7 @@
   var shared = window.CampaignAtlasCharactersShared || {};
   var characterService = window.CharacterService;
 
-  if (!journal || !characterService || !shared.CharacterBiographyWorkspace) {
+  if (!journal || !characterService || !shared.CharacterBiographyWorkspace || !window.MentionEditor) {
     var target = document.getElementById("sessionJournalApp");
     if (target) {
       target.textContent = "Session Journal data layer unavailable.";
@@ -88,7 +88,10 @@
       return null;
     }
     var textBeforeCaret = range.toString();
-    var match = /(?:^|\s)([@#])([\w'-]*)$/.exec(textBeforeCaret);
+    // "@" is now handled by the Mention Editor (inline, structured mentions
+    // in the body text itself) -- this popup only owns "#" for quick
+    // location-tag autocompletion.
+    var match = /(?:^|\s)(#)([\w'-]*)$/.exec(textBeforeCaret);
     if (!match) {
       return null;
     }
@@ -492,6 +495,24 @@
       });
     }
 
+    // Keeps the raw text the user is typing (tagsInput) separate from the
+    // parsed tag array (tags) -- the input's displayed value always mirrors
+    // tagsInput verbatim, so commas/spaces/trailing-comma-while-typing are
+    // never silently eaten by round-tripping through split/join on every
+    // keystroke. `tags` (used for search/filter elsewhere) still stays
+    // continuously parsed in the background.
+    function updateTags(value) {
+      setDraft(function (current) {
+        if (!current) {
+          return current;
+        }
+        var next = clone(current);
+        next.tagsInput = value;
+        next.tags = String(value || "").split(",").map(function (tag) { return tag.trim(); }).filter(Boolean);
+        return next;
+      });
+    }
+
     function parseInlineReferences(sessionDraft) {
       var bodyText = plainTextFromHtml(sessionDraft.bodyHtml || "");
       var lines = bodyText.split(/\n+/);
@@ -572,8 +593,7 @@
       if (!mentionState) {
         return;
       }
-      var options = mentionState.trigger === "@" ? characterOptions : locationOptions;
-      var filtered = options.filter(function (option) {
+      var filtered = locationOptions.filter(function (option) {
         return !mentionState.query || option.label.toLowerCase().indexOf(mentionState.query.toLowerCase()) >= 0;
       });
       if (!filtered.length) {
@@ -798,8 +818,7 @@
       if (!mentionState) {
         return [];
       }
-      var options = mentionState.trigger === "@" ? characterOptions : locationOptions;
-      return options.filter(function (option) {
+      return locationOptions.filter(function (option) {
         return !mentionState.query || option.label.toLowerCase().indexOf(mentionState.query.toLowerCase()) >= 0;
       }).slice(0, 12);
     }, [mentionState, characterOptions, locationOptions]);
@@ -893,7 +912,7 @@
                 <input type="date" value=${draft.datePlayed || ""} onInput=${function (event) { updateDraftField("datePlayed", event.target.value); }} />
               </label>
               <label>General Tags
-                <input value=${(draft.tags || []).join(", ")} onInput=${function (event) { updateDraftField("tags", String(event.target.value || "").split(",").map(function (tag) { return tag.trim(); }).filter(Boolean)); }} placeholder="boons, blood-hunt, praxis" />
+                <input value=${draft.tagsInput !== undefined ? draft.tagsInput : (draft.tags || []).join(", ")} onInput=${function (event) { updateTags(event.target.value); }} placeholder="boons, blood-hunt, praxis" />
               </label>
             </div>
 
@@ -914,9 +933,9 @@
             <section className="notebook-body-card session-journal-body">
               <div className="section-heading notebook-writing-heading">
                 <h3>Session Journal</h3>
-                <span className="note-subtitle">Type naturally with @Character, #Location, and !Important Event • ${status}</span>
+                <span className="note-subtitle">Type @ to mention Characters, Locations, Tags, Clans, Sects & Timeline Events, #Location for quick tags, !Important Event to flag a timeline event • ${status}</span>
               </div>
-              <${shared.CharacterBiographyWorkspace}
+              <${window.MentionEditor.MentionRichTextEditor}
                 editable=${true}
                 value=${String(draft.bodyHtml || "")}
                 onChange=${function (htmlValue) { updateDraftField("bodyHtml", htmlValue); updateDraftField("lastEditedAt", new Date().toISOString()); }}
@@ -927,7 +946,7 @@
               />
               ${mentionState ? html`<div className="notebook-mention-picker session-mention-picker">
                 <div className="section-heading">
-                  <h3>${mentionState.trigger === "@" ? "Character Suggestions" : "Location Suggestions"}</h3>
+                  <h3>Location Suggestions</h3>
                   <span className="note-subtitle">Enter or Tab to accept • Esc to dismiss</span>
                 </div>
                 <div className="notebook-mention-results">

@@ -119,11 +119,19 @@
     </div>`;
   }
 
+  // Multi-owner select: any number of characters can own a location.
+  // Selected owners render as removable chips beneath the trigger; the
+  // dropdown itself stays open across multiple picks (each click just
+  // toggles that owner in/out of the array) and only closes on outside
+  // click, Escape, or re-clicking the trigger -- never as a side effect of
+  // making a selection. "None" is a distinct clear-all action rather than
+  // one option among others, since "toggle it like any other owner" doesn't
+  // make sense once more than one can be selected at a time.
   function OwnerDropdown(props) {
     var id = props.id;
     var label = props.label || "Owner";
     var characters = Array.isArray(props.characters) ? props.characters : [];
-    var value = normalizeString(props.value, "");
+    var values = Array.isArray(props.values) ? props.values.map(String) : [];
     var onChange = typeof props.onChange === "function" ? props.onChange : function () {};
     var _open = useState(false);
     var open = _open[0];
@@ -135,7 +143,7 @@
 
     var ownerOptions = useMemo(function () {
       var seen = {};
-      var sorted = characters.map(function (character) {
+      return characters.map(function (character) {
         return {
           value: String(character && character.id ? character.id : ""),
           label: normalizeString(character && character.name, String(character && character.id ? character.id : ""))
@@ -151,13 +159,21 @@
         seen[option.value] = true;
         return true;
       });
-      return [{ value: "", label: OWNER_NONE_LABEL }].concat(sorted);
     }, [characters]);
 
-    var selectedOption = ownerOptions.find(function (option) {
-      return option.value === value;
+    var ownerLabelById = useMemo(function () {
+      var map = {};
+      ownerOptions.forEach(function (option) { map[option.value] = option.label; });
+      return map;
+    }, [ownerOptions]);
+
+    var selectedChips = values.map(function (ownerId) {
+      return { value: ownerId, label: ownerLabelById[ownerId] || ownerId };
     });
-    var selectedLabel = selectedOption ? selectedOption.label : OWNER_NONE_LABEL;
+
+    var summaryLabel = !selectedChips.length
+      ? OWNER_NONE_LABEL
+      : (selectedChips.length === 1 ? selectedChips[0].label : (selectedChips.length + " Owners"));
 
     var filteredOptions = useMemo(function () {
       var term = normalizeString(searchTerm, "").toLowerCase();
@@ -192,10 +208,16 @@
       };
     }, [open]);
 
-    function chooseOwner(ownerId) {
-      onChange(normalizeString(ownerId, ""));
-      setOpen(false);
-      setSearchTerm("");
+    function toggleOwner(ownerId) {
+      if (values.indexOf(ownerId) !== -1) {
+        onChange(values.filter(function (id) { return id !== ownerId; }));
+      } else {
+        onChange(values.concat([ownerId]));
+      }
+    }
+
+    function removeChip(ownerId) {
+      onChange(values.filter(function (id) { return id !== ownerId; }));
     }
 
     return html`<div className="character-filter-dropdown location-owner-dropdown" ref=${rootRef}>
@@ -208,10 +230,18 @@
         aria-controls=${id}
         onClick=${function () { setOpen(!open); }}
       >
-        <span className="character-filter-trigger-text">${selectedLabel}</span>
+        <span className="character-filter-trigger-text">${summaryLabel}</span>
         <span className="character-filter-trigger-caret" aria-hidden="true">v</span>
       </button>
-      ${open ? html`<div id=${id} className="character-filter-menu location-owner-menu" role="listbox">
+      ${selectedChips.length ? html`<div className="notebook-chip-list location-owner-chip-list">
+        ${selectedChips.map(function (chip) {
+          return html`<button type="button" key=${"owner-chip-" + chip.value} className="notebook-chip">
+            <span>${chip.label}</span>
+            <strong aria-hidden="true" onClick=${function (event) { event.stopPropagation(); removeChip(chip.value); }}>×</strong>
+          </button>`;
+        })}
+      </div>` : null}
+      ${open ? html`<div id=${id} className="character-filter-menu location-owner-menu" role="listbox" aria-multiselectable="true">
         <div className="location-owner-search-row">
           <input
             type="search"
@@ -221,15 +251,25 @@
             onInput=${function (event) { setSearchTerm(event.target.value); }}
           />
         </div>
+        <button
+          type="button"
+          className=${"character-filter-option" + (!values.length ? " checked" : "")}
+          role="option"
+          aria-selected=${!values.length ? "true" : "false"}
+          onClick=${function () { onChange([]); }}
+        >
+          <span className="character-filter-check" aria-hidden="true"></span>
+          <span>${OWNER_NONE_LABEL}</span>
+        </button>
         ${filteredOptions.length ? filteredOptions.map(function (option) {
-          var checked = option.value === value;
+          var checked = values.indexOf(option.value) !== -1;
           return html`<button
-            key=${"owner-option-" + (option.value || "none")}
+            key=${"owner-option-" + option.value}
             type="button"
             className=${"character-filter-option" + (checked ? " checked" : "")}
             role="option"
             aria-selected=${checked ? "true" : "false"}
-            onClick=${function () { chooseOwner(option.value); }}
+            onClick=${function () { toggleOwner(option.value); }}
           >
             <span className="character-filter-check" aria-hidden="true"></span>
             <span>${option.label}</span>
@@ -302,6 +342,21 @@
     var _draft = useState(null);
     var draft = _draft[0];
     var setDraft = _draft[1];
+
+    // Locations open read-only by default, matching the Character page --
+    // editing controls only render when editMode is true. Saving itself is
+    // unchanged (still the existing debounced autosave on `draft`); this
+    // only toggles which JSX is shown.
+    var _editMode = useState(false);
+    var editMode = _editMode[0];
+    var setEditMode = _editMode[1];
+
+    var _imageryLightbox = useState(null);
+    var imageryLightbox = _imageryLightbox[0];
+    var setImageryLightbox = _imageryLightbox[1];
+    var imageFieldInputRef = useRef(null);
+    var mapFieldInputRef = useRef(null);
+    var floorPlanFieldInputRef = useRef(null);
 
     var _status = useState("Loading locations...");
     var status = _status[0];
@@ -417,7 +472,15 @@
           saveTimerRef.current = null;
         }
       };
-    }, [draft && draft.id, draft && draft.name, draft && draft.type, draft && draft.ownerId, draft && draft.detailsHtml, draft && draft.description, JSON.stringify(draft && draft.tags ? draft.tags : []), dialogOpen]);
+    }, [
+      draft && draft.id, draft && draft.name, draft && draft.type, draft && draft.detailsHtml, draft && draft.description,
+      JSON.stringify(draft && draft.tags ? draft.tags : []),
+      JSON.stringify(draft && draft.ownerIds ? draft.ownerIds : []),
+      JSON.stringify(draft && draft.images ? draft.images : []),
+      JSON.stringify(draft && draft.mapLinks ? draft.mapLinks : []),
+      JSON.stringify(draft && draft.floorPlans ? draft.floorPlans : []),
+      dialogOpen
+    ]);
 
     var ownerLookup = useMemo(function () {
       var map = {};
@@ -427,22 +490,19 @@
       return map;
     }, [characters]);
 
-    function resolveOwnerLabel(location) {
-      if (!location) {
-        return OWNER_NONE_LABEL;
+    function resolveOwnerLabels(location) {
+      var ownerIds = location && Array.isArray(location.ownerIds) ? location.ownerIds : [];
+      if (!ownerIds.length) {
+        return [OWNER_NONE_LABEL];
       }
-      var ownerId = normalizeString(location.ownerId, "");
-      if (!ownerId) {
-        return OWNER_NONE_LABEL;
-      }
-      return location.ownerName || ownerLookup[ownerId] || ownerId;
+      return ownerIds.map(function (ownerId) { return ownerLookup[ownerId] || ownerId; });
     }
 
     function enrichLocation(location) {
       var next = clone(location);
-      next.ownerName = resolveOwnerLabel(next);
+      next.ownerNames = resolveOwnerLabels(next);
       next.previewText = next.previewText || stripHtml(next.detailsHtml || next.description || "");
-      next.searchText = [next.name, next.type, next.ownerName, next.description, next.detailsHtml, (next.tags || []).join(" ")].join(" ").toLowerCase();
+      next.searchText = [next.name, next.type, next.ownerNames.join(" "), next.description, next.detailsHtml, (next.tags || []).join(" ")].join(" ").toLowerCase();
       return next;
     }
 
@@ -455,7 +515,9 @@
     }, [enrichedLocations]);
 
     var ownerOptions = useMemo(function () {
-      return filterSummaryOptions(enrichedLocations.map(function (location) { return resolveOwnerLabel(location); }));
+      return filterSummaryOptions(enrichedLocations.reduce(function (all, location) {
+        return all.concat(location.ownerNames || []);
+      }, []));
     }, [enrichedLocations, ownerLookup]);
 
     var tagOptions = useMemo(function () {
@@ -471,11 +533,10 @@
       var activeTags = Object.keys(tagFilters).filter(function (key) { return tagFilters[key]; });
 
       return enrichedLocations.filter(function (location) {
-        var ownerLabel = resolveOwnerLabel(location);
         if (activeTypes.length && activeTypes.indexOf(normalizeString(location.type, "Notable Place")) === -1) {
           return false;
         }
-        if (activeOwners.length && activeOwners.indexOf(ownerLabel) === -1) {
+        if (activeOwners.length && !(location.ownerNames || []).some(function (name) { return activeOwners.indexOf(name) !== -1; })) {
           return false;
         }
         if (activeTags.length && !(location.tags || []).some(function (tag) { return activeTags.indexOf(tag) >= 0; })) {
@@ -529,14 +590,111 @@
         }
         var next = clone(current);
         next[field] = value;
-        if (field === "ownerId") {
-          next.ownerName = ownerLookup[value] || "";
-        }
+        // Keep the raw typed text (tagsInput) separate from the parsed
+        // array (tags) -- the input mirrors tagsInput verbatim so commas/
+        // spaces/trailing commas are never eaten by round-tripping through
+        // split/join on every keystroke, while tags stays continuously
+        // parsed for search/filter consumers elsewhere.
         if (field === "tags") {
+          next.tagsInput = value;
           next.tags = normalizeTags(value);
         }
         return next;
       });
+    }
+
+    // Imagery: Image/Map/Floor Plan are each a single-upload field, stored
+    // as a 0-or-1-item array on the existing images/mapLinks/floorPlans
+    // fields (already whitelisted by normalizeLocationRecord in
+    // character-biography-shared.js -- reusing them, rather than inventing
+    // new field names, means the save/normalize round-trip needs no
+    // changes). Mirrors the character portrait upload's exact
+    // FileReader.readAsDataURL pattern; there is no separate blob-storage
+    // optimization for locations (see saveLocationRecord), so the data URL
+    // is simply stored as-is, same as every other location field.
+    function getImageFieldInputRef(fieldKey) {
+      if (fieldKey === "images") {
+        return imageFieldInputRef;
+      }
+      if (fieldKey === "mapLinks") {
+        return mapFieldInputRef;
+      }
+      return floorPlanFieldInputRef;
+    }
+
+    function handleImageFieldFile(fieldKey, event) {
+      var file = event.target.files && event.target.files[0];
+      event.target.value = "";
+      if (!file) {
+        return;
+      }
+      var reader = new FileReader();
+      reader.onload = function () {
+        var dataUrl = typeof reader.result === "string" ? reader.result : "";
+        if (!dataUrl) {
+          return;
+        }
+        handleDraftChange(fieldKey, [{
+          id: "img-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
+          dataUrl: dataUrl,
+          name: file.name || "",
+          uploadedAt: new Date().toISOString()
+        }]);
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function removeImageFieldEntry(fieldKey) {
+      handleDraftChange(fieldKey, []);
+    }
+
+    useEffect(function () {
+      if (!imageryLightbox) {
+        return;
+      }
+      function onEscape(event) {
+        if (event.key === "Escape") {
+          setImageryLightbox(null);
+        }
+      }
+      document.addEventListener("keydown", onEscape);
+      return function () {
+        document.removeEventListener("keydown", onEscape);
+      };
+    }, [imageryLightbox]);
+
+    function renderImageField(fieldKey, label) {
+      var inputRef = getImageFieldInputRef(fieldKey);
+      var source = draft || selectedLocation || {};
+      var current = (Array.isArray(source[fieldKey]) ? source[fieldKey] : [])[0] || null;
+      return html`<div className="location-future-card location-imagery-field">
+        <strong>${label}</strong>
+        ${current
+          ? html`<div className="location-imagery-thumb-wrap">
+              <button
+                type="button"
+                className="location-imagery-thumb-button"
+                aria-label=${"View " + label + " full size"}
+                onClick=${function () { setImageryLightbox({ url: current.dataUrl, label: label }); }}
+              >
+                <img className="location-imagery-thumb" src=${current.dataUrl} alt=${label} />
+              </button>
+              ${editMode ? html`<div className="location-imagery-actions">
+                <button type="button" onClick=${function () { inputRef.current && inputRef.current.click(); }}>Replace</button>
+                <button type="button" className="destructive" onClick=${function () { removeImageFieldEntry(fieldKey); }}>Remove</button>
+              </div>` : null}
+            </div>`
+          : (editMode
+              ? html`<button type="button" className="location-imagery-upload-button" onClick=${function () { inputRef.current && inputRef.current.click(); }}>+ Upload ${label}</button>`
+              : html`<p className="hint location-imagery-empty">No ${label.toLowerCase()} uploaded.</p>`)}
+        ${editMode ? html`<input
+          ref=${inputRef}
+          type="file"
+          accept="image/*"
+          style=${{ display: "none" }}
+          onChange=${function (event) { handleImageFieldFile(fieldKey, event); }}
+        />` : null}
+      </div>`;
     }
 
     function handleDialogChange(field, value) {
@@ -546,10 +704,8 @@
         }
         var next = clone(current);
         next[field] = value;
-        if (field === "ownerId") {
-          next.ownerName = ownerLookup[value] || "";
-        }
         if (field === "tags") {
+          next.tagsInput = value;
           next.tags = normalizeTags(value);
         }
         return next;
@@ -561,14 +717,34 @@
         await shared.saveLocationRecord(draft);
       }
       setSelectedId(locationId);
+      setEditMode(false);
+    }
+
+    async function editLocation(locationId) {
+      if (draft) {
+        await shared.saveLocationRecord(draft);
+      }
+      setSelectedId(locationId);
+      setEditMode(true);
+    }
+
+    async function deleteLocation(location) {
+      if (!location || !location.id) {
+        return;
+      }
+      if (!window.confirm("Delete " + (location.name || "this location") + "? This cannot be undone.")) {
+        return;
+      }
+      await shared.deleteLocationRecord(location.id);
+      setLocations(function (current) { return (current || []).filter(function (entry) { return entry.id !== location.id; }); });
+      setSelectedId(function (current) { return current === location.id ? null : current; });
     }
 
     async function openNewLocationDialog() {
       setDialogDraft({
         name: "",
         type: "Domain",
-        ownerId: "",
-        ownerName: "",
+        ownerIds: [],
         detailsHtml: "<p></p>",
         tags: []
       });
@@ -590,13 +766,11 @@
         setStatus("Location Name and Location Type are required.");
         return;
       }
-      var ownerName = ownerLookup[dialogDraft.ownerId] || "";
       var record = await shared.saveLocationRecord({
         id: "location-" + Date.now() + "-" + Math.floor(Math.random() * 1000),
         name: name,
         type: type,
-        ownerId: normalizeString(dialogDraft.ownerId, ""),
-        ownerName: ownerName,
+        ownerIds: Array.isArray(dialogDraft.ownerIds) ? dialogDraft.ownerIds : [],
         detailsHtml: String(dialogDraft.detailsHtml || "<p></p>"),
         description: stripHtml(dialogDraft.detailsHtml || ""),
         tags: normalizeTags(dialogDraft.tags),
@@ -632,8 +806,8 @@
         return [];
       }
       var ids = [];
-      if (location.ownerId) {
-        ids.push(location.ownerId);
+      if (Array.isArray(location.ownerIds)) {
+        ids = ids.concat(location.ownerIds);
       }
       if (Array.isArray(location.relatedCharacterIds)) {
         ids = ids.concat(location.relatedCharacterIds);
@@ -727,7 +901,6 @@
     var storyNotesFiltered = draft && Array.isArray(draft.storyNotes) ? draft.storyNotes : [];
 
     var selectedType = selectedLocation ? normalizeString(selectedLocation.type, "Notable Place") : "Notable Place";
-    var selectedOwner = selectedLocation ? resolveOwnerLabel(selectedLocation) : "";
 
     return html`<div className="character-db-page location-db-page">
       <section className="search-panel card location-search-panel">
@@ -778,7 +951,7 @@
             ${!loading && !filteredLocations.length ? html`<p className="hint">No locations match your current search and filters.</p>` : null}
             ${filteredLocations.map(function (location) {
               var isActive = location.id === selectedId;
-              var ownerLabel = resolveOwnerLabel(location);
+              var ownerLabel = (location.ownerNames || []).join(", ");
               return html`<button
                 key=${location.id}
                 type="button"
@@ -790,6 +963,10 @@
                   <span>${normalizeString(location.type, "Notable Place")} • ${ownerLabel}</span>
                   ${location.tags && location.tags.length ? html`<span>${location.tags.join(", ")}</span>` : null}
                 </div>
+                <${shared.ListCardActions} actions=${[
+                  { key: "edit", icon: "✎", label: "Edit " + (location.name || "location"), onClick: function () { editLocation(location.id); } },
+                  { key: "delete", icon: "🗑", label: "Delete " + (location.name || "location"), destructive: true, onClick: function () { deleteLocation(location); } }
+                ]} />
               </button>`;
             })}
           </div>
@@ -801,9 +978,14 @@
               <section className="profile-section location-overview-section">
                 <div className="section-heading">
                   <h3>Overview</h3>
-                  <span className="note-subtitle">${status}</span>
+                  <div className="location-overview-heading-actions">
+                    <span className="note-subtitle">${status}</span>
+                    ${editMode
+                      ? html`<button type="button" className="profile-save-button" onClick=${function () { setEditMode(false); }}>Done</button>`
+                      : html`<button type="button" className="profile-biography-edit-button" onClick=${function () { setEditMode(true); }}>Edit</button>`}
+                  </div>
                 </div>
-                <div className="location-overview-grid">
+                ${editMode ? html`<div className="location-overview-grid">
                   <label>Location Name
                     <input type="text" value=${draft ? draft.name : selectedLocation.name || ""} onInput=${function (event) { handleDraftChange("name", event.target.value); }} />
                   </label>
@@ -819,13 +1001,30 @@
                     id="locationOwnerField"
                     label="Owner"
                     characters=${characters}
-                    value=${draft ? draft.ownerId : (selectedLocation.ownerId || "")}
-                    onChange=${function (ownerId) { handleDraftChange("ownerId", ownerId); }}
+                    values=${draft ? draft.ownerIds : (selectedLocation.ownerIds || [])}
+                    onChange=${function (ownerIds) { handleDraftChange("ownerIds", ownerIds); }}
                   />
                   <label>Tags
-                    <input type="text" value=${draft ? (draft.tags || []).join(", ") : (selectedLocation.tags || []).join(", ")} onInput=${function (event) { handleDraftChange("tags", event.target.value); }} placeholder="Court, Secret, Tremere, Downtown" />
+                    <input type="text" value=${draft ? (draft.tagsInput !== undefined ? draft.tagsInput : (draft.tags || []).join(", ")) : (selectedLocation.tags || []).join(", ")} onInput=${function (event) { handleDraftChange("tags", event.target.value); }} placeholder="Court, Secret, Tremere, Downtown" />
                   </label>
-                </div>
+                </div>` : html`<div className="location-overview-grid location-overview-readonly">
+                  <div className="location-readonly-field">
+                    <span className="location-readonly-label">Location Name</span>
+                    <strong className="location-readonly-value">${selectedLocation.name || "Unnamed Location"}</strong>
+                  </div>
+                  <div className="location-readonly-field">
+                    <span className="location-readonly-label">Location Type</span>
+                    <strong className="location-readonly-value">${selectedType}</strong>
+                  </div>
+                  <div className="location-readonly-field">
+                    <span className="location-readonly-label">Owner</span>
+                    <${TagChips} items=${(selectedLocation.ownerIds && selectedLocation.ownerIds.length) ? selectedLocation.ownerNames : []} empty="None" />
+                  </div>
+                  <div className="location-readonly-field">
+                    <span className="location-readonly-label">Tags</span>
+                    <${TagChips} items=${selectedLocation.tags || []} empty="No tags." />
+                  </div>
+                </div>`}
               </section>
 
               <section className="profile-section location-details-section">
@@ -834,7 +1033,7 @@
                   <span className="note-subtitle">Rich text description</span>
                 </div>
                 ${dialogOpen ? html`<p className="hint">Close the new location dialog to edit the selected location details.</p>` : html`<${shared.CharacterBiographyWorkspace}
-                  editable=${true}
+                  editable=${editMode}
                   value=${String(draft ? draft.detailsHtml : selectedLocation.detailsHtml || "")}
                   onChange=${function (htmlValue) { handleDraftChange("detailsHtml", htmlValue); handleDraftChange("description", stripHtml(htmlValue)); }}
                   editorClassName="rich-editor profile-rich-editor character-rich-text location-rich-editor"
@@ -847,10 +1046,10 @@
                   <h3>Linked Characters</h3>
                   <span className="note-subtitle">Characters connected through ownership or timeline references</span>
                 </div>
-                ${linkedCharacters.length ? html`<div className="story-notes-list location-link-list">
+                ${linkedCharacters.length ? html`<div className="notebook-chip-list location-link-chip-list">
                   ${linkedCharacters.map(function (character) {
-                    return html`<button type="button" key=${character.id} className="story-note-item" onClick=${function () { window.location.href = "characters.html?character=" + encodeURIComponent(character.id); }}>
-                      <strong>${character.label}</strong>
+                    return html`<button type="button" key=${character.id} className="notebook-chip location-link-chip" onClick=${function () { window.location.href = "characters.html?character=" + encodeURIComponent(character.id); }}>
+                      <span>${character.label}</span>
                     </button>`;
                   })}
                 </div>` : html`<p className="hint">No linked characters yet.</p>`}
@@ -890,18 +1089,15 @@
                 </div>` : html`<p className="hint">No story notes reference this location yet.</p>`}
               </section>
 
-              <section className="profile-section location-future-section">
+              <section className="profile-section location-imagery-section">
                 <div className="section-heading">
-                  <h3>Future Ready</h3>
-                  <span className="note-subtitle">Prepared for future assets</span>
+                  <h3>Imagery</h3>
+                  <span className="note-subtitle">Upload a single image, map, and floor plan</span>
                 </div>
                 <div className="location-future-grid">
-                  <div className="location-future-card"><strong>Images</strong><span>${(selectedLocation.images || []).length} attached</span></div>
-                  <div className="location-future-card"><strong>Maps</strong><span>${(selectedLocation.mapLinks || []).length} linked</span></div>
-                  <div className="location-future-card"><strong>Floor Plans</strong><span>${(selectedLocation.floorPlans || []).length} attached</span></div>
-                  <div className="location-future-card"><strong>Handouts</strong><span>${(selectedLocation.handouts || []).length} attached</span></div>
-                  <div className="location-future-card"><strong>Travel Routes</strong><span>${(selectedLocation.travelRoutes || []).length} linked</span></div>
-                  <div className="location-future-card"><strong>Encounter Notes</strong><span>${(selectedLocation.encounterNotes || []).length} attached</span></div>
+                  ${renderImageField("images", "Image")}
+                  ${renderImageField("mapLinks", "Map")}
+                  ${renderImageField("floorPlans", "Floor Plan")}
                 </div>
               </section>
             </div>
@@ -932,11 +1128,11 @@
               id="locationOwnerDialogField"
               label="Owner"
               characters=${characters}
-              value=${dialogDraft ? dialogDraft.ownerId : ""}
-              onChange=${function (ownerId) { handleDialogChange("ownerId", ownerId); }}
+              values=${dialogDraft ? dialogDraft.ownerIds : []}
+              onChange=${function (ownerIds) { handleDialogChange("ownerIds", ownerIds); }}
             />
             <label className="chronicle-span-2">Tags
-              <input type="text" value=${dialogDraft ? (dialogDraft.tags || []).join(", ") : ""} onInput=${function (event) { handleDialogChange("tags", event.target.value); }} placeholder="Court, Secret, Tremere, Downtown" />
+              <input type="text" value=${dialogDraft ? (dialogDraft.tagsInput !== undefined ? dialogDraft.tagsInput : (dialogDraft.tags || []).join(", ")) : ""} onInput=${function (event) { handleDialogChange("tags", event.target.value); }} placeholder="Court, Secret, Tremere, Downtown" />
             </label>
             <div className="chronicle-span-2">
               <div className="section-heading">
@@ -955,6 +1151,19 @@
           <div className="chronicle-modal-actions">
             <button type="button" onClick=${closeDialog}>Cancel</button>
             <button type="button" onClick=${saveNewLocation}>Save Location</button>
+          </div>
+        </div>
+      </div>` : null}
+
+      ${imageryLightbox ? html`<div className="chronicle-modal location-imagery-lightbox">
+        <div className="chronicle-modal-backdrop" onClick=${function () { setImageryLightbox(null); }}></div>
+        <div className="chronicle-modal-panel location-imagery-lightbox-panel">
+          <div className="chronicle-modal-head">
+            <h3>${imageryLightbox.label}</h3>
+            <button type="button" className="icon-button chronicle-modal-close-button" aria-label="Close preview" onClick=${function () { setImageryLightbox(null); }}>×</button>
+          </div>
+          <div className="location-imagery-lightbox-body">
+            <img className="location-imagery-lightbox-image" src=${imageryLightbox.url} alt=${imageryLightbox.label} />
           </div>
         </div>
       </div>` : null}

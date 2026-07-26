@@ -2229,7 +2229,7 @@
     // rendered as nodes on the map canvas (flowNodes, derived separately
     // from data.characters filtered by onMap), so filtering the directory
     // can never hide or affect a character already placed on the map.
-    var characterFilters = window.CharacterDirectoryFilters.useCharacterDirectoryFilters();
+    var characterFilters = window.CharacterDirectoryFilters.useCharacterDirectoryFilters(data.characters);
 
     var _characterView = useState("directory");
     var characterView = _characterView[0];
