@@ -13,7 +13,12 @@
   var characterService = window.CharacterService;
   var relationshipService = window.RelationshipService;
   var mapLayoutService = window.MapLayoutService;
-  if (!characterService || !relationshipService || !shared.CharacterBiographyWorkspace || !shared.CharacterProfileWorkspace || !shared.CharacterProfilePortrait) {
+  // Clan/Sect/Status/Tags filtering (state, panel UI, AND/OR predicate) is
+  // owned entirely by character-directory-filters.js, shared verbatim with
+  // the Relationship Map's own Character Directory -- neither page
+  // reimplements it.
+  var characterDirectoryFilters = window.CharacterDirectoryFilters;
+  if (!characterService || !relationshipService || !characterDirectoryFilters || !shared.CharacterBiographyWorkspace || !shared.CharacterProfileWorkspace || !shared.CharacterProfilePortrait) {
     return;
   }
 
@@ -49,25 +54,6 @@
     return (relationships || []).filter(function (entry) {
       return entry && (entry.from === characterId || entry.to === characterId);
     }).length;
-  }
-
-  function selectedFilterValues(filters, options) {
-    return options.filter(function (option) { return Boolean(filters[option]); });
-  }
-
-  function buildFilterSummary(labelPlural, filters, options) {
-    var selected = selectedFilterValues(filters, options);
-    if (!selected.length) {
-      return "All " + labelPlural;
-    }
-    if (selected.length === 1) {
-      return selected[0];
-    }
-    if (selected.length === 2) {
-      var pair = selected[0] + ", " + selected[1];
-      return pair.length <= 24 ? pair : "2 Selected";
-    }
-    return selected.length + " Selected";
   }
 
   function generateCharacterId() {
@@ -112,27 +98,14 @@
     var loading = _loading[0];
     var setLoading = _loading[1];
 
-    var _clanFilters = useState({});
-    var clanFilters = _clanFilters[0];
-    var setClanFilters = _clanFilters[1];
-
-    var _sectFilters = useState({});
-    var sectFilters = _sectFilters[0];
-    var setSectFilters = _sectFilters[1];
-
-    var _activeDropdown = useState(null);
-    var activeDropdown = _activeDropdown[0];
-    var setActiveDropdown = _activeDropdown[1];
-
-    var _focusedFilterIndex = useState({ clan: 0, sect: 0 });
-    var focusedFilterIndex = _focusedFilterIndex[0];
-    var setFocusedFilterIndex = _focusedFilterIndex[1];
+    // Clan/Sect/Status/Tags filter state, panel UI and matching predicate
+    // -- all owned by the shared hook (see character-directory-filters.js)
+    // so this page and the Relationship Map's Character Directory can
+    // never drift apart.
+    var characterFilters = characterDirectoryFilters.useCharacterDirectoryFilters();
 
     var saveTimerRef = useRef(null);
     var channelRef = useRef(null);
-    var filterRootRef = useRef(null);
-    var filterTriggerRefs = useRef({ clan: null, sect: null });
-    var filterOptionRefs = useRef({ clan: [], sect: [] });
 
     useEffect(function () {
       var cancelled = false;
@@ -205,37 +178,8 @@
       };
     }, []);
 
-    var clanOptions = useMemo(function () {
-      var seen = {};
-      var options = [];
-      characters.forEach(function (entry) {
-        var value = normalizeString(entry.clan, "None");
-        if (!seen[value]) {
-          seen[value] = true;
-          options.push(value);
-        }
-      });
-      return options.sort();
-    }, [characters]);
-
-    var sectOptions = useMemo(function () {
-      var seen = {};
-      var options = [];
-      characters.forEach(function (entry) {
-        var value = normalizeString(entry.sect, "None");
-        if (!seen[value]) {
-          seen[value] = true;
-          options.push(value);
-        }
-      });
-      return options.sort();
-    }, [characters]);
-
     var filteredCharacters = useMemo(function () {
       var term = normalizeString(search, "").toLowerCase();
-      var activeClanFilters = Object.keys(clanFilters).filter(function (key) { return clanFilters[key]; });
-      var activeSectFilters = Object.keys(sectFilters).filter(function (key) { return sectFilters[key]; });
-
       return characters.filter(function (entry) {
         var name = normalizeString(entry.name, "Unnamed");
         var clan = normalizeString(entry.clan, "None");
@@ -248,270 +192,13 @@
           }
         }
 
-        if (activeClanFilters.length && activeClanFilters.indexOf(clan) === -1) {
-          return false;
-        }
-
-        if (activeSectFilters.length && activeSectFilters.indexOf(sect) === -1) {
-          return false;
-        }
-
-        return true;
+        return characterFilters.matchesFilters(entry);
       });
-    }, [characters, search, clanFilters, sectFilters]);
+    }, [characters, search, characterFilters.matchesFilters]);
 
     var selectedCharacter = useMemo(function () {
       return characters.find(function (entry) { return entry.id === selectedId; }) || null;
     }, [characters, selectedId]);
-
-    useEffect(function () {
-      if (!activeDropdown) {
-        return;
-      }
-
-      function onPointerDown(event) {
-        var root = filterRootRef.current;
-        if (!root || root.contains(event.target)) {
-          return;
-        }
-        setActiveDropdown(null);
-      }
-
-      function onEscape(event) {
-        if (event.key !== "Escape") {
-          return;
-        }
-        var current = activeDropdown;
-        setActiveDropdown(null);
-        window.requestAnimationFrame(function () {
-          var trigger = filterTriggerRefs.current[current];
-          if (trigger && typeof trigger.focus === "function") {
-            trigger.focus();
-          }
-        });
-      }
-
-      document.addEventListener("pointerdown", onPointerDown);
-      document.addEventListener("keydown", onEscape);
-      return function () {
-        document.removeEventListener("pointerdown", onPointerDown);
-        document.removeEventListener("keydown", onEscape);
-      };
-    }, [activeDropdown]);
-
-    useEffect(function () {
-      if (!activeDropdown) {
-        return;
-      }
-      var optionList = activeDropdown === "clan" ? clanOptions : sectOptions;
-      var maxIndex = optionList.length;
-      var currentIndex = focusedFilterIndex[activeDropdown] || 0;
-      var clamped = Math.max(0, Math.min(maxIndex, currentIndex));
-      if (clamped !== currentIndex) {
-        setFocusedFilterIndex(function (prev) {
-          var next = Object.assign({}, prev);
-          next[activeDropdown] = clamped;
-          return next;
-        });
-        return;
-      }
-      window.requestAnimationFrame(function () {
-        var refs = filterOptionRefs.current[activeDropdown] || [];
-        var target = refs[clamped];
-        if (target && typeof target.focus === "function") {
-          target.focus();
-        }
-      });
-    }, [activeDropdown, focusedFilterIndex, clanOptions, sectOptions]);
-
-    function toggleFilter(mapSetter, value) {
-      mapSetter(function (prev) {
-        var next = Object.assign({}, prev);
-        next[value] = !Boolean(next[value]);
-        return next;
-      });
-    }
-
-    function allOptionsSelected(options, filters) {
-      return options.length > 0 && options.every(function (option) { return Boolean(filters[option]); });
-    }
-
-    function setAllFilters(mapSetter, options, enabled) {
-      mapSetter(function () {
-        if (!enabled) {
-          return {};
-        }
-        var next = {};
-        options.forEach(function (option) {
-          next[option] = true;
-        });
-        return next;
-      });
-    }
-
-    function openFilterDropdown(kind, options, filters) {
-      var selected = selectedFilterValues(filters, options);
-      var startIndex = selected.length ? Math.max(1, options.indexOf(selected[0]) + 1) : 0;
-      setFocusedFilterIndex(function (prev) {
-        var next = Object.assign({}, prev);
-        next[kind] = startIndex;
-        return next;
-      });
-      setActiveDropdown(kind);
-    }
-
-    function toggleFilterDropdown(kind, options, filters) {
-      if (activeDropdown === kind) {
-        setActiveDropdown(null);
-        return;
-      }
-      openFilterDropdown(kind, options, filters);
-    }
-
-    function moveFilterFocus(kind, delta, optionsLength) {
-      setFocusedFilterIndex(function (prev) {
-        var next = Object.assign({}, prev);
-        var total = optionsLength + 1;
-        var base = next[kind] || 0;
-        var moved = (base + delta + total) % total;
-        next[kind] = moved;
-        return next;
-      });
-    }
-
-    function setFilterFocus(kind, nextIndex) {
-      setFocusedFilterIndex(function (prev) {
-        var next = Object.assign({}, prev);
-        next[kind] = nextIndex;
-        return next;
-      });
-    }
-
-    function toggleFilterByIndex(kind, options, filters, mapSetter, index) {
-      if (index === 0) {
-        setAllFilters(mapSetter, options, !allOptionsSelected(options, filters));
-        return;
-      }
-      var option = options[index - 1];
-      if (!option) {
-        return;
-      }
-      toggleFilter(mapSetter, option);
-    }
-
-    function onFilterPanelKeyDown(kind, options, filters, mapSetter, event) {
-      var currentIndex = focusedFilterIndex[kind] || 0;
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        moveFilterFocus(kind, 1, options.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        moveFilterFocus(kind, -1, options.length);
-        return;
-      }
-      if (event.key === "Home") {
-        event.preventDefault();
-        setFilterFocus(kind, 0);
-        return;
-      }
-      if (event.key === "End") {
-        event.preventDefault();
-        setFilterFocus(kind, options.length);
-        return;
-      }
-      if (event.key === " " || event.key === "Enter") {
-        event.preventDefault();
-        toggleFilterByIndex(kind, options, filters, mapSetter, currentIndex);
-      }
-    }
-
-    function onFilterTriggerKeyDown(kind, options, filters, event) {
-      if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        openFilterDropdown(kind, options, filters);
-      }
-    }
-
-    function renderFilterDropdown(kind, label, labelPlural, options, filters, mapSetter) {
-      var summary = buildFilterSummary(labelPlural, filters, options);
-      var allSelected = allOptionsSelected(options, filters);
-      var dropdownOpen = activeDropdown === kind;
-      var panelId = "character-filter-panel-" + kind;
-
-      filterOptionRefs.current[kind] = [];
-
-      return React.createElement(
-        "div",
-        { className: "character-filter-dropdown", "data-filter-dropdown": kind },
-        React.createElement("span", { className: "character-filter-label", id: kind + "FilterLabel" }, label),
-        React.createElement(
-          "button",
-          {
-            type: "button",
-            className: "character-filter-trigger" + (dropdownOpen ? " open" : ""),
-            "aria-haspopup": "menu",
-            "aria-expanded": dropdownOpen ? "true" : "false",
-            "aria-controls": panelId,
-            "aria-labelledby": kind + "FilterLabel",
-            ref: function (node) { filterTriggerRefs.current[kind] = node; },
-            onClick: function () { toggleFilterDropdown(kind, options, filters); },
-            onKeyDown: function (event) { onFilterTriggerKeyDown(kind, options, filters, event); }
-          },
-          React.createElement("span", { className: "character-filter-trigger-text" }, summary),
-          React.createElement("span", { className: "character-filter-trigger-caret", "aria-hidden": "true" }, "v")
-        ),
-        dropdownOpen
-          ? React.createElement(
-              "div",
-              {
-                id: panelId,
-                className: "character-filter-menu",
-                role: "menu",
-                "aria-labelledby": kind + "FilterLabel",
-                onKeyDown: function (event) { onFilterPanelKeyDown(kind, options, filters, mapSetter, event); }
-              },
-              React.createElement(
-                "button",
-                {
-                  type: "button",
-                  className: "character-filter-option" + (allSelected ? " checked" : ""),
-                  role: "menuitemcheckbox",
-                  "aria-checked": allSelected ? "true" : "false",
-                  tabIndex: -1,
-                  ref: function (node) { filterOptionRefs.current[kind][0] = node; },
-                  onMouseEnter: function () { setFilterFocus(kind, 0); },
-                  onClick: function () { toggleFilterByIndex(kind, options, filters, mapSetter, 0); }
-                },
-                React.createElement("span", { className: "character-filter-check", "aria-hidden": "true" }),
-                React.createElement("span", null, "Select All")
-              ),
-              React.createElement("div", { className: "character-filter-divider", "aria-hidden": "true" }),
-              options.map(function (option, optionIndex) {
-                var checked = Boolean(filters[option]);
-                var domIndex = optionIndex + 1;
-                return React.createElement(
-                  "button",
-                  {
-                    key: kind + "-option-" + option,
-                    type: "button",
-                    className: "character-filter-option" + (checked ? " checked" : ""),
-                    role: "menuitemcheckbox",
-                    "aria-checked": checked ? "true" : "false",
-                    tabIndex: -1,
-                    ref: function (node) { filterOptionRefs.current[kind][domIndex] = node; },
-                    onMouseEnter: function () { setFilterFocus(kind, domIndex); },
-                    onClick: function () { toggleFilterByIndex(kind, options, filters, mapSetter, domIndex); }
-                  },
-                  React.createElement("span", { className: "character-filter-check", "aria-hidden": "true" }),
-                  React.createElement("span", null, option)
-                );
-              })
-            )
-          : null
-      );
-    }
 
     function persistCharacterUpdate(nextCharacter) {
       if (saveTimerRef.current) {
@@ -641,14 +328,10 @@
           <label htmlFor="characterSearch">Search Characters</label>
           <div className="search-row">
             <input id="characterSearch" type="search" placeholder="Search by name, clan, sect..." autoComplete="off" value=${search} onInput=${function (event) { setSearch(event.target.value); }} />
+            ${characterFilters.renderFilterControl()}
             <button type="button" className="location-add-button" title="New Character" aria-label="New Character" onClick=${startNewCharacter}>+</button>
           </div>
-          ${React.createElement(
-            "div",
-            { className: "character-filter-grid", ref: filterRootRef },
-            renderFilterDropdown("clan", "Clan", "Clans", clanOptions, clanFilters, setClanFilters),
-            renderFilterDropdown("sect", "Sect", "Sects", sectOptions, sectFilters, setSectFilters)
-          )}
+          ${characterFilters.renderActiveFilters()}
         </section>
 
         <section className="character-db-layout">

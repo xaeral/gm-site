@@ -2221,6 +2221,16 @@
     var sortMode = _sort[0];
     var setSortMode = _sort[1];
 
+    // Clan/Sect/Status/Tags filtering for the Character Directory panel --
+    // the exact same hook (state, panel UI, AND/OR predicate) the
+    // standalone Characters page uses, from character-directory-filters.js.
+    // This only ever filters what the Directory list (characterList()
+    // below) displays; it has no connection to which characters are
+    // rendered as nodes on the map canvas (flowNodes, derived separately
+    // from data.characters filtered by onMap), so filtering the directory
+    // can never hide or affect a character already placed on the map.
+    var characterFilters = window.CharacterDirectoryFilters.useCharacterDirectoryFilters();
+
     var _characterView = useState("directory");
     var characterView = _characterView[0];
     var setCharacterView = _characterView[1];
@@ -3554,7 +3564,13 @@
       var q = search.trim().toLowerCase();
       var result = data.characters.filter(function (c) {
         var text = [c.name, c.clan, c.sect, (c.tags || []).join(" ")].join(" ").toLowerCase();
-        return !q || text.indexOf(q) >= 0;
+        if (q && text.indexOf(q) === -1) {
+          return false;
+        }
+        // Clan/Sect/Status/Tags filtering -- shared predicate, see
+        // characterFilters above. Only narrows this Directory listing;
+        // never touches which characters are placed on the map.
+        return characterFilters.matchesFilters(c);
       });
 
       result.sort(function (a, b) {
@@ -3681,8 +3697,9 @@
           <div className="panel-body character-directory-body">
             <div className="character-directory-controls">
               <input placeholder="Search" value=${search} onInput=${function (e) { setSearch(e.target.value); }} />
-              <button>Filter</button>
+              ${characterFilters.renderFilterControl()}
             </div>
+            ${characterFilters.renderActiveFilters()}
 
             <div className="char-list" ref=${directoryListRef}>
               ${list.map(function (c) {

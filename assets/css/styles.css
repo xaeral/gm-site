@@ -1288,6 +1288,198 @@ button:focus-visible {
   transform: rotate(-45deg) translateY(-1px);
 }
 
+/* Character Directory's combined Filter button + panel (Sect/Clan/Tags/
+   Status together, anchored beneath a single trigger) -- deliberately a
+   separate set of classes from .character-filter-* above, which several
+   OTHER pages (GM Notes, Sessions, Timeline, Locations) still use for
+   their own single-category dropdown filters; this is Characters-only. */
+.character-directory-filter-anchor {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.character-directory-filter-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2.35rem;
+  padding: 0.55rem 0.85rem;
+  border: 1px solid rgba(209, 13, 64, 0.5);
+  border-radius: 0.62rem;
+  background: rgba(16, 16, 24, 0.92);
+  color: #ffffff;
+  white-space: nowrap;
+}
+
+.character-directory-filter-button:hover,
+.character-directory-filter-button:focus-visible,
+.character-directory-filter-button.open {
+  border-color: #d10d40;
+  background: rgba(209, 13, 64, 0.18);
+}
+
+.character-directory-filter-button:focus-visible {
+  outline: 2px solid rgba(255, 118, 154, 0.8);
+  outline-offset: 1px;
+}
+
+/* Fixed width, capped against the viewport so it can never run off the
+   edge of the app -- .align-right (applied in JS after measuring the
+   button's position against the panel's rendered width) swaps which edge
+   it hangs from when the default left-aligned position would overflow. */
+.character-directory-filter-panel {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  left: 0;
+  z-index: 30;
+  width: 20rem;
+  max-width: calc(100vw - 1.5rem);
+  border: 1px solid rgba(209, 13, 64, 0.58);
+  border-radius: 0.68rem;
+  background: linear-gradient(165deg, rgba(15, 15, 24, 0.98), rgba(10, 10, 16, 0.98));
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.45);
+  /* The panel itself does not scroll or resize -- only .character-directory-
+     filter-panel-body (below) does, so the panel stays put while its
+     content scrolls internally. */
+  overflow: hidden;
+}
+
+.character-directory-filter-panel.align-right {
+  left: auto;
+  right: 0;
+}
+
+.character-directory-filter-panel-body {
+  max-height: 22rem;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.6rem;
+}
+
+.character-directory-filter-section {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.character-directory-filter-section:last-child {
+  border-bottom: 0;
+}
+
+.character-directory-filter-section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0.5rem 0.15rem;
+  color: #ffffff;
+  text-align: left;
+  min-height: 0;
+}
+
+.character-directory-filter-section-header:hover {
+  color: #ff8ea8;
+}
+
+.character-directory-filter-section-caret {
+  flex: 0 0 auto;
+  font-size: 0.66rem;
+  color: var(--text-muted);
+  width: 0.7rem;
+}
+
+.character-directory-filter-section-title {
+  flex: 1 1 auto;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: inherit;
+}
+
+.character-directory-filter-section-count {
+  flex: 0 0 auto;
+  min-width: 1.3rem;
+  padding: 0.05rem 0.32rem;
+  border-radius: 999px;
+  background: rgba(209, 13, 64, 0.9);
+  color: #ffffff;
+  font-size: 0.7rem;
+  text-align: center;
+}
+
+.character-directory-filter-section-body {
+  padding: 0 0.15rem 0.65rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.character-directory-filter-tag-search {
+  width: 100%;
+}
+
+.character-directory-filter-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.character-directory-filter-empty {
+  margin: 0;
+}
+
+.character-directory-active-filters {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.character-directory-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid rgba(209, 13, 64, 0.5);
+  border-radius: 999px;
+  padding: 0.24rem 0.5rem 0.24rem 0.7rem;
+  background: rgba(209, 13, 64, 0.16);
+  color: #ffffff;
+  font-size: 0.8rem;
+}
+
+.character-directory-filter-chip button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  opacity: 0.75;
+  padding: 0;
+  min-height: 0;
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.character-directory-filter-chip button:hover {
+  opacity: 1;
+  color: #ff8ea8;
+}
+
+.character-directory-clear-filters {
+  min-height: 0;
+  padding: 0.24rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--line);
+}
+
+.character-directory-clear-filters:hover {
+  color: #ffffff;
+  border-color: rgba(209, 13, 64, 0.6);
+}
+
 .character-db-empty {
   border: 1px dashed rgba(209, 13, 64, 0.45);
   border-radius: 0.7rem;
