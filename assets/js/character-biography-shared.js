@@ -49,6 +49,66 @@
   ];
   var STATUS_OPTIONS = ["Unknown", "Alive", "Embraced", "In Torpor", "Missing", "Destroyed"];
 
+  // The single source of truth for the Tag Manager's starter tags, shared
+  // between relationship-map-react.js (seeds a brand-new chronicle's
+  // data.tagGroups) and campaign-data-tools.js (Danger Zone's "Reset Tags
+  // to Default", which is reachable from settings.html where the
+  // relationship map script never loads at all) -- both read this same
+  // array via
+  // window.CampaignAtlasCharactersShared.DEFAULT_TAG_GROUPS so the two
+  // never drift apart.
+  var DEFAULT_TAG_GROUPS = [
+    {
+      id: "tag-group-camarilla",
+      name: "The Camarilla",
+      tags: [
+        { id: "tag-camarilla-prince", name: "Prince", color: "#d10d40" },
+        { id: "tag-camarilla-seneschal", name: "Seneschal", color: "#d10d40" },
+        { id: "tag-camarilla-primogen", name: "Primogen", color: "#d10d40" },
+        { id: "tag-camarilla-sheriff", name: "Sheriff", color: "#d10d40" },
+        { id: "tag-camarilla-scourge", name: "Scourge", color: "#d10d40" },
+        { id: "tag-camarilla-keeper-of-elysium", name: "Keeper of Elysium", color: "#d10d40" },
+        { id: "tag-camarilla-harpy", name: "Harpy", color: "#d10d40" },
+        { id: "tag-camarilla-justicar", name: "Justicar", color: "#d10d40" },
+        { id: "tag-camarilla-archon", name: "Archon", color: "#d10d40" },
+        { id: "tag-camarilla-alastor", name: "Alastor", color: "#d10d40" }
+      ]
+    },
+    {
+      id: "tag-group-anarch",
+      name: "The Anarch Movement",
+      tags: [
+        { id: "tag-anarch-baron", name: "Baron", color: "#c97a1c" },
+        { id: "tag-anarch-reeve", name: "Reeve", color: "#c97a1c" },
+        { id: "tag-anarch-warlord", name: "Warlord", color: "#c97a1c" },
+        { id: "tag-anarch-sweeper", name: "Sweeper", color: "#c97a1c" },
+        { id: "tag-anarch-scout", name: "Scout", color: "#c97a1c" },
+        { id: "tag-anarch-emissary", name: "Emissary", color: "#c97a1c" }
+      ]
+    },
+    {
+      id: "tag-group-ashirra",
+      name: "The Ashirra",
+      tags: [
+        { id: "tag-ashirra-sultan", name: "Sultan", color: "#1c9c74" },
+        { id: "tag-ashirra-malik", name: "Malik", color: "#1c9c74" },
+        { id: "tag-ashirra-imam", name: "Imam", color: "#1c9c74" },
+        { id: "tag-ashirra-kadai", name: "Kadai", color: "#1c9c74" },
+        { id: "tag-ashirra-mufti", name: "Mufti", color: "#1c9c74" }
+      ]
+    },
+    {
+      id: "tag-group-second-inquisition",
+      name: "The Second Inquisition",
+      tags: [
+        { id: "tag-inquisition-operational-director", name: "Operational Director", color: "#5a6472" },
+        { id: "tag-inquisition-controller", name: "Controller", color: "#5a6472" },
+        { id: "tag-inquisition-inquisitor", name: "Inquisitor", color: "#5a6472" },
+        { id: "tag-inquisition-field-agent", name: "Field Agent", color: "#5a6472" }
+      ]
+    }
+  ];
+
   function optionsWithCurrentValue(options, currentValue) {
     var value = String(currentValue || "").trim();
     if (!value || options.indexOf(value) >= 0) {
@@ -1571,6 +1631,279 @@
     </div>`;
   }
 
+  // Searchable multi-select tag input, replacing the old comma-separated
+  // free-text field. `props.tags` stays exactly what it always was --
+  // draft.tags, a plain array of tag name strings -- so nothing about how
+  // a character's assigned tags are stored or read elsewhere changes; only
+  // the widget used to edit that array changes. Tag DEFINITIONS (name,
+  // colour, id) come from data.tagGroups, read and written directly via
+  // MapLayoutService.getPreferences()/savePreferences() -- the exact same
+  // path the Relationship Map's Tag Manager and the Danger Zone's Reset
+  // Tags action already use -- so a tag created from this field shows up
+  // in the Tag Manager immediately, and vice versa.
+  function TagPickerField(props) {
+    var assignedNames = Array.isArray(props.tags) ? props.tags : [];
+    var onChange = typeof props.onChange === "function" ? props.onChange : function () {};
+    var inputId = props.inputId || null;
+
+    var _allTags = useState([]);
+    var allTags = _allTags[0];
+    var setAllTags = _allTags[1];
+
+    var _query = useState("");
+    var query = _query[0];
+    var setQuery = _query[1];
+
+    var _isOpen = useState(false);
+    var isOpen = _isOpen[0];
+    var setIsOpen = _isOpen[1];
+
+    var _activeIndex = useState(0);
+    var activeIndex = _activeIndex[0];
+    var setActiveIndex = _activeIndex[1];
+
+    var inputRef = useRef(null);
+    var rootRef = useRef(null);
+
+    function flattenTagGroups(tagGroups) {
+      var flat = [];
+      (Array.isArray(tagGroups) ? tagGroups : []).forEach(function (group) {
+        (Array.isArray(group.tags) ? group.tags : []).forEach(function (tag) {
+          if (tag && tag.name) {
+            flat.push({ id: tag.id, name: tag.name, color: tag.color || "#d10d40", groupId: group.id });
+          }
+        });
+      });
+      return flat;
+    }
+
+    useEffect(function () {
+      var cancelled = false;
+      var mapLayout = window.MapLayoutService;
+      if (!mapLayout || typeof mapLayout.getPreferences !== "function") {
+        return;
+      }
+      mapLayout.getPreferences().then(function (prefs) {
+        if (!cancelled) {
+          setAllTags(flattenTagGroups(prefs.tagGroups));
+        }
+      }).catch(function () {});
+      return function () { cancelled = true; };
+    }, []);
+
+    useEffect(function () {
+      function onDocumentMouseDown(event) {
+        if (rootRef.current && event.target && !rootRef.current.contains(event.target)) {
+          setIsOpen(false);
+        }
+      }
+      document.addEventListener("mousedown", onDocumentMouseDown);
+      return function () { document.removeEventListener("mousedown", onDocumentMouseDown); };
+    }, []);
+
+    var assignedLower = assignedNames.map(function (name) { return String(name).toLowerCase(); });
+    var trimmedQuery = query.trim();
+    var queryLower = trimmedQuery.toLowerCase();
+
+    var matches = allTags.filter(function (tag) {
+      if (assignedLower.indexOf(tag.name.toLowerCase()) >= 0) {
+        return false;
+      }
+      return !trimmedQuery || tag.name.toLowerCase().indexOf(queryLower) >= 0;
+    }).sort(function (a, b) {
+      if (trimmedQuery) {
+        var aStarts = a.name.toLowerCase().indexOf(queryLower) === 0 ? 0 : 1;
+        var bStarts = b.name.toLowerCase().indexOf(queryLower) === 0 ? 0 : 1;
+        if (aStarts !== bStarts) {
+          return aStarts - bStarts;
+        }
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+    var exactExisting = trimmedQuery ? allTags.some(function (tag) { return tag.name.toLowerCase() === queryLower; }) : true;
+    var canCreate = Boolean(trimmedQuery) && !exactExisting;
+    var optionCount = matches.length + (canCreate ? 1 : 0);
+
+    function openDropdown() {
+      setIsOpen(true);
+      setActiveIndex(0);
+    }
+
+    function assignTag(name) {
+      var trimmedName = String(name || "").trim();
+      if (!trimmedName || assignedLower.indexOf(trimmedName.toLowerCase()) >= 0) {
+        return;
+      }
+      onChange(assignedNames.concat([trimmedName]));
+      setQuery("");
+      setActiveIndex(0);
+      if (inputRef.current) {
+        inputRef.current.focus();
+      }
+    }
+
+    function removeTag(name) {
+      var lower = String(name).toLowerCase();
+      onChange(assignedNames.filter(function (existing) { return existing.toLowerCase() !== lower; }));
+    }
+
+    function createAndAssignTag(name) {
+      var trimmedName = String(name || "").trim();
+      if (!trimmedName) {
+        return;
+      }
+      var mapLayout = window.MapLayoutService;
+      if (!mapLayout) {
+        return;
+      }
+      mapLayout.getPreferences().then(function (prefs) {
+        var groups = (Array.isArray(prefs.tagGroups) ? prefs.tagGroups : []).slice();
+        // Re-check against the freshest saved data (not just this field's
+        // last-fetched `allTags`) so two tags created moments apart can
+        // never end up as case-insensitive duplicates.
+        var existingTag = null;
+        groups.forEach(function (group) {
+          (group.tags || []).forEach(function (tag) {
+            if (tag && tag.name && tag.name.toLowerCase() === trimmedName.toLowerCase()) {
+              existingTag = tag;
+            }
+          });
+        });
+        if (existingTag) {
+          setAllTags(flattenTagGroups(groups));
+          assignTag(existingTag.name);
+          return null;
+        }
+        var newTag = {
+          id: "tag-" + Date.now() + "-" + Math.floor(Math.random() * 100000),
+          name: trimmedName,
+          color: "#d10d40",
+          icon: "",
+          description: "",
+          visible: true
+        };
+        var uncategorized = groups.find(function (group) { return group.id === "tag-group-uncategorized"; });
+        if (!uncategorized) {
+          uncategorized = { id: "tag-group-uncategorized", name: "Uncategorized", tags: [] };
+          groups.push(uncategorized);
+        }
+        uncategorized.tags = (uncategorized.tags || []).concat([newTag]);
+        prefs.tagGroups = groups;
+        return mapLayout.savePreferences(prefs).then(function () {
+          setAllTags(flattenTagGroups(groups));
+          assignTag(newTag.name);
+        });
+      }).catch(function () {});
+    }
+
+    function commitActive() {
+      if (activeIndex < matches.length) {
+        if (matches[activeIndex]) {
+          assignTag(matches[activeIndex].name);
+        }
+        return;
+      }
+      if (canCreate) {
+        createAndAssignTag(trimmedQuery);
+      }
+    }
+
+    function onInputKeyDown(event) {
+      if (event.key === "Escape") {
+        setIsOpen(false);
+        return;
+      }
+      if (event.key === "Backspace" && !query && assignedNames.length) {
+        event.preventDefault();
+        removeTag(assignedNames[assignedNames.length - 1]);
+        return;
+      }
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        if (!isOpen) {
+          openDropdown();
+          return;
+        }
+        setActiveIndex(function (index) { return optionCount ? (index + 1) % optionCount : 0; });
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        if (!isOpen) {
+          openDropdown();
+          return;
+        }
+        setActiveIndex(function (index) { return optionCount ? (index - 1 + optionCount) % optionCount : 0; });
+        return;
+      }
+      if (event.key === "Enter") {
+        if (!trimmedQuery) {
+          return;
+        }
+        event.preventDefault();
+        commitActive();
+        return;
+      }
+      if (event.key === "Tab" && trimmedQuery) {
+        event.preventDefault();
+        commitActive();
+      }
+    }
+
+    return html`<div className="tag-picker" ref=${rootRef}>
+      <div className="tag-picker-chips">
+        ${assignedNames.map(function (name, index) {
+          var meta = allTags.find(function (tag) { return tag.name.toLowerCase() === name.toLowerCase(); });
+          return html`<span className="tag-chip tag-picker-chip" key=${"tag-chip-" + index + "-" + name}>
+            <span className="tag-color-square tag-picker-chip-swatch" style=${{ background: meta ? meta.color : "#d10d40" }} aria-hidden="true"></span>
+            <span className="tag-picker-chip-name">${name}</span>
+            <button type="button" className="tag-picker-chip-remove" aria-label=${"Remove " + name} onClick=${function () { removeTag(name); }}>×</button>
+          </span>`;
+        })}
+        <input
+          id=${inputId}
+          ref=${inputRef}
+          type="text"
+          className="tag-picker-input"
+          value=${query}
+          placeholder=${assignedNames.length ? "" : "Type to search or create a tag..."}
+          role="combobox"
+          aria-expanded=${isOpen}
+          aria-autocomplete="list"
+          aria-controls="tag-picker-listbox"
+          onFocus=${openDropdown}
+          onInput=${function (event) { setQuery(event.target.value); setIsOpen(true); setActiveIndex(0); }}
+          onKeyDown=${onInputKeyDown}
+        />
+      </div>
+      ${isOpen ? html`<div className="tag-picker-dropdown" role="listbox" id="tag-picker-listbox">
+        ${matches.length
+          ? matches.map(function (tag, index) {
+              return html`<button
+                type="button"
+                role="option"
+                aria-selected=${index === activeIndex}
+                key=${"tag-option-" + tag.id}
+                className=${"tag-picker-option" + (index === activeIndex ? " active" : "")}
+                onMouseEnter=${function () { setActiveIndex(index); }}
+                onClick=${function () { assignTag(tag.name); }}
+              >
+                <span className="tag-color-square" style=${{ background: tag.color }} aria-hidden="true"></span>
+                <span>${tag.name}</span>
+              </button>`;
+            })
+          : html`<div className="tag-picker-empty">No matching tags</div>`}
+        ${canCreate ? html`<button
+          type="button"
+          className=${"tag-picker-option tag-picker-create" + (matches.length === activeIndex ? " active" : "")}
+          onMouseEnter=${function () { setActiveIndex(matches.length); }}
+          onClick=${function () { createAndAssignTag(trimmedQuery); }}
+        >Create "${trimmedQuery}"</button>` : null}
+      </div>` : null}
+    </div>`;
+  }
+
   function CharacterProfileWorkspace(props) {
     if (!html) {
       return null;
@@ -2106,22 +2439,34 @@
                     : html`<span className="tag">No Status Tags</span>`}
                 </div>
                 ${timelineCanEdit ? html`<div className="profile-header-editor-grid">
-                  <select value=${draft.clan || "None"} onChange=${function (event) { updateDraftField("clan", event.target.value); }}>
-                    ${optionsWithCurrentValue(CLAN_OPTIONS, draft.clan).map(function (option) {
-                      return html`<option key=${"clan-opt-" + option} value=${option}>${option}</option>`;
-                    })}
-                  </select>
-                  <select value=${draft.sect || "None"} onChange=${function (event) { updateDraftField("sect", event.target.value); }}>
-                    ${optionsWithCurrentValue(SECT_OPTIONS, draft.sect).map(function (option) {
-                      return html`<option key=${"sect-opt-" + option} value=${option}>${option}</option>`;
-                    })}
-                  </select>
-                  <select value=${draft.status || "Unknown"} onChange=${function (event) { updateDraftField("status", event.target.value); }}>
-                    ${optionsWithCurrentValue(STATUS_OPTIONS, draft.status).map(function (option) {
-                      return html`<option key=${"status-opt-" + option} value=${option}>${option}</option>`;
-                    })}
-                  </select>
-                  <input value=${(Array.isArray(draft.tags) ? draft.tags.join(", ") : "")} onInput=${function (event) { updateDraftField("tags", event.target.value.split(",").map(function (tag) { return tag.trim(); }).filter(Boolean)); }} placeholder="Tags (comma separated)" />
+                  <div className="profile-header-editor-field">
+                    <label className="profile-header-editor-label" htmlFor="profile-header-clan-select">Clan</label>
+                    <select id="profile-header-clan-select" value=${draft.clan || "None"} onChange=${function (event) { updateDraftField("clan", event.target.value); }}>
+                      ${optionsWithCurrentValue(CLAN_OPTIONS, draft.clan).map(function (option) {
+                        return html`<option key=${"clan-opt-" + option} value=${option}>${option}</option>`;
+                      })}
+                    </select>
+                  </div>
+                  <div className="profile-header-editor-field">
+                    <label className="profile-header-editor-label" htmlFor="profile-header-sect-select">Sect</label>
+                    <select id="profile-header-sect-select" value=${draft.sect || "None"} onChange=${function (event) { updateDraftField("sect", event.target.value); }}>
+                      ${optionsWithCurrentValue(SECT_OPTIONS, draft.sect).map(function (option) {
+                        return html`<option key=${"sect-opt-" + option} value=${option}>${option}</option>`;
+                      })}
+                    </select>
+                  </div>
+                  <div className="profile-header-editor-field">
+                    <label className="profile-header-editor-label" htmlFor="profile-header-status-select">Status</label>
+                    <select id="profile-header-status-select" value=${draft.status || "Unknown"} onChange=${function (event) { updateDraftField("status", event.target.value); }}>
+                      ${optionsWithCurrentValue(STATUS_OPTIONS, draft.status).map(function (option) {
+                        return html`<option key=${"status-opt-" + option} value=${option}>${option}</option>`;
+                      })}
+                    </select>
+                  </div>
+                  <div className="profile-header-editor-field">
+                    <label className="profile-header-editor-label" htmlFor="profile-header-tags-input">Tags</label>
+                    <${TagPickerField} inputId="profile-header-tags-input" tags=${draft.tags} onChange=${function (nextTags) { updateDraftField("tags", nextTags); }} />
+                  </div>
                 </div>` : null}
               </div>
             </div>
@@ -2297,6 +2642,7 @@
   window.CampaignAtlasCharactersShared = {
     DB_NAME: DB_NAME,
     DB_VERSION: DB_VERSION,
+    DEFAULT_TAG_GROUPS: DEFAULT_TAG_GROUPS,
     clone: clone,
     openCampaignAtlasDb: openCampaignAtlasDb,
     characterBiographyHtml: characterBiographyHtml,

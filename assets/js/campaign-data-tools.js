@@ -244,6 +244,85 @@
     await clearStores("ChronicleNotebook", ["folders", "noteMetadata", "noteBodies", "notes"]);
   }
 
+  // Resets the Tag Manager's tag groups (data.tagGroups, persisted via
+  // MapLayoutService.getPreferences/savePreferences -- the same path the
+  // Tag Manager panel itself writes through) back to the canonical starter
+  // list. Replacing the stored tagGroups outright with a clean copy of the
+  // defaults is what satisfies all four requirements at once: every custom
+  // tag/group is gone (it isn't in the default list), every default that
+  // had been edited is restored to its original name/colour, every
+  // default that had been deleted is recreated, and duplicates are
+  // impossible (the source list has exactly one of each).
+  //
+  // Only character.tags is touched, and only to remap existing entries --
+  // never to add or remove a tag from any character. Every other record
+  // (relationships, zones, locations, sessions, timeline, GM notes) is
+  // read-only here.
+  async function resetTagsToDefault() {
+    var shared = window.CampaignAtlasCharactersShared;
+    var defaultTagGroups = (shared && shared.DEFAULT_TAG_GROUPS) || [];
+    var characters = characterService();
+    var relationships = relationshipService();
+    var mapLayout = mapLayoutService();
+    if (!mapLayout) {
+      return;
+    }
+
+    var preferences = await mapLayout.getPreferences();
+    var currentGroups = Array.isArray(preferences.tagGroups) ? preferences.tagGroups : [];
+
+    // id -> name as it reads RIGHT NOW (a tag may have been renamed since
+    // being assigned to a character) and the reverse lookup, current name
+    // -> id -- together these find which id (if any) a character's
+    // existing plain-text tag currently corresponds to.
+    var currentNameById = {};
+    currentGroups.forEach(function (group) {
+      (group.tags || []).forEach(function (tag) {
+        if (tag && tag.id) {
+          currentNameById[tag.id] = tag.name;
+        }
+      });
+    });
+    var idByCurrentName = {};
+    Object.keys(currentNameById).forEach(function (id) {
+      idByCurrentName[currentNameById[id]] = id;
+    });
+
+    // id -> restored default name.
+    var defaultNameById = {};
+    defaultTagGroups.forEach(function (group) {
+      (group.tags || []).forEach(function (tag) {
+        defaultNameById[tag.id] = tag.name;
+      });
+    });
+
+    function remapTagName(name) {
+      var id = idByCurrentName[name];
+      return id && defaultNameById[id] ? defaultNameById[id] : name;
+    }
+
+    preferences.tagGroups = JSON.parse(JSON.stringify(defaultTagGroups));
+    await mapLayout.savePreferences(preferences);
+
+    if (characters) {
+      var allCharacters = (await characters.getAll()) || [];
+      for (var i = 0; i < allCharacters.length; i++) {
+        var character = allCharacters[i];
+        if (!Array.isArray(character.tags) || !character.tags.length) {
+          continue;
+        }
+        var remapped = character.tags.map(remapTagName);
+        var changed = remapped.some(function (name, index) { return name !== character.tags[index]; });
+        if (changed) {
+          await characters.save(Object.assign({}, character, { tags: remapped }));
+        }
+      }
+      var refreshedCharacters = await characters.getAll();
+      var refreshedRelationships = relationships ? await relationships.getAll() : [];
+      notifyCharactersChanged(refreshedCharacters, refreshedRelationships);
+    }
+  }
+
   async function clearAllCampaignData() {
     // "settings" intentionally excluded so application/workspace preferences survive.
     var characters = characterService();
@@ -461,6 +540,7 @@
     clearLocationsData: clearLocationsData,
     clearSessionsData: clearSessionsData,
     clearGmNotesData: clearGmNotesData,
+    resetTagsToDefault: resetTagsToDefault,
     clearAllCampaignData: clearAllCampaignData,
     exportCampaignData: exportCampaignData,
     exportCampaignToFile: exportCampaignToFile,

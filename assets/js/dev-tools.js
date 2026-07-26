@@ -48,6 +48,16 @@
       confirmLabel: "Clear GM Notes",
       busyLabel: "Clearing...",
       run: function () { return tools.clearGmNotesData(); }
+    },
+    {
+      key: "resetTags",
+      label: "Reset Tags to Default",
+      confirmTitle: "Reset Tags to Default?",
+      description: "This will remove all custom tags and restore the default tag list. Existing records will retain their tag assignments whenever they match restored default tags.",
+      confirmLabel: "Reset Tags to Default",
+      completedLabel: "Reset Tags to Default",
+      busyLabel: "Resetting...",
+      run: function () { return tools.resetTagsToDefault(); }
     }
   ];
 
@@ -85,7 +95,7 @@
       <div className="chronicle-modal-backdrop" onClick=${busy ? undefined : onCancel}></div>
       <div className="chronicle-modal-panel card dev-tools-confirm-modal">
         <div className="chronicle-modal-head">
-          <h3>${action.label}</h3>
+          <h3>${action.confirmTitle || action.label}</h3>
           <button type="button" className="icon-button chronicle-modal-close-button" aria-label="Close dialog" onClick=${onCancel} disabled=${busy}>×</button>
         </div>
         <p className="dev-tools-confirm-copy">${action.description}</p>

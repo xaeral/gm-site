@@ -194,22 +194,23 @@ h6 {
   background: var(--accent-red-soft);
 }
 
+/* React Flow's own <Background> (dot grid) has been removed -- the solid
+   replacement lives here instead of on .react-flow itself, so it sits
+   BEHIND ZonesCanvasLayer (an earlier DOM sibling of <ReactFlow>, see
+   relationship-map-react.js) rather than covering it. Uses the app's own
+   darkest theme token so the canvas reads as a natural extension of the
+   rest of Chronicle Codex, while staying dark enough for zones, character
+   portraits and relationship lines to all read clearly against it.
+   position:relative makes this the positioning context ZonesCanvasLayer's
+   inset:0 anchors to. Pan/zoom/infinite-canvas behaviour is entirely React
+   Flow's own and untouched by any of this. */
 .canvas-viewport {
+  position: relative;
   width: 100%;
   height: 100%;
   min-height: 0;
   overflow: hidden;
   cursor: grab;
-}
-
-/* React Flow's own <Background> (dot grid) has been removed -- this is the
-   plain, solid replacement, using the app's own darkest theme token so the
-   canvas reads as a natural extension of the rest of Chronicle Codex rather
-   than an unstyled/transparent gap, while staying dark enough for character
-   portraits, relationship lines and future zones to read clearly against
-   it. Pan/zoom/infinite-canvas behaviour is entirely React Flow's own and
-   untouched by this -- it's just a background-color on its root element. */
-.canvas-viewport .react-flow {
   background: var(--app-bg);
 }
 
@@ -277,6 +278,13 @@ h6 {
   user-select: none;
   -webkit-user-select: none;
   text-shadow: 0 1px 2px #000;
+  /* Always fully opaque regardless of the zone's own (semi-transparent)
+     fill/text color, and explicitly larger/bolder than the surrounding UI
+     text so a zone's name stays legible at normal zoom no matter how low
+     its background opacity is set. */
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #ffffff;
 }
 
 .zone.selected {
@@ -946,6 +954,12 @@ h6 {
   background: #1b1b29;
 }
 
+.zone-list-item.active {
+  border-color: var(--accent-red);
+  background: #1b1b29;
+  box-shadow: 0 0 0 1px rgba(209, 13, 64, 0.4);
+}
+
 .zone-list-swatch {
   width: 12px;
   height: 12px;
@@ -1041,6 +1055,29 @@ h6 {
 .zone-editor-actions {
   display: grid;
   gap: 0.38rem;
+}
+
+.zone-opacity-field {
+  margin-top: 0.55rem;
+}
+
+.zone-opacity-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.zone-opacity-row input[type="range"] {
+  flex: 1 1 auto;
+}
+
+.zone-opacity-value {
+  flex: 0 0 auto;
+  min-width: 2.6em;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .character-details-content {
@@ -1715,6 +1752,8 @@ h6 {
 }
 
 .tag-chip {
+  display: inline-flex;
+  align-items: center;
   border: 1px solid #353548;
   border-radius: 7px;
   background: #131321;
@@ -1932,10 +1971,22 @@ input[type="range"]:focus-visible {
   outline-offset: 2px;
 }
 
+/* --fill is a unitless NUMBER from 0 to 1 (the same normalised fraction
+   that determines where the browser places the thumb), never a bare
+   percentage -- that's what makes the multiplication below valid, and what
+   keeps this in exact sync with the thumb rather than just "close". A
+   native <input type="range"> insets the thumb's OWN travel range by half
+   its own width at each end (the thumb can't hang off the track), so the
+   fill stop can't just be `fraction * 100%` -- it has to reproduce that
+   same inset: half the thumb's width, plus the fraction of the remaining
+   (track width - thumb width) travel distance. Get this wrong and the fill
+   reads as "close enough" in the middle of the range but visibly overshoots
+   or undershoots the thumb's actual centre at both ends. */
 input[type="range"]::-webkit-slider-runnable-track {
   height: var(--slider-track-height);
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--slider-active) 0%, var(--slider-active) var(--fill, 45%), var(--slider-track) var(--fill, 45%), var(--slider-track) 100%);
+  --slider-fill-stop: calc(var(--slider-thumb-size) / 2 + var(--fill, 0.45) * (100% - var(--slider-thumb-size)));
+  background: linear-gradient(90deg, var(--slider-active) 0%, var(--slider-active) var(--slider-fill-stop), var(--slider-track) var(--slider-fill-stop), var(--slider-track) 100%);
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
@@ -3159,6 +3210,143 @@ select.rtm-style-select {
   width: 100%;
   min-width: 0;
   text-overflow: ellipsis;
+}
+
+.profile-header-editor-field {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.profile-header-editor-label {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.profile-header-editor-field select,
+.profile-header-editor-field input {
+  /* flex-basis 0 (not the inherited width:100%, which reads as 100% of the
+     flex container and makes the row look full on its own -- forcing the
+     label onto its own line every time) so the control only claims the
+     space left over after the label, and can still shrink down to it on
+     narrow layouts. */
+  flex: 1 1 0%;
+  width: auto;
+}
+
+.profile-header-editor-field .tag-picker {
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
+/* Tag picker (searchable, chip-based Tags field) -- the chip container
+   reuses .tag-chip/.tag-color-square as-is (see the Tag Manager's own tag
+   rows) so a tag looks identical whether it's shown here or there. */
+.tag-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.tag-picker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #151521;
+  padding: 0.26rem 0.34rem;
+  min-height: 2rem;
+}
+
+.tag-picker-input {
+  flex: 1 1 auto;
+  min-width: 8ch;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  padding: 0.14rem 0.2rem;
+  font-size: 0.78rem;
+  outline: none;
+}
+
+.tag-picker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+}
+
+.tag-picker-chip-name {
+  white-space: nowrap;
+}
+
+.tag-picker-chip-remove {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  opacity: 0.7;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+
+.tag-picker-chip-remove:hover {
+  opacity: 1;
+  color: #ff4f7b;
+}
+
+.tag-picker-dropdown {
+  position: absolute;
+  top: calc(100% + 0.3rem);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #101017;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  padding: 0.24rem;
+  display: grid;
+  gap: 0.1rem;
+}
+
+.tag-picker-option {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #ececf8;
+  text-align: left;
+  padding: 0.32rem 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.tag-picker-option:hover,
+.tag-picker-option.active {
+  background: var(--accent-red-soft);
+}
+
+.tag-picker-create {
+  color: #ff9db3;
+  font-style: italic;
+}
+
+.tag-picker-empty {
+  padding: 0.32rem 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
 }
 
 .profile-portrait-controls {

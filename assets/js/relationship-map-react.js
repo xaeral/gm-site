@@ -35,6 +35,7 @@
   var useFlowNodesState = ReactFlowLib.useNodesState;
   var useFlowEdgesState = ReactFlowLib.useEdgesState;
   var useReactFlowInstance = ReactFlowLib.useReactFlow;
+  var useFlowViewport = ReactFlowLib.useViewport;
 
   var persistenceQueue = Promise.resolve();
 
@@ -1128,6 +1129,35 @@
     return fallback;
   }
 
+  // Converts a validated "#rrggbb" hex color into an rgba() string at the
+  // given alpha -- used for zone fills, which need to stay translucent (so
+  // whatever is inside a zone rectangle reads as merely tinted, not hidden)
+  // regardless of which color a GM picks.
+  function hexToRgba(hex, alpha) {
+    var safe = safeHexColor(hex, "#d10d40");
+    var r = parseInt(safe.slice(1, 3), 16);
+    var g = parseInt(safe.slice(3, 5), 16);
+    var b = parseInt(safe.slice(5, 7), 16);
+    return "rgba(" + r + ", " + g + ", " + b + ", " + alpha + ")";
+  }
+
+  // The single source of truth for a styled <input type="range">'s fill:
+  // both the thumb's position (native, handled by the browser from the
+  // element's own value/min/max) and the CSS gradient "fill" (--fill, a
+  // 0-1 fraction consumed by the ::-webkit-slider-runnable-track rule)
+  // must come from the exact same normalised fraction, or they can drift
+  // apart -- e.g. if the fill were computed from a different rounding of
+  // the value, or a stale render. Callers pass the SAME value they also
+  // pass to the input's own `value` prop, so there is only ever one number
+  // driving both.
+  function rangeSliderFillStyle(value, min, max) {
+    var lo = Number(min) || 0;
+    var hi = Number(max) || 0;
+    var span = hi - lo || 1;
+    var fraction = (Number(value) - lo) / span;
+    return { "--fill": Math.max(0, Math.min(1, fraction)) };
+  }
+
   function resolveCampaignAtlasIcon(iconId, fallbackGlyph) {
     var asset = CAMPAIGN_ATLAS_ICON_ASSETS[iconId];
     if (!asset) {
@@ -1450,6 +1480,92 @@
     return normalized;
   }
 
+  var ZONE_DEFAULT_WIDTH = 320;
+  var ZONE_DEFAULT_HEIGHT = 200;
+  var ZONE_DEFAULT_OPACITY = 0.25;
+
+  // Validates/defaults a single zone record -- the same role
+  // normalizeCharacterRecord plays for characters. Every zone that reaches
+  // rendering or the editor has gone through this, so nothing downstream
+  // needs to guard against missing/malformed fields.
+  function normalizeZone(zone) {
+    var source = zone && typeof zone === "object" ? zone : {};
+    var width = Number(source.width);
+    var height = Number(source.height);
+    // Existing zones saved before opacity existed have no `opacity` field at
+    // all (undefined, not 0) -- that's the ONLY case that should fall back
+    // to ZONE_DEFAULT_OPACITY. An explicit 0 (fully transparent fill) is a
+    // valid, deliberate value and must be preserved, not treated as unset.
+    var opacity = source.opacity === undefined || source.opacity === null || !Number.isFinite(Number(source.opacity))
+      ? ZONE_DEFAULT_OPACITY
+      : Math.max(0, Math.min(1, Number(source.opacity)));
+    return {
+      id: String(source.id || makeRelationshipUiId("zone")).trim(),
+      name: String(source.name || "New Zone").trim() || "New Zone",
+      x: Number.isFinite(Number(source.x)) ? Number(source.x) : 200,
+      y: Number.isFinite(Number(source.y)) ? Number(source.y) : 200,
+      width: Number.isFinite(width) && width > 0 ? width : ZONE_DEFAULT_WIDTH,
+      height: Number.isFinite(height) && height > 0 ? height : ZONE_DEFAULT_HEIGHT,
+      backgroundColor: safeHexColor(source.backgroundColor, "#d10d40"),
+      borderColor: safeHexColor(source.borderColor, "#ffffff"),
+      opacity: opacity
+    };
+  }
+
+  function normalizeZones(rawZones) {
+    return (Array.isArray(rawZones) ? rawZones : []).map(normalizeZone);
+  }
+
+  // Starter tags, organised into groups purely for browsing convenience in
+  // the Tags panel -- the grouping never restricts what a tag can be
+  // assigned to. Seeded into initialState() below, which only ever affects
+  // a chronicle that has NEVER been persisted before: the first time
+  // ANY data change is saved, MapLayoutService.savePreferences writes
+  // whatever data.tagGroups is at that moment (this default, or whatever
+  // the user has already changed it to) into the real "app" settings
+  // record, and getPreferences() reads that real record back from then on
+  // -- this seed is never consulted again for that chronicle, so editing
+  // this list later can never overwrite or remove a chronicle's existing
+  // custom tags.
+  //
+  // Defined once in character-biography-shared.js (as DEFAULT_TAG_GROUPS)
+  // and read from there, NOT duplicated here -- the Danger Zone's "Reset
+  // Tags to Default" (campaign-data-tools.js, reachable from settings.html
+  // where this file never loads) needs the exact same list, and a second
+  // copy here would drift from it over time.
+  var DEFAULT_TAG_GROUPS = sharedCharacters.DEFAULT_TAG_GROUPS || [];
+
+  // Same role as normalizeZone/normalizeRelationshipCategories -- every tag
+  // that reaches the Tags panel or a usage-count lookup has gone through
+  // this. Unlike relationship categories (which always need at least one
+  // type to remain usable for edges), an empty tag group is a perfectly
+  // normal state, so no default tag is ever forced into one.
+  function normalizeTag(tag) {
+    var source = tag && typeof tag === "object" ? tag : {};
+    return {
+      id: String(source.id || makeRelationshipUiId("tag")).trim(),
+      name: String(source.name || "New Tag").trim() || "New Tag",
+      color: safeHexColor(source.color, "#d10d40"),
+      icon: String(source.icon || "").trim(),
+      description: String(source.description || "").trim(),
+      visible: source.visible === undefined ? true : Boolean(source.visible)
+    };
+  }
+
+  function normalizeTagGroup(group, index) {
+    var source = group && typeof group === "object" ? group : {};
+    var name = String(source.name || "Tag Group " + (index + 1)).trim() || ("Tag Group " + (index + 1));
+    return {
+      id: String(source.id || makeRelationshipUiId("tag-group")).trim(),
+      name: name,
+      tags: Array.isArray(source.tags) ? source.tags.map(normalizeTag) : []
+    };
+  }
+
+  function normalizeTagGroups(rawTagGroups) {
+    return (Array.isArray(rawTagGroups) ? rawTagGroups : []).map(normalizeTagGroup);
+  }
+
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
   }
@@ -1581,9 +1697,7 @@
       zones: [],
       relationships: [],
       relationshipCategories: clone(DEFAULT_RELATIONSHIP_CATEGORIES),
-      tagGroups: [
-        { id: "tg1", name: "Politics", tags: [{ id: "t1", name: "Prince", color: "#d10d40", icon: "♛", description: "Ruling authority", visible: true }, { id: "t2", name: "Council", color: "#8b1e46", icon: "◎", description: "Council aligned", visible: true }] }
-      ]
+      tagGroups: clone(DEFAULT_TAG_GROUPS)
     };
   }
 
@@ -1707,6 +1821,214 @@
   }
 
   var FLOW_NODE_TYPES = { characterNode: CharacterFlowNode };
+
+  // Finds the topmost zone (last in array = drawn last = visually on top,
+  // for whatever overlap ordering the zones list already has) whose
+  // rectangle contains a given flow-space point. Pure geometry, no React --
+  // shared by the canvas hit-testing that drives zone select/drag.
+  function findZoneAtPoint(zones, x, y) {
+    for (var i = (zones || []).length - 1; i >= 0; i--) {
+      var zone = zones[i];
+      if (x >= zone.x && x <= zone.x + zone.width && y >= zone.y && y <= zone.y + zone.height) {
+        return zone;
+      }
+    }
+    return null;
+  }
+
+  // The 8 resize handle directions, and where each one sits on a zone's box
+  // (as a fraction of width/height) -- one shared source of truth for both
+  // ZonesCanvasLayer's visual handle dots (rendered at these fractions as
+  // percentages) and findZoneResizeHandleAtPoint's hit-testing (which
+  // resolves the same fractions against the zone's actual flow-space
+  // rectangle).
+  var ZONE_RESIZE_DIRECTIONS = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+  var ZONE_RESIZE_HANDLE_FRACTIONS = {
+    nw: { fx: 0, fy: 0 },
+    n: { fx: 0.5, fy: 0 },
+    ne: { fx: 1, fy: 0 },
+    e: { fx: 1, fy: 0.5 },
+    se: { fx: 1, fy: 1 },
+    s: { fx: 0.5, fy: 1 },
+    sw: { fx: 0, fy: 1 },
+    w: { fx: 0, fy: 0.5 }
+  };
+
+  // Standard resize cursor per handle direction -- used for live cursor
+  // feedback while hovering a handle in edit mode (see handleCanvasHoverMove
+  // in App). Matches the .zone-resize-* CSS cursor rules already defined
+  // for these same directions (those rules are inert on their own, since
+  // the handles themselves are pointer-events:none -- this is what actually
+  // drives the cursor the user sees).
+  var ZONE_RESIZE_CURSOR_BY_DIRECTION = {
+    n: "ns-resize",
+    s: "ns-resize",
+    e: "ew-resize",
+    w: "ew-resize",
+    ne: "nesw-resize",
+    sw: "nesw-resize",
+    nw: "nwse-resize",
+    se: "nwse-resize"
+  };
+
+  // How far (in SCREEN px, constant regardless of zoom) the resize hit area
+  // extends to each side of a zone's true border -- e.g. the top edge's hit
+  // band spans from -MARGIN to +MARGIN around the actual top edge, so
+  // resizing never requires pixel-perfect positioning on a 1px line. Also
+  // doubles as each corner hit area's half-size (a MARGIN*2 square centred
+  // on the exact corner point), so corner and edge hit areas read as one
+  // continuous, consistently-sized band all the way around the perimeter.
+  var ZONE_EDGE_HIT_MARGIN = 8;
+  var ZONE_MIN_SIZE = 60;
+
+  // Full perimeter hit-testing for zone resize interaction -- unlike a set
+  // of discrete handle points with their own small grab radius, EVERY point
+  // along a zone's border (inside and outside it by ZONE_EDGE_HIT_MARGIN,
+  // converted screen-to-flow-space via zoom) resolves to a resize
+  // direction. Corners are checked first, as small squares centred on each
+  // corner point, so they take priority over the straight edge bands they'd
+  // otherwise overlap right at the corner; each edge's remaining band
+  // (implicitly excluding those corner squares, since a point matching one
+  // already returned above) resolves to its own straight direction. Returns
+  // null everywhere outside that band, which is what lets the body/move-
+  // cursor fallback take over only once resize has first had its say.
+  function findZoneResizeHandleAtPoint(zone, x, y, zoom) {
+    if (!zone) {
+      return null;
+    }
+    var margin = ZONE_EDGE_HIT_MARGIN / (zoom || 1);
+    var left = zone.x;
+    var top = zone.y;
+    var right = zone.x + zone.width;
+    var bottom = zone.y + zone.height;
+
+    var nearLeft = x >= left - margin && x <= left + margin;
+    var nearRight = x >= right - margin && x <= right + margin;
+    var nearTop = y >= top - margin && y <= top + margin;
+    var nearBottom = y >= bottom - margin && y <= bottom + margin;
+
+    if (nearTop && nearLeft) { return "nw"; }
+    if (nearTop && nearRight) { return "ne"; }
+    if (nearBottom && nearLeft) { return "sw"; }
+    if (nearBottom && nearRight) { return "se"; }
+
+    if (nearTop && x > left && x < right) { return "n"; }
+    if (nearBottom && x > left && x < right) { return "s"; }
+    if (nearLeft && y > top && y < bottom) { return "w"; }
+    if (nearRight && y > top && y < bottom) { return "e"; }
+
+    return null;
+  }
+
+  // Resizes a zone from its ORIGINAL rectangle (startZone, captured once at
+  // the start of a resize drag) plus a flow-space delta, based on which
+  // handle is being dragged -- each direction only moves the edges its name
+  // implies (an "e" handle never touches y/height, an "n" handle never
+  // touches x/width, a corner like "se" touches both). Clamped to
+  // ZONE_MIN_SIZE so a zone can never be dragged down to nothing.
+  function applyZoneResize(startZone, direction, dx, dy) {
+    var x = startZone.x;
+    var y = startZone.y;
+    var width = startZone.width;
+    var height = startZone.height;
+    var right = startZone.x + startZone.width;
+    var bottom = startZone.y + startZone.height;
+
+    if (direction.indexOf("w") >= 0) {
+      x = Math.min(startZone.x + dx, right - ZONE_MIN_SIZE);
+      width = right - x;
+    } else if (direction.indexOf("e") >= 0) {
+      width = Math.max(ZONE_MIN_SIZE, startZone.width + dx);
+    }
+
+    if (direction.indexOf("n") >= 0) {
+      y = Math.min(startZone.y + dy, bottom - ZONE_MIN_SIZE);
+      height = bottom - y;
+    } else if (direction.indexOf("s") >= 0) {
+      height = Math.max(ZONE_MIN_SIZE, startZone.height + dy);
+    }
+
+    return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
+  }
+
+  // Renders every zone as a plain, non-interactive rectangle, positioned in
+  // raw flow-space coordinates and wrapped in a container that mirrors React
+  // Flow's own viewport transform (via useViewport) -- so zones pan/zoom in
+  // perfect sync with nodes/edges without being React Flow-managed nodes
+  // themselves. That's deliberate: React Flow always paints its own nodes
+  // layer above its own edges layer, so there is no node type or z-index
+  // trick that could put a zone behind edges; only an entirely separate,
+  // earlier DOM sibling can. This layer is rendered before <ReactFlow> in
+  // the DOM (see the App-level canvas-viewport JSX) specifically so it
+  // paints first -- behind the edges/nodes/labels React Flow renders after
+  // it, while still sitting above the solid canvas background.
+  //
+  // Every element here is pointer-events:none; all zone interaction (double-
+  // click to enter edit mode, drag, resize, hover cursor) is handled by
+  // App's own mousedown/click/dblclick/mousemove listeners on
+  // .canvas-viewport, which hit-test coordinates against data.zones
+  // directly (see findZoneAtPoint) rather than relying on native DOM hit-
+  // testing -- native hit-testing can't work here anyway, since React Flow's
+  // own pane sits visually on top of this layer and would otherwise swallow
+  // every click before it ever reached a zone div. Resize handles (and the
+  // "selected" look) only ever render for editingZoneId -- there's no
+  // separate lighter-weight "selected but not editing" state any more.
+  function ZonesCanvasLayer(props) {
+    var zones = props.zones || [];
+    var editingZoneId = props.editingZoneId;
+    var viewport = useFlowViewport ? useFlowViewport() : { x: 0, y: 0, zoom: 1 };
+    var zoom = viewport.zoom || 1;
+    // Handles are drawn at a constant SCREEN size regardless of zoom -- an
+    // inverse scale counteracts the layer's own zoom transform, the same
+    // technique the base size (in flow-space px at zoom=1) is built for.
+    var handleInverseScale = 1 / zoom;
+
+    return html`<div
+      className="zones-canvas-layer"
+      style=${{
+        position: "absolute",
+        inset: 0,
+        pointerEvents: "none",
+        transform: "translate(" + viewport.x + "px, " + viewport.y + "px) scale(" + zoom + ")",
+        transformOrigin: "0 0"
+      }}
+    >
+      ${zones.map(function (zone) {
+        var isEditing = zone.id === editingZoneId;
+        return html`<div
+          key=${zone.id}
+          className=${"zone" + (isEditing ? " selected" : "")}
+          style=${{
+            left: zone.x + "px",
+            top: zone.y + "px",
+            width: zone.width + "px",
+            height: zone.height + "px",
+            background: hexToRgba(zone.backgroundColor, zone.opacity),
+            borderColor: zone.borderColor,
+            pointerEvents: "none"
+          }}
+        >
+          <span className="zone-title">${zone.name}</span>
+          ${isEditing ? html`<div className="zone-resize-handles">
+            ${ZONE_RESIZE_DIRECTIONS.map(function (direction) {
+              var fraction = ZONE_RESIZE_HANDLE_FRACTIONS[direction];
+              return html`<span
+                key=${direction}
+                className=${"zone-resize-handle zone-resize-" + direction}
+                style=${{
+                  left: (fraction.fx * 100) + "%",
+                  top: (fraction.fy * 100) + "%",
+                  width: "10px",
+                  height: "10px",
+                  transform: "translate(-50%, -50%) scale(" + handleInverseScale + ")"
+                }}
+              ></span>`;
+            })}
+          </div>` : null}
+        </div>`;
+      })}
+    </div>`;
+  }
 
   // Renders the relationship-type metadata that already exists (color,
   // thickness, line style, animation, arrowheads -- see
@@ -1864,8 +2186,20 @@
       merged.characters = (merged.characters || []).map(normalizeCharacterRecord);
       merged.relationshipCategories = normalizeRelationshipCategories(merged.relationshipCategories);
       merged.relationships = normalizeRelationships(merged.relationships, merged.relationshipCategories);
+      merged.zones = normalizeZones(merged.zones);
+      merged.tagGroups = normalizeTagGroups(merged.tagGroups);
       return merged;
     }, [props && props.initialData]);
+
+    // React Flow only reads defaultViewport once, on its own first mount, so
+    // this doesn't need to be state -- a saved viewport (any prior map open,
+    // via MapLayoutService.getViewport()) wins; a map that has never had one
+    // persisted (first open, brand-new map) falls back to 100% zoom. Pan
+    // position keeps its pre-existing default; only the zoom default changed.
+    var initialViewport = props && props.initialViewport;
+    var defaultViewport = (initialViewport && typeof initialViewport === "object" && Number.isFinite(Number(initialViewport.zoom)))
+      ? { x: Number(initialViewport.x) || 0, y: Number(initialViewport.y) || 0, zoom: Number(initialViewport.zoom) }
+      : { x: 80, y: 60, zoom: 1 };
 
     var _state = useState(loaded);
     var data = _state[0];
@@ -1961,6 +2295,445 @@
       setIsConnectingRelationship(false);
     }
 
+    // Zones: create/edit/delete, all through data.zones + setData -- the
+    // same debounced [data] persistence effect that already saves
+    // characters/relationships/relationshipCategories on every change picks
+    // this up automatically (see persistStateToIndexedDb), which is exactly
+    // why nothing here calls MapLayoutService directly.
+    //
+    // editingZoneId/isPlacingZone are pure UI state, never persisted.
+    // editingZoneId is the ONE zone (if any) currently in "edit mode" --
+    // there is no separate lighter-weight "selected" state any more: a
+    // single click on a zone does nothing at all, and resize handles/
+    // dragging/the editor panel are all gated on this same one value, all
+    // entered together (double-click) and exited together (any click that
+    // isn't on the edited zone's own body/handles). isPlacingZone is true
+    // only for the moment between clicking "+ New Zone" and clicking the
+    // map to place it.
+    var _editingZoneId = useState(null);
+    var editingZoneId = _editingZoneId[0];
+    var setEditingZoneId = _editingZoneId[1];
+    var _isPlacingZone = useState(false);
+    var isPlacingZone = _isPlacingZone[0];
+    var setIsPlacingZone = _isPlacingZone[1];
+    var zoneDragRef = useRef(null);
+    var zoneResizeRef = useRef(null);
+    var viewportSaveTimerRef = useRef(null);
+    var canvasViewportRef = useRef(null);
+    // Cursor mutations must target .react-flow__pane, NOT .canvas-viewport.
+    // Confirmed via DOM inspection: document.elementFromPoint() over a zone
+    // resolves to .react-flow__pane (React Flow's own pane div, several
+    // levels inside .canvas-viewport), which ships its own explicit
+    // `cursor: grab` rule (for panning) in reactflow's stylesheet. CSS
+    // cursor resolution always uses the ACTUAL hovered element's own
+    // explicit declaration over an ancestor's -- so setting the cursor on
+    // .canvas-viewport (an ancestor the mouse isn't directly over) computed
+    // correctly on that ancestor but was never the value the browser
+    // actually displayed; .react-flow__pane's own `grab` won every time
+    // regardless. Setting the inline style directly on the pane itself
+    // beats its stylesheet rule (inline always wins over external CSS
+    // regardless of specificity), which is what actually fixes this.
+    // Looked up lazily and cached, since the pane element reference is
+    // stable for the lifetime of the mounted <ReactFlow> instance.
+    var zoneCursorElementRef = useRef(null);
+
+    function getZoneCursorElement() {
+      if (!zoneCursorElementRef.current && canvasViewportRef.current) {
+        zoneCursorElementRef.current = canvasViewportRef.current.querySelector(".react-flow__pane");
+      }
+      return zoneCursorElementRef.current || canvasViewportRef.current;
+    }
+    // Set whenever handleCanvasMouseDownCapture stops a mousedown for a
+    // zone-related reason. React Flow's pane click (onFlowPaneClick, which
+    // clears node selection) fires from a separate, LATER "click" event
+    // synthesized after mouseup -- stopping propagation on mousedown alone
+    // does not stop that later click from still reaching it. This ref lets
+    // handleCanvasClickCapture stop that follow-up click too, exactly once,
+    // without re-running the same hit-testing a second time.
+    var zoneInteractionHandledRef = useRef(false);
+
+    // Reactive (re-renders on every pan/zoom) live viewport, mirrored into a
+    // ref so the mount-once window mousemove listener below can always read
+    // the CURRENT zoom without needing to be in its effect's dependency
+    // array (and without the ordering hazard of reading reactFlowInstance's
+    // own getViewport()/screenToFlowPosition, which can transiently report
+    // stale values right when the canvas resizes mid-drag).
+    var liveViewport = useFlowViewport ? useFlowViewport() : { x: 0, y: 0, zoom: 1 };
+    var liveViewportRef = useRef(liveViewport);
+    liveViewportRef.current = liveViewport;
+
+    // Right-click context menu: { x, y, type, targetId } in SCREEN
+    // coordinates (it's rendered as a position:fixed element, so no flow-
+    // space conversion is needed for placement) or null when closed.
+    // type is "character" | "zone" | "none", decided purely by what's
+    // under the cursor at the moment of the right-click (see
+    // handleCanvasContextMenu) -- not by any pre-existing node selection or
+    // zone edit-mode state, so it stays correct even if the user right-
+    // clicks something they hadn't already selected.
+    var _contextMenu = useState(null);
+    var contextMenu = _contextMenu[0];
+    var setContextMenu = _contextMenu[1];
+
+    function closeContextMenu() {
+      setContextMenu(null);
+    }
+
+    function enterZoneEditMode(zoneId) {
+      setEditingZoneId(zoneId);
+      setActivePanel("zones");
+    }
+
+    function exitZoneEditMode() {
+      setEditingZoneId(null);
+    }
+
+    function startZoneCreation() {
+      setEditingZoneId(null);
+      setIsPlacingZone(true);
+    }
+
+    function cancelZoneCreation() {
+      setIsPlacingZone(false);
+    }
+
+    // Placement is the only thing that still creates a zone at a hardcoded
+    // size -- ZONE_DEFAULT_WIDTH/HEIGHT, centred on the click. Sizing from
+    // there on is exclusively the resize handles, same as editing any other
+    // zone -- which is why placement drops the new zone straight into edit
+    // mode rather than merely creating it.
+    function placeNewZoneAt(flowX, flowY) {
+      var zone = normalizeZone({
+        name: "New Zone",
+        x: Math.round(flowX - ZONE_DEFAULT_WIDTH / 2),
+        y: Math.round(flowY - ZONE_DEFAULT_HEIGHT / 2)
+      });
+      setData(function (prev) {
+        var next = clone(prev);
+        next.zones = (next.zones || []).concat([zone]);
+        return next;
+      });
+      setIsPlacingZone(false);
+      enterZoneEditMode(zone.id);
+    }
+
+    function updateZone(zoneId, patch) {
+      setData(function (prev) {
+        var next = clone(prev);
+        var target = (next.zones || []).find(function (zone) { return zone.id === zoneId; });
+        if (target) {
+          Object.assign(target, patch);
+        }
+        return next;
+      });
+    }
+
+    function deleteZone(zoneId) {
+      setData(function (prev) {
+        var next = clone(prev);
+        next.zones = (next.zones || []).filter(function (zone) { return zone.id !== zoneId; });
+        return next;
+      });
+      setEditingZoneId(function (prev) { return prev === zoneId ? null : prev; });
+    }
+
+    // Zone drag/resize/placement on the canvas can't rely on normal DOM
+    // hit-testing (see ZonesCanvasLayer's comment for why) -- this runs in
+    // the CAPTURE phase on .canvas-viewport, before React Flow's own pane/
+    // node/edge handlers.
+    //
+    // A single click never selects, moves or opens anything: dragging only
+    // ever arms (on THIS mousedown, resolved into an actual move only if a
+    // mousemove with real delta follows -- see handleWindowMouseMove) when
+    // the click lands on the ALREADY-edited zone's own body or one of its
+    // handles. Any other click -- empty canvas, a node/edge (excluded
+    // below, untouched), or even some OTHER, non-edited zone's body -- has
+    // exactly one effect: if a zone is currently in edit mode, exit it.
+    // That's what makes "click elsewhere exits edit mode" and "a single
+    // click on a (non-edited) zone does nothing" the same code path.
+    function handleCanvasMouseDownCapture(event) {
+      // Unconditional and first: ANY mousedown on the canvas -- left or
+      // right button, on a node, a zone, or empty space -- closes an
+      // already-open context menu before anything else runs. This can't be
+      // left to the document-level listener below alone, because several
+      // branches further down (and React Flow's own internal node
+      // handling) call event.stopPropagation(), which halts the native
+      // event's propagation to document entirely and would otherwise leave
+      // the menu stuck open. Closing here, at the very top, doesn't depend
+      // on the event ever reaching an ancestor.
+      closeContextMenu();
+      if (event.button !== 0 || !reactFlowInstance || typeof reactFlowInstance.screenToFlowPosition !== "function") {
+        return;
+      }
+      var target = event.target;
+      if (target && target.closest && target.closest(".react-flow__node, .react-flow__edge, .react-flow__handle, .react-flow__controls")) {
+        // A click on a node/edge/handle is still "clicking elsewhere" for
+        // zone edit-mode purposes -- exit it, but never stop propagation
+        // here, so the node/edge's own click/drag/selection keeps working
+        // exactly as it always has.
+        if (editingZoneId !== null) {
+          exitZoneEditMode();
+        }
+        return;
+      }
+      var flowPoint = reactFlowInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+
+      if (isPlacingZone) {
+        event.stopPropagation();
+        zoneInteractionHandledRef.current = true;
+        placeNewZoneAt(flowPoint.x, flowPoint.y);
+        return;
+      }
+
+      var zoom = (liveViewportRef.current && liveViewportRef.current.zoom) || 1;
+      var editingZone = (data.zones || []).find(function (zone) { return zone.id === editingZoneId; });
+
+      if (editingZone) {
+        var handleDirection = findZoneResizeHandleAtPoint(editingZone, flowPoint.x, flowPoint.y, zoom);
+        if (handleDirection) {
+          event.stopPropagation();
+          zoneInteractionHandledRef.current = true;
+          zoneResizeRef.current = {
+            zoneId: editingZone.id,
+            direction: handleDirection,
+            startClientX: event.clientX,
+            startClientY: event.clientY,
+            startZone: { x: editingZone.x, y: editingZone.y, width: editingZone.width, height: editingZone.height }
+          };
+          return;
+        }
+
+        if (findZoneAtPoint([editingZone], flowPoint.x, flowPoint.y)) {
+          event.stopPropagation();
+          zoneInteractionHandledRef.current = true;
+          zoneDragRef.current = {
+            zoneId: editingZone.id,
+            lastClientX: event.clientX,
+            lastClientY: event.clientY,
+            currentX: editingZone.x,
+            currentY: editingZone.y
+          };
+          return;
+        }
+      }
+
+      // Not placing, and not on the actively-edited zone's own body/handle
+      // (if any zone is even being edited) -- the only remaining effect a
+      // click can have here is exiting edit mode, and only if it was
+      // active. Deliberately NOT stopping propagation for this one: the
+      // click should still reach React Flow's own pane handling normally
+      // (e.g. deselecting any selected character node), whether it landed
+      // on truly empty canvas or visually on some OTHER, non-edited zone
+      // (whose own div is pointer-events:none, so from React Flow's
+      // perspective it's the same as an empty-pane click either way).
+      if (editingZoneId !== null) {
+        exitZoneEditMode();
+      }
+    }
+
+    // See zoneInteractionHandledRef -- stops the "click" event that follows
+    // a zone-handled mousedown, so it never reaches React Flow's pane click
+    // handler (which would otherwise immediately fight with the edit-mode
+    // state handleCanvasMouseDownCapture just set).
+    function handleCanvasClickCapture(event) {
+      if (zoneInteractionHandledRef.current) {
+        zoneInteractionHandledRef.current = false;
+        event.stopPropagation();
+      }
+    }
+
+    // Double-click is the ONLY way to enter edit mode (selection, resize
+    // handles, dragging and the editor panel all follow from it) -- same
+    // node/edge/handle exclusion and capture-phase reasoning as the
+    // mousedown handler above.
+    function handleCanvasDoubleClickCapture(event) {
+      if (!reactFlowInstance || typeof reactFlowInstance.screenToFlowPosition !== "function") {
+        return;
+      }
+      var target = event.target;
+      if (target && target.closest && target.closest(".react-flow__node, .react-flow__edge, .react-flow__handle, .react-flow__controls")) {
+        return;
+      }
+      var flowPoint = reactFlowInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      var hitZone = findZoneAtPoint(data.zones, flowPoint.x, flowPoint.y);
+      if (!hitZone) {
+        return;
+      }
+      event.stopPropagation();
+      enterZoneEditMode(hitZone.id);
+    }
+
+    // Right-click anywhere on the canvas: character nodes are real React-
+    // Flow-owned DOM elements (pointer-events enabled), so a right-click
+    // landing on one is found the same way as everywhere else in this file
+    // that needs a node's id from the DOM -- its own data-id attribute.
+    // Zones are pointer-events:none (see ZonesCanvasLayer), so a right-
+    // click over a zone still lands on the canvas itself and needs the
+    // same manual screenToFlowPosition + findZoneAtPoint hit-test already
+    // used for the other zone gestures in this file.
+    function handleCanvasContextMenu(event) {
+      event.preventDefault();
+      var target = event.target;
+      var nodeElement = target && target.closest ? target.closest(".react-flow__node") : null;
+      var nodeId = nodeElement ? nodeElement.getAttribute("data-id") : null;
+      if (nodeId) {
+        setContextMenu({ x: event.clientX, y: event.clientY, type: "character", targetId: nodeId });
+        return;
+      }
+      if (reactFlowInstance && typeof reactFlowInstance.screenToFlowPosition === "function") {
+        var flowPoint = reactFlowInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+        var hitZone = findZoneAtPoint(data.zones || [], flowPoint.x, flowPoint.y);
+        if (hitZone) {
+          setContextMenu({ x: event.clientX, y: event.clientY, type: "zone", targetId: hitZone.id });
+          return;
+        }
+      }
+      setContextMenu({ x: event.clientX, y: event.clientY, type: "none", targetId: null });
+    }
+
+    function contextMenuAddCharacter() {
+      closeContextMenu();
+      openAddCharacterModal();
+    }
+
+    function contextMenuAddZone() {
+      closeContextMenu();
+      startZoneCreation();
+    }
+
+    function contextMenuRemoveCharacter() {
+      var targetId = contextMenu && contextMenu.targetId;
+      closeContextMenu();
+      if (targetId) {
+        removeCharacterFromMap(targetId);
+      }
+    }
+
+    function contextMenuDeleteZone() {
+      var targetId = contextMenu && contextMenu.targetId;
+      closeContextMenu();
+      if (targetId) {
+        deleteZone(targetId);
+      }
+    }
+
+    // Hover-only cursor feedback: resize cursors over the edited zone's
+    // handles, "move" over its body, and the canvas's own default (grab,
+    // for panning) everywhere else -- including hovering a zone that ISN'T
+    // in edit mode, which must look completely inert. Applied by directly
+    // mutating the DOM node's style rather than through React state, since
+    // this needs to run on every mousemove without triggering a re-render
+    // per pixel of cursor movement. Skipped entirely while an actual drag/
+    // resize/placement is in progress so it can never fight with those.
+    function handleCanvasHoverMove(event) {
+      if (zoneDragRef.current || zoneResizeRef.current || isPlacingZone) {
+        return;
+      }
+      if (!reactFlowInstance || typeof reactFlowInstance.screenToFlowPosition !== "function" || !canvasViewportRef.current) {
+        return;
+      }
+      var editingZone = (data.zones || []).find(function (zone) { return zone.id === editingZoneId; });
+      var cursor = "";
+      if (editingZone) {
+        var flowPoint = reactFlowInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+        var zoom = (liveViewportRef.current && liveViewportRef.current.zoom) || 1;
+        var handleDirection = findZoneResizeHandleAtPoint(editingZone, flowPoint.x, flowPoint.y, zoom);
+        if (handleDirection) {
+          cursor = ZONE_RESIZE_CURSOR_BY_DIRECTION[handleDirection];
+        } else if (findZoneAtPoint([editingZone], flowPoint.x, flowPoint.y)) {
+          cursor = "move";
+        }
+      }
+      var cursorElement = getZoneCursorElement();
+      if (cursorElement) {
+        cursorElement.style.cursor = cursor;
+      }
+    }
+
+    function handleCanvasMouseLeave() {
+      var cursorElement = getZoneCursorElement();
+      if (cursorElement) {
+        cursorElement.style.cursor = "";
+      }
+    }
+
+    // Belt-and-suspenders reset for the cases handleCanvasHoverMove can't
+    // catch itself: entering/exiting edit mode or placement mode via a
+    // button click (the panel's Done/Cancel, or a list row) rather than
+    // mouse movement over the canvas leaves whatever cursor was last
+    // imperatively set until the next mousemove recomputes it -- this
+    // clears it immediately instead of waiting for that.
+    useEffect(function () {
+      var cursorElement = getZoneCursorElement();
+      if (cursorElement) {
+        cursorElement.style.cursor = "";
+      }
+    }, [editingZoneId, isPlacingZone]);
+
+    useEffect(function () {
+      function handleWindowMouseMove(event) {
+        var drag = zoneDragRef.current;
+        if (drag) {
+          // Incremental raw-screen-pixel deltas, scaled down by the live
+          // zoom factor (from useViewport, always correct -- unlike
+          // reactFlowInstance.getViewport()/screenToFlowPosition, which can
+          // momentarily report stale/uninitialized values mid-drag right
+          // after selecting a zone resizes the canvas by opening the Zones
+          // panel). A raw screen delta only needs the zoom scale to become a
+          // flow-space delta -- canvas offset cancels out between two nearby
+          // points, so there's no need to convert through absolute flow
+          // coordinates at all here.
+          var zoom = (liveViewportRef.current && liveViewportRef.current.zoom) || 1;
+          var dx = (event.clientX - drag.lastClientX) / zoom;
+          var dy = (event.clientY - drag.lastClientY) / zoom;
+          drag.currentX += dx;
+          drag.currentY += dy;
+          drag.lastClientX = event.clientX;
+          drag.lastClientY = event.clientY;
+          updateZone(drag.zoneId, { x: Math.round(drag.currentX), y: Math.round(drag.currentY) });
+          return;
+        }
+        var resize = zoneResizeRef.current;
+        if (resize) {
+          var resizeZoom = (liveViewportRef.current && liveViewportRef.current.zoom) || 1;
+          var dxFlow = (event.clientX - resize.startClientX) / resizeZoom;
+          var dyFlow = (event.clientY - resize.startClientY) / resizeZoom;
+          updateZone(resize.zoneId, applyZoneResize(resize.startZone, resize.direction, dxFlow, dyFlow));
+        }
+      }
+      function handleWindowMouseUp() {
+        zoneDragRef.current = null;
+        zoneResizeRef.current = null;
+        // A "click" event (if the browser is going to fire one at all for
+        // this mouseup) always fires synchronously, before any macrotask --
+        // scheduling this reset via setTimeout lets handleCanvasClickCapture
+        // see the correct value first, while still guaranteeing
+        // zoneInteractionHandledRef never stays stuck true after a drag
+        // large enough that no click event follows it at all (which would
+        // otherwise silently swallow the NEXT unrelated click, node or
+        // otherwise).
+        window.setTimeout(function () { zoneInteractionHandledRef.current = false; }, 0);
+      }
+      window.addEventListener("mousemove", handleWindowMouseMove);
+      window.addEventListener("mouseup", handleWindowMouseUp);
+      return function () {
+        window.removeEventListener("mousemove", handleWindowMouseMove);
+        window.removeEventListener("mouseup", handleWindowMouseUp);
+      };
+    }, []);
+
+    // Escape backs out of zone placement mode without creating a zone --
+    // the one keyboard affordance this workflow needs, since placement mode
+    // otherwise has no other way to cancel besides the panel's own button.
+    useEffect(function () {
+      function handleKeyDown(event) {
+        if (event.key === "Escape" && isPlacingZone) {
+          setIsPlacingZone(false);
+        }
+      }
+      window.addEventListener("keydown", handleKeyDown);
+      return function () { window.removeEventListener("keydown", handleKeyDown); };
+    }, [isPlacingZone]);
+
     // Which single relationship type (if any) is currently expanded into
     // its inline editor within the Type Manager, and the unsaved draft of
     // its fields. Mirrors the same draft-then-commit pattern already used
@@ -1969,6 +2742,18 @@
     var _editingRelationshipType = useState(null);
     var editingRelationshipType = _editingRelationshipType[0];
     var setEditingRelationshipType = _editingRelationshipType[1];
+
+    // Tags panel UI-only state (never persisted, same as editingZoneId/
+    // isPlacingZone) -- editingTag mirrors editingRelationshipType's
+    // {groupId, tagId, draft} shape exactly. collapsedTagGroups tracks
+    // which groups are collapsed by id; a group absent from this object is
+    // expanded by default.
+    var _editingTag = useState(null);
+    var editingTag = _editingTag[0];
+    var setEditingTag = _editingTag[1];
+    var _collapsedTagGroups = useState({});
+    var collapsedTagGroups = _collapsedTagGroups[0];
+    var setCollapsedTagGroups = _collapsedTagGroups[1];
 
     // React Flow owns node/edge rendering, dragging, zooming, panning and
     // selection. These are React Flow's own local view-state hooks, seeded
@@ -1986,7 +2771,7 @@
 
     var reactFlowInstance = useReactFlowInstance ? useReactFlowInstance() : null;
 
-    var _zoomPercent = useState(58);
+    var _zoomPercent = useState(Math.round(defaultViewport.zoom * 100));
     var zoomPercent = _zoomPercent[0];
     var setZoomPercent = _zoomPercent[1];
 
@@ -2299,6 +3084,149 @@
       setEditingRelationshipType(null);
     }
 
+    // Tag Groups: same group -> item CRUD shape as relationship categories/
+    // types above, reusing the exact same setData + normalize-on-write
+    // pattern (updateTagGroups mirrors updateRelationshipCategories). All
+    // changes flow through data.tagGroups, so the existing [data]
+    // persistence effect (persistStateToIndexedDb -> MapLayoutService.
+    // savePreferences, which already has a dedicated tagGroups field) picks
+    // them up automatically -- nothing here talks to MapLayoutService
+    // directly. Character/relationship-map integration (autocomplete, tag
+    // chips on the character editor, search/suggestions) is explicitly out
+    // of scope for this phase; a tag being deleted here does NOT touch the
+    // plain-text `character.tags` arrays that already exist independently.
+    function updateTagGroups(mutator) {
+      setData(function (prev) {
+        var next = clone(prev);
+        var groups = clone(next.tagGroups || []);
+        var mutated = mutator(groups) || groups;
+        next.tagGroups = normalizeTagGroups(mutated);
+        return next;
+      });
+    }
+
+    function addTagGroup() {
+      updateTagGroups(function (groups) {
+        return groups.concat([{ name: "New Tag Group", tags: [] }]);
+      });
+    }
+
+    function renameTagGroup(groupId) {
+      var group = (data.tagGroups || []).find(function (g) { return g.id === groupId; });
+      var nextName = window.prompt("Rename tag group", group ? group.name : "");
+      if (nextName === null) {
+        return;
+      }
+      updateTagGroups(function (groups) {
+        return groups.map(function (g) {
+          return g.id === groupId ? Object.assign({}, g, { name: nextName }) : g;
+        });
+      });
+    }
+
+    function deleteTagGroup(groupId, groupName) {
+      var group = (data.tagGroups || []).find(function (g) { return g.id === groupId; });
+      var tagNames = group ? (group.tags || []).map(function (t) { return t.name; }) : [];
+      var inUse = tagNames.length > 0 && (data.characters || []).some(function (character) {
+        return (character.tags || []).some(function (t) { return tagNames.indexOf(t) >= 0; });
+      });
+      var warning = "Delete tag group \"" + (groupName || "Untitled") + "\" and all its tags?" +
+        (inUse ? " Characters already carrying these tags keep them as plain text -- only the managed definitions here are removed." : "") +
+        " This cannot be undone.";
+      if (!window.confirm(warning)) {
+        return;
+      }
+      updateTagGroups(function (groups) {
+        return groups.filter(function (g) { return g.id !== groupId; });
+      });
+    }
+
+    function addTag(groupId) {
+      updateTagGroups(function (groups) {
+        return groups.map(function (group) {
+          if (group.id !== groupId) {
+            return group;
+          }
+          return Object.assign({}, group, { tags: (group.tags || []).concat([{ name: "New Tag" }]) });
+        });
+      });
+    }
+
+    function deleteTag(groupId, tagId, tagName) {
+      var inUse = (data.characters || []).some(function (character) { return (character.tags || []).indexOf(tagName) >= 0; });
+      var warning = "Delete tag \"" + (tagName || "Untitled") + "\"?" +
+        (inUse ? " Characters already carrying it keep it as plain text -- only the managed definition here is removed." : "") +
+        " This cannot be undone.";
+      if (!window.confirm(warning)) {
+        return;
+      }
+      if (editingTag && editingTag.tagId === tagId) {
+        setEditingTag(null);
+      }
+      updateTagGroups(function (groups) {
+        return groups.map(function (group) {
+          if (group.id !== groupId) {
+            return group;
+          }
+          return Object.assign({}, group, { tags: (group.tags || []).filter(function (tag) { return tag.id !== tagId; }) });
+        });
+      });
+    }
+
+    function startEditTag(groupId, tag) {
+      setEditingTag({ groupId: groupId, tagId: tag.id, draft: clone(tag) });
+    }
+
+    function cancelEditTag() {
+      setEditingTag(null);
+    }
+
+    function updateEditingTagField(field, value) {
+      setEditingTag(function (prev) {
+        if (!prev) {
+          return prev;
+        }
+        var patch = {};
+        patch[field] = value;
+        return Object.assign({}, prev, { draft: Object.assign({}, prev.draft, patch) });
+      });
+    }
+
+    function saveEditingTag() {
+      if (!editingTag) {
+        return;
+      }
+      var groupId = editingTag.groupId;
+      var tagId = editingTag.tagId;
+      var draft = editingTag.draft;
+      updateTagGroups(function (groups) {
+        return groups.map(function (group) {
+          if (group.id !== groupId) {
+            return group;
+          }
+          var tags = (group.tags || []).map(function (tag) {
+            return tag.id === tagId ? Object.assign({}, tag, draft, { id: tagId }) : tag;
+          });
+          return Object.assign({}, group, { tags: tags });
+        });
+      });
+      setEditingTag(null);
+    }
+
+    function toggleTagGroupCollapsed(groupId) {
+      setCollapsedTagGroups(function (prev) {
+        var next = Object.assign({}, prev);
+        next[groupId] = !next[groupId];
+        return next;
+      });
+    }
+
+    function tagUsageCount(tagName) {
+      return (data.characters || []).filter(function (character) {
+        return (character.tags || []).indexOf(tagName) >= 0;
+      }).length;
+    }
+
     // Add/remove characters from the map. Neither operation touches
     // CharacterService -- adding never creates a character record, and
     // removing only deletes this map's own layout entry for it.
@@ -2463,11 +3391,52 @@
           setRelationshipEditor(null);
           setAddCharacterOpen(false);
           setActivePanel(null);
+          setContextMenu(null);
         }
       }
       document.addEventListener("keydown", onKey);
       return function () {
         document.removeEventListener("keydown", onKey);
+      };
+    }, []);
+
+    // Any mousedown that doesn't land on the context menu itself closes it
+    // -- covers clicking the tool rail, a side panel, a modal, or anywhere
+    // else outside the canvas (canvas-originated closes are handled
+    // directly in handleCanvasMouseDownCapture instead, for the
+    // stopPropagation reason noted there). Clicking a menu item closes it
+    // via its own handler (see contextMenuAddZone etc. above), which runs
+    // before this on the same click.
+    //
+    // Registered on the CAPTURE phase (the `true` third argument), not the
+    // default bubble phase: several handlers between the click's target and
+    // document -- React Flow's own internal node handling among them --
+    // call stopPropagation() on the native event, which halts bubble-phase
+    // propagation entirely and would silently stop a bubble-phase listener
+    // here from ever running. A capture-phase listener on document fires
+    // on the way DOWN, before any descendant has had the chance to call
+    // stopPropagation(), so it always runs.
+    useEffect(function () {
+      function onDocumentMouseDown(event) {
+        var target = event.target;
+        if (target && target.closest && target.closest(".context-menu")) {
+          return;
+        }
+        setContextMenu(null);
+      }
+      document.addEventListener("mousedown", onDocumentMouseDown, true);
+      return function () {
+        document.removeEventListener("mousedown", onDocumentMouseDown, true);
+      };
+    }, []);
+
+    // The map "losing focus" -- switching tabs/windows/apps -- also closes
+    // the menu, so it can never be left orphaned on screen while the user
+    // is looking at something else entirely.
+    useEffect(function () {
+      window.addEventListener("blur", closeContextMenu);
+      return function () {
+        window.removeEventListener("blur", closeContextMenu);
       };
     }, []);
 
@@ -2665,6 +3634,21 @@
             <button type="button" onClick=${closeAddCharacterModal}>Close</button>
           </footer>
         </div>
+      </div>`;
+    }
+
+    // Options always include Add Character/Add Zone; the third, context-
+    // specific action depends on what handleCanvasContextMenu found under
+    // the cursor at the moment of the right-click (see contextMenu.type).
+    function renderContextMenu() {
+      if (!contextMenu) {
+        return null;
+      }
+      return html`<div className="context-menu" style=${{ left: contextMenu.x + "px", top: contextMenu.y + "px" }}>
+        <button type="button" onClick=${contextMenuAddCharacter}>Add Character</button>
+        <button type="button" onClick=${contextMenuAddZone}>Add Zone</button>
+        ${contextMenu.type === "character" ? html`<button type="button" onClick=${contextMenuRemoveCharacter}>Remove Character from Map</button>` : null}
+        ${contextMenu.type === "zone" ? html`<button type="button" onClick=${contextMenuDeleteZone}>Delete Zone</button>` : null}
       </div>`;
     }
 
@@ -3015,9 +3999,10 @@
       </section>`;
     }
 
-    // Zones and Tags retain their toolbar entry points and panel shell, but
-    // zone drawing and tag management are not implemented in this
-    // rendering-engine phase -- these panels show a static placeholder.
+    // Tags retains its toolbar entry point and panel shell, but tag
+    // management isn't implemented in this rendering-engine phase -- it
+    // shows a static placeholder. (Zones used to share this same inert
+    // shell; it now has a real panel below.)
     function inertPanel(title, message) {
       return html`<div className="character-view">
         ${panelHeader(title)}
@@ -3027,12 +4012,198 @@
       </div>`;
     }
 
+    // Lists every zone (a collapsed row each) plus a fixed editor for
+    // whichever one is currently being edited. Placement and sizing both
+    // happen directly on the canvas now -- clicking "+ New Zone" only
+    // arms placement mode (see startZoneCreation/handleCanvasMouseDownCapture)
+    // and resizing is exclusively the on-canvas resize handles
+    // (applyZoneResize) -- so the editor itself only ever covers appearance/
+    // metadata (name, colours), never position or size. Selecting a zone
+    // (single-click on canvas, or the click that lands a placement) shows
+    // its resize handles without opening this editor; only a double-click
+    // on canvas or a list-row click (editZone) opens it. All edits are live
+    // (no separate Save step): each field calls updateZone directly, the
+    // same debounced [data] effect that already persists characters/
+    // relationships persists zones too.
     function zonesPanel() {
-      return inertPanel("Zones", "Zone editing isn't available yet in this rendering engine.");
+      var zones = data.zones || [];
+      var editingZone = zones.find(function (zone) { return zone.id === editingZoneId; }) || null;
+      // Computed once, used for the range input's own `value`, its
+      // rangeSliderFillStyle-derived `--fill`, AND the "NN%" label -- the
+      // single normalised value all three visibly derive from, so the fill
+      // and the thumb (and the printed number) can never disagree.
+      var opacityPercent = editingZone ? Math.round(editingZone.opacity * 100) : 0;
+
+      return html`<div className="character-view">
+        ${panelHeader("Zones")}
+        <div className="panel-body">
+          ${isPlacingZone
+            ? html`<div className="card">
+                <p className="hint">Click anywhere on the map to place the new zone. Drag its handles afterward to resize it.</p>
+                <button type="button" onClick=${cancelZoneCreation}>Cancel</button>
+              </div>`
+            : html`<button type="button" className="zone-draw-button" onClick=${startZoneCreation}>+ New Zone</button>`}
+
+          ${!zones.length && !isPlacingZone ? html`<div className="card"><p className="hint">No zones yet. Create one to mark out a location, territory or area of influence on the map.</p></div>` : null}
+
+          <div className="zone-list">
+            ${zones.map(function (zone) {
+              return html`<button
+                type="button"
+                key=${"zone-list-" + zone.id}
+                className=${"zone-list-item" + (zone.id === editingZoneId ? " active" : "")}
+                onClick=${function () { enterZoneEditMode(zone.id); }}
+              >
+                <span className="zone-list-swatch" style=${{ background: zone.backgroundColor, borderColor: zone.borderColor }}></span>
+                <span className="zone-list-name">${zone.name}</span>
+                <span className="zone-list-count">${Math.round(zone.width)}×${Math.round(zone.height)}</span>
+              </button>`;
+            })}
+          </div>
+
+          ${editingZone ? html`<div className="zone-editor-panel">
+            <div className="zone-editor-group">
+              <h4>Name</h4>
+              <input
+                type="text"
+                value=${editingZone.name}
+                onInput=${function (e) { updateZone(editingZone.id, { name: e.target.value }); }}
+                placeholder="Zone name"
+              />
+            </div>
+
+            <div className="zone-editor-group">
+              <h4>Colours</h4>
+              <div className="rtm-field-row">
+                <div className="rtm-field-col">
+                  <label className="rtm-field-label">Background</label>
+                  <input type="color" className="rtm-color-input" value=${editingZone.backgroundColor} onInput=${function (e) { updateZone(editingZone.id, { backgroundColor: e.target.value }); }} />
+                </div>
+                <div className="rtm-field-col">
+                  <label className="rtm-field-label">Border</label>
+                  <input type="color" className="rtm-color-input" value=${editingZone.borderColor} onInput=${function (e) { updateZone(editingZone.id, { borderColor: e.target.value }); }} />
+                </div>
+              </div>
+              <div className="rtm-field-col zone-opacity-field">
+                <label className="rtm-field-label">Opacity</label>
+                <div className="zone-opacity-row">
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value=${opacityPercent}
+                    style=${rangeSliderFillStyle(opacityPercent, 0, 100)}
+                    onInput=${function (e) { updateZone(editingZone.id, { opacity: Number(e.target.value) / 100 }); }}
+                  />
+                  <span className="zone-opacity-value">${opacityPercent}%</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="zone-editor-actions">
+              <button type="button" onClick=${exitZoneEditMode}>Done</button>
+              <button type="button" className="relationship-card-action-btn destructive" onClick=${function () { deleteZone(editingZone.id); }}>Delete Zone</button>
+            </div>
+          </div>` : null}
+        </div>
+      </div>`;
     }
 
     function tagsPanel() {
-      return inertPanel("Tags", "Tag management isn't available yet in this rendering engine.");
+      var tagGroups = data.tagGroups || [];
+
+      return html`<div className="character-view">
+        ${panelHeader("Tags")}
+        <div className="panel-body tag-manager-body">
+          <button type="button" className="tag-group-create-root" onClick=${addTagGroup}>+ Add Tag Group</button>
+
+          ${!tagGroups.length ? html`<div className="card"><p className="hint">No tag groups yet. Create one to start organising character tags.</p></div>` : null}
+
+          ${tagGroups.map(function (group) {
+            var isCollapsed = Boolean(collapsedTagGroups[group.id]);
+            var tags = group.tags || [];
+            return html`<div className="tag-group-shell" key=${"tag-group-" + group.id}>
+              <div className="tag-group-header">
+                <button type="button" className="tag-group-toggle" onClick=${function () { toggleTagGroupCollapsed(group.id); }}>
+                  <span className="tag-group-caret">${isCollapsed ? "▶" : "▼"}</span>
+                  <span>${group.name}</span>
+                  <span className="hint">${tags.length} tag${tags.length === 1 ? "" : "s"}</span>
+                </button>
+                <div className="tag-group-actions">
+                  <button type="button" className="tag-icon-button" title="Rename tag group" aria-label="Rename tag group" onClick=${function () { renameTagGroup(group.id); }}>✎</button>
+                  <button type="button" className="tag-icon-button" title="Add tag" aria-label="Add tag" onClick=${function () { addTag(group.id); }}>+</button>
+                  <button type="button" className="tag-icon-button" title="Delete tag group" aria-label="Delete tag group" onClick=${function () { deleteTagGroup(group.id, group.name); }}>🗑</button>
+                </div>
+              </div>
+
+              <div className=${"tag-group-content" + (isCollapsed ? "" : " expanded")}>
+                <div className="tag-group-content-inner">
+                  ${!tags.length ? html`<p className="hint">No tags in this group yet.</p>` : null}
+                  <div className="tag-row-list">
+                    ${tags.map(function (tag) {
+                      var usage = tagUsageCount(tag.name);
+                      var isEditingThisTag = Boolean(editingTag) && editingTag.groupId === group.id && editingTag.tagId === tag.id;
+                      return html`<div key=${"tag-row-wrap-" + tag.id}>
+                        <div className="tag-row">
+                          <div className="tag-row-main">
+                            <span className="tag-color-cell">
+                              <span className="tag-color-square" style=${{ background: tag.color }} aria-hidden="true"></span>
+                              <input
+                                type="color"
+                                className="tag-row-color-input"
+                                value=${tag.color}
+                                aria-label=${"Colour for " + tag.name}
+                                onInput=${function (e) { updateTagGroups(function (groups) { return groups.map(function (g) { if (g.id !== group.id) { return g; } return Object.assign({}, g, { tags: (g.tags || []).map(function (t) { return t.id === tag.id ? Object.assign({}, t, { color: e.target.value }) : t; }) }); }); }); }}
+                              />
+                            </span>
+                            <span className="tag-row-name">${tag.icon ? (tag.icon + " ") : ""}${tag.name}${tag.visible === false ? " (hidden)" : ""}</span>
+                          </div>
+                          <div className="tag-row-actions">
+                            <span className="tag-row-usage">${usage} used</span>
+                            <button type="button" className="tag-icon-button" title="Edit tag" aria-label=${"Edit " + tag.name} onClick=${function () { isEditingThisTag ? cancelEditTag() : startEditTag(group.id, tag); }}>✎</button>
+                            <button type="button" className="tag-icon-button" title="Delete tag" aria-label=${"Delete " + tag.name} onClick=${function () { deleteTag(group.id, tag.id, tag.name); }}>🗑</button>
+                          </div>
+                        </div>
+
+                        ${isEditingThisTag ? html`<div className="tag-inline-editor-shell expanded">
+                          <div className="tag-inline-editor-grid">
+                            <label>Name</label>
+                            <input type="text" value=${editingTag.draft.name} onInput=${function (e) { updateEditingTagField("name", e.target.value); }} placeholder="Tag name" />
+
+                            <div className="tag-inline-color-row">
+                              <${ColorField}
+                                label="Colour"
+                                value=${editingTag.draft.color}
+                                onChange=${function (value) { updateEditingTagField("color", value); }}
+                              />
+                            </div>
+
+                            <label>Icon</label>
+                            <input type="text" value=${editingTag.draft.icon} onInput=${function (e) { updateEditingTagField("icon", e.target.value); }} placeholder="Optional glyph, e.g. ♛" />
+
+                            <label>Description</label>
+                            <textarea rows="2" value=${editingTag.draft.description} onInput=${function (e) { updateEditingTagField("description", e.target.value); }} placeholder="Optional description"></textarea>
+
+                            <label className="rtm-checkbox-label">
+                              <input type="checkbox" checked=${Boolean(editingTag.draft.visible)} onChange=${function (e) { updateEditingTagField("visible", e.target.checked); }} />
+                              Visible
+                            </label>
+
+                            <div className="tag-inline-editor-actions">
+                              <button type="button" onClick=${saveEditingTag}>Save</button>
+                              <button type="button" className="relationship-card-action-btn" onClick=${cancelEditTag}>Cancel</button>
+                            </div>
+                          </div>
+                        </div>` : null}
+                      </div>`;
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>`;
+          })}
+        </div>
+      </div>`;
     }
 
     function relationshipTypeManagerPanel() {
@@ -3381,6 +4552,21 @@
 
     function onFlowMove(event, viewport) {
       setZoomPercent(Math.round(viewport.zoom * 100));
+      if (!indexedDbAvailable()) {
+        return;
+      }
+      // Debounced so a pan/zoom gesture (which can fire this many times a
+      // second) writes once shortly after the user stops, not on every
+      // intermediate frame -- mirrors the settled-value-only intent of the
+      // rest of this file's persistence, without touching the separate
+      // (much heavier) data-state persistence effect above.
+      var toSave = { x: viewport.x, y: viewport.y, zoom: viewport.zoom };
+      if (viewportSaveTimerRef.current) {
+        window.clearTimeout(viewportSaveTimerRef.current);
+      }
+      viewportSaveTimerRef.current = window.setTimeout(function () {
+        mapLayoutService.saveViewport(toSave).catch(function () { return null; });
+      }, 400);
     }
 
     var selectedNodeCount = flowNodes.filter(function (node) { return node.selected; }).length;
@@ -3409,7 +4595,17 @@
             <button disabled=${true} title="Redo is not available in this rendering engine">Redo</button>
           </div>
 
-          <div className="canvas-viewport">
+          <div
+            ref=${canvasViewportRef}
+            className=${"canvas-viewport" + (isPlacingZone ? " drawing-zone" : "")}
+            onMouseDownCapture=${handleCanvasMouseDownCapture}
+            onClickCapture=${handleCanvasClickCapture}
+            onDoubleClickCapture=${handleCanvasDoubleClickCapture}
+            onMouseMove=${handleCanvasHoverMove}
+            onMouseLeave=${handleCanvasMouseLeave}
+            onContextMenu=${handleCanvasContextMenu}
+          >
+            <${ZonesCanvasLayer} zones=${data.zones || []} editingZoneId=${editingZoneId} />
             ${ReactFlowComponent ? html`<${ReactFlowComponent}
               className=${isConnectingRelationship ? "rf-connecting" : ""}
               nodes=${flowNodes}
@@ -3431,7 +4627,7 @@
               elementsSelectable=${true}
               connectionMode=${ReactFlowConnectionMode.Loose}
               deleteKeyCode=${null}
-              defaultViewport=${{ x: 80, y: 60, zoom: 0.58 }}
+              defaultViewport=${defaultViewport}
               minZoom=${0.2}
               maxZoom=${2.4}
               proOptions=${{ hideAttribution: true }}
@@ -3443,12 +4639,20 @@
       </section>
 
       ${renderAddCharacterModal()}
+      ${renderContextMenu()}
     </div>`;
   }
 
   loadInitialState()
     .then(function (seedState) {
-      ReactDOM.createRoot(document.getElementById("app")).render(html`<${ReactFlowProvider}><${App} initialData=${seedState} /></${ReactFlowProvider}>`);
+      // The existing, previously-unused MapLayoutService.getViewport() --
+      // reused here rather than adding a new persistence path. A map with
+      // no saved viewport (first open, brand-new map) resolves to null, so
+      // App falls back to its own 100%-zoom default.
+      var viewportPromise = indexedDbAvailable() ? mapLayoutService.getViewport().catch(function () { return null; }) : Promise.resolve(null);
+      return viewportPromise.then(function (savedViewport) {
+        ReactDOM.createRoot(document.getElementById("app")).render(html`<${ReactFlowProvider}><${App} initialData=${seedState} initialViewport=${savedViewport} /></${ReactFlowProvider}>`);
+      });
     })
     .catch(function (error) {
       console.warn("Failed to bootstrap Campaign Atlas state.", error);
