@@ -379,6 +379,18 @@ h6 {
   top: -32px;
 }
 
+/* Left/right handles default to vertically centering on the node's full
+   box (React Flow's own stylesheet sets top: 50%), which sits 4px lower
+   than the portrait's true center once the label text below it is
+   factored in. Nudge just these two handles up by 4px so they line up
+   with the portrait -- the node's own box position, edge routing,
+   markers, and labels are untouched; only where the edge visually
+   attaches on the node moves. */
+.flow-node .react-flow__handle-left,
+.flow-node .react-flow__handle-right {
+  top: calc(50% - 4px);
+}
+
 /* Handles stay in the DOM and fully functional at all times -- opacity is
    the only thing toggled, never visibility/display, so a drag can still
    start the instant a handle becomes visible on hover. Hidden by default;
@@ -3122,30 +3134,6 @@ select.rtm-style-select {
   overflow-wrap: normal;
 }
 
-.profile-header-facts {
-  display: grid;
-  gap: 0.32rem;
-}
-
-.profile-fact-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-height: 28px;
-}
-
-.profile-fact-value {
-  color: #f4f4ff;
-  font-size: 0.92rem;
-  font-weight: 600;
-}
-
-.profile-header-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-}
-
 .profile-faction-icons {
   display: flex;
   align-items: center;
@@ -3157,6 +3145,7 @@ select.rtm-style-select {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   border-radius: 50%;
   border: 1px solid #3f0b1b;
   box-shadow:
@@ -3164,13 +3153,6 @@ select.rtm-style-select {
     inset 0 1px 0 rgba(255, 186, 210, 0.12),
     inset 0 -1px 0 rgba(30, 4, 10, 0.45);
   overflow: hidden;
-}
-
-.atlas-icon {
-  display: block;
-  width: 100%;
-  height: 100%;
-  flex: 0 0 auto;
 }
 
 .icon-badge-image {
@@ -3193,34 +3175,27 @@ select.rtm-style-select {
   font-weight: 600;
 }
 
-.profile-header-editor-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.38rem;
-}
-
-.profile-header-editor-grid input,
-.profile-header-editor-grid select {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #151521;
-  color: #fff;
-  padding: 0.34rem 0.48rem;
-  font-size: 0.78rem;
-  width: 100%;
-  min-width: 0;
-  text-overflow: ellipsis;
-}
-
-.profile-header-editor-field {
+/* Primary identity row: Origin/Clan/Sect/Status as a single row of
+   equal-width, label-above-value fields -- Clan/Sect drop out (see
+   isVampireOrigin in character-biography-shared.js) when Origin isn't
+   Vampire, and the remaining fields simply re-share the row equally since
+   flex-grow is uniform across every .profile-identity-field regardless of
+   how many are present. flex-wrap lets it collapse to stacked rows on
+   narrow viewports without a dedicated breakpoint. */
+.profile-identity-grid {
   display: flex;
-  align-items: center;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: 0.4rem;
 }
 
-.profile-header-editor-label {
-  flex: 0 0 auto;
+.profile-identity-field {
+  display: grid;
+  gap: 0.25rem;
+  flex: 1 1 0%;
+  min-width: 72px;
+}
+
+.profile-identity-label {
   color: var(--text-muted);
   font-size: 0.72rem;
   letter-spacing: 0.07em;
@@ -3228,19 +3203,42 @@ select.rtm-style-select {
   white-space: nowrap;
 }
 
-.profile-header-editor-field select,
-.profile-header-editor-field input {
-  /* flex-basis 0 (not the inherited width:100%, which reads as 100% of the
-     flex container and makes the row look full on its own -- forcing the
-     label onto its own line every time) so the control only claims the
-     space left over after the label, and can still shrink down to it on
-     narrow layouts. */
-  flex: 1 1 0%;
-  width: auto;
+.profile-identity-field select,
+.profile-identity-field input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #151521;
+  color: #fff;
+  padding: 0.34rem 0.48rem;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
 }
 
-.profile-header-editor-field .tag-picker {
-  flex: 1 1 0%;
+.profile-identity-value {
+  margin: 0;
+  min-height: 1.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #f4f4ff;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.profile-identity-value span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.profile-tags-row {
+  margin-top: 0.5rem;
+}
+
+.profile-tags-row .tag-picker {
   min-width: 0;
 }
 
@@ -4249,11 +4247,13 @@ select.rtm-style-select {
     margin: 0 auto;
   }
 
-  .profile-header-facts,
-  .profile-header-editor-grid,
   .profile-relationship-grid,
   .profile-timeline-list {
     grid-template-columns: 1fr;
+  }
+
+  .profile-identity-field {
+    flex-basis: 100%;
   }
 
   .portrait-replace-grid {

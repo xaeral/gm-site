@@ -119,185 +119,6 @@
     </div>`;
   }
 
-  // Multi-owner select: any number of characters can own a location.
-  // Selected owners render as removable chips beneath the trigger; the
-  // dropdown itself stays open across multiple picks (each click just
-  // toggles that owner in/out of the array) and only closes on outside
-  // click, Escape, or re-clicking the trigger -- never as a side effect of
-  // making a selection. "None" is a distinct clear-all action rather than
-  // one option among others, since "toggle it like any other owner" doesn't
-  // make sense once more than one can be selected at a time.
-  function OwnerDropdown(props) {
-    var id = props.id;
-    var label = props.label || "Owner";
-    var characters = Array.isArray(props.characters) ? props.characters : [];
-    var values = Array.isArray(props.values) ? props.values.map(String) : [];
-    var onChange = typeof props.onChange === "function" ? props.onChange : function () {};
-    var _open = useState(false);
-    var open = _open[0];
-    var setOpen = _open[1];
-    var _searchTerm = useState("");
-    var searchTerm = _searchTerm[0];
-    var setSearchTerm = _searchTerm[1];
-    var rootRef = useRef(null);
-
-    var ownerOptions = useMemo(function () {
-      var seen = {};
-      return characters.map(function (character) {
-        return {
-          value: String(character && character.id ? character.id : ""),
-          label: normalizeString(character && character.name, String(character && character.id ? character.id : ""))
-        };
-      }).filter(function (option) {
-        return option.value && option.label;
-      }).sort(function (a, b) {
-        return a.label.localeCompare(b.label);
-      }).filter(function (option) {
-        if (seen[option.value]) {
-          return false;
-        }
-        seen[option.value] = true;
-        return true;
-      });
-    }, [characters]);
-
-    var ownerLabelById = useMemo(function () {
-      var map = {};
-      ownerOptions.forEach(function (option) { map[option.value] = option.label; });
-      return map;
-    }, [ownerOptions]);
-
-    var selectedChips = values.map(function (ownerId) {
-      return { value: ownerId, label: ownerLabelById[ownerId] || ownerId };
-    });
-
-    var summaryLabel = !selectedChips.length
-      ? OWNER_NONE_LABEL
-      : (selectedChips.length === 1 ? selectedChips[0].label : (selectedChips.length + " Owners"));
-
-    var filteredOptions = useMemo(function () {
-      var term = normalizeString(searchTerm, "").toLowerCase();
-      if (!term) {
-        return ownerOptions;
-      }
-      return ownerOptions.filter(function (option) {
-        return option.label.toLowerCase().indexOf(term) >= 0;
-      });
-    }, [ownerOptions, searchTerm]);
-
-    useEffect(function () {
-      if (!open) {
-        setSearchTerm("");
-        return;
-      }
-      function onPointerDown(event) {
-        if (rootRef.current && !rootRef.current.contains(event.target)) {
-          setOpen(false);
-        }
-      }
-      function onEscape(event) {
-        if (event.key === "Escape") {
-          setOpen(false);
-        }
-      }
-      document.addEventListener("pointerdown", onPointerDown);
-      document.addEventListener("keydown", onEscape);
-      return function () {
-        document.removeEventListener("pointerdown", onPointerDown);
-        document.removeEventListener("keydown", onEscape);
-      };
-    }, [open]);
-
-    function toggleOwner(ownerId) {
-      if (values.indexOf(ownerId) !== -1) {
-        onChange(values.filter(function (id) { return id !== ownerId; }));
-      } else {
-        onChange(values.concat([ownerId]));
-      }
-    }
-
-    function removeChip(ownerId) {
-      onChange(values.filter(function (id) { return id !== ownerId; }));
-    }
-
-    return html`<div className="character-filter-dropdown location-owner-dropdown" ref=${rootRef}>
-      <span className="character-filter-label">${label}</span>
-      <button
-        type="button"
-        className=${"character-filter-trigger" + (open ? " open" : "")}
-        aria-haspopup="listbox"
-        aria-expanded=${open ? "true" : "false"}
-        aria-controls=${id}
-        onClick=${function () { setOpen(!open); }}
-      >
-        <span className="character-filter-trigger-text">${summaryLabel}</span>
-        <span className="character-filter-trigger-caret" aria-hidden="true">v</span>
-      </button>
-      ${selectedChips.length ? html`<div className="notebook-chip-list location-owner-chip-list">
-        ${selectedChips.map(function (chip) {
-          return html`<button type="button" key=${"owner-chip-" + chip.value} className="notebook-chip">
-            <span>${chip.label}</span>
-            <strong aria-hidden="true" onClick=${function (event) { event.stopPropagation(); removeChip(chip.value); }}>×</strong>
-          </button>`;
-        })}
-      </div>` : null}
-      ${open ? html`<div id=${id} className="character-filter-menu location-owner-menu" role="listbox" aria-multiselectable="true">
-        <div className="location-owner-search-row">
-          <input
-            type="search"
-            placeholder="Search owners..."
-            value=${searchTerm}
-            autoFocus=${true}
-            onInput=${function (event) { setSearchTerm(event.target.value); }}
-          />
-        </div>
-        <button
-          type="button"
-          className=${"character-filter-option" + (!values.length ? " checked" : "")}
-          role="option"
-          aria-selected=${!values.length ? "true" : "false"}
-          onClick=${function () { onChange([]); }}
-        >
-          <span className="character-filter-check" aria-hidden="true"></span>
-          <span>${OWNER_NONE_LABEL}</span>
-        </button>
-        ${filteredOptions.length ? filteredOptions.map(function (option) {
-          var checked = values.indexOf(option.value) !== -1;
-          return html`<button
-            key=${"owner-option-" + option.value}
-            type="button"
-            className=${"character-filter-option" + (checked ? " checked" : "")}
-            role="option"
-            aria-selected=${checked ? "true" : "false"}
-            onClick=${function () { toggleOwner(option.value); }}
-          >
-            <span className="character-filter-check" aria-hidden="true"></span>
-            <span>${option.label}</span>
-          </button>`;
-        }) : html`<div className="character-filter-option notebook-filter-empty"><span></span><span>No owners found.</span></div>`}
-      </div>` : null}
-    </div>`;
-  }
-
-  function TagChips(props) {
-    var items = props.items || [];
-    var empty = props.empty || "None";
-    var onRemove = props.onRemove;
-
-    if (!items.length) {
-      return html`<p className="hint">${empty}</p>`;
-    }
-
-    return html`<div className="notebook-chip-list">
-      ${items.map(function (item) {
-        return html`<button type="button" key=${item} className="notebook-chip">
-          <span>${item}</span>
-          ${onRemove ? html`<strong aria-hidden="true" onClick=${function (event) { event.stopPropagation(); onRemove(item); }}>×</strong>` : null}
-        </button>`;
-      })}
-    </div>`;
-  }
-
   function LocationApp() {
     var _locations = useState([]);
     var locations = _locations[0];
@@ -997,7 +818,7 @@
                       <option value="Notable Place">Notable Place</option>
                     </select>
                   </label>
-                  <${OwnerDropdown}
+                  <${shared.OwnerDropdown}
                     id="locationOwnerField"
                     label="Owner"
                     characters=${characters}
@@ -1018,11 +839,11 @@
                   </div>
                   <div className="location-readonly-field">
                     <span className="location-readonly-label">Owner</span>
-                    <${TagChips} items=${(selectedLocation.ownerIds && selectedLocation.ownerIds.length) ? selectedLocation.ownerNames : []} empty="None" />
+                    <${shared.TagChips} items=${(selectedLocation.ownerIds && selectedLocation.ownerIds.length) ? selectedLocation.ownerNames : []} empty="None" />
                   </div>
                   <div className="location-readonly-field">
                     <span className="location-readonly-label">Tags</span>
-                    <${TagChips} items=${selectedLocation.tags || []} empty="No tags." />
+                    <${shared.TagChips} items=${selectedLocation.tags || []} empty="No tags." />
                   </div>
                 </div>`}
               </section>
@@ -1124,7 +945,7 @@
                 <option value="Notable Place">Notable Place</option>
               </select>
             </label>
-            <${OwnerDropdown}
+            <${shared.OwnerDropdown}
               id="locationOwnerDialogField"
               label="Owner"
               characters=${characters}

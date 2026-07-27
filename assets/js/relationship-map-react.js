@@ -772,40 +772,7 @@
     return clan === "None" ? "" : (CLAN_ICON_LOOKUP[clan] || "");
   }
 
-  function Icon(config) {
-    if (!config || !config.icon) {
-      return null;
-    }
-    var iconSize = Number(config.size) || null;
-    // width/height override size for non-square source assets (e.g. the
-    // chain-link SVG, which is a wide/short strip rather than an icon glyph)
-    // -- existing callers that only ever pass `size` are unaffected.
-    var iconWidth = Number(config.width) || iconSize;
-    var iconHeight = Number(config.height) || iconSize;
-    var className = "atlas-icon" + (config.className ? " " + config.className : "");
-    var maskSource = "url('" + config.icon + "')";
-    var style = {
-      color: config.color || "currentColor",
-      backgroundColor: "currentColor",
-      maskImage: maskSource,
-      maskRepeat: "no-repeat",
-      maskPosition: "center",
-      maskSize: "contain",
-      maskMode: "alpha",
-      WebkitMaskImage: maskSource,
-      WebkitMaskRepeat: "no-repeat",
-      WebkitMaskPosition: "center",
-      WebkitMaskSize: "contain",
-      WebkitMaskMode: "alpha"
-    };
-    if (iconWidth) {
-      style.width = iconWidth + "px";
-    }
-    if (iconHeight) {
-      style.height = iconHeight + "px";
-    }
-    return html`<span className=${className} style=${style} aria-hidden="true"></span>`;
-  }
+  var Icon = sharedCharacters.Icon || function () { return null; };
 
   function IconBadge(config) {
     if (!config || !config.icon) {
@@ -1406,7 +1373,7 @@
     });
   }
 
-  function timelineEventsForDisplay(events, dateOfBirth, dateOfDeath) {
+  function timelineEventsForDisplay(events, dateOfBirth, dateOfEmbrace, dateOfDeath) {
     // Merge persisted events and virtual lifecycle events before this one sort.
     var merged = (events || []).map(function (event, sourceIndex) {
       var normalized = normalizeTimelineEvent(event);
@@ -1431,8 +1398,9 @@
       return titles;
     }, {});
     [
-      { id: "birth", title: "Birth", date: normalizeIsoDate(dateOfBirth) },
-      { id: "death", title: "Death", date: normalizeIsoDate(dateOfDeath) }
+      { id: "birth", title: "Born", date: normalizeIsoDate(dateOfBirth), priority: 0 },
+      { id: "embrace", title: "Embraced", date: normalizeIsoDate(dateOfEmbrace), priority: 1 },
+      { id: "death", title: "Died", date: normalizeIsoDate(dateOfDeath), priority: 3 }
     ].forEach(function (systemEvent, systemIndex) {
       if (!systemEvent.date || manualTitles[systemEvent.title.toLowerCase()]) {
         return;
@@ -1442,7 +1410,7 @@
         event: { date: systemEvent.date, title: systemEvent.title, description: "" },
         isSystem: true,
         sequence: (events || []).length + systemIndex,
-        sortPriority: systemEvent.id === "birth" ? 0 : 2,
+        sortPriority: systemEvent.priority,
         hasDate: true,
         dateValue: Date.parse(systemEvent.date + "T00:00:00")
       });
@@ -1475,8 +1443,12 @@
     normalized.gmOnlyInformation = source.gmOnlyInformation !== undefined
       ? String(source.gmOnlyInformation || "")
       : String(source.gmNotes || "");
-    normalized.dateOfBirth = normalizeIsoDate(source.dateOfBirth);
-    normalized.dateOfDeath = normalizeIsoDate(source.dateOfDeath);
+    var lifecycleDates = sharedCharacters.resolveCharacterLifecycleDates
+      ? sharedCharacters.resolveCharacterLifecycleDates(source)
+      : { dateOfBirth: normalizeIsoDate(source.dateOfBirth), dateOfEmbrace: "", dateOfDeath: normalizeIsoDate(source.dateOfDeath) };
+    normalized.dateOfBirth = lifecycleDates.dateOfBirth;
+    normalized.dateOfEmbrace = lifecycleDates.dateOfEmbrace;
+    normalized.dateOfDeath = lifecycleDates.dateOfDeath;
     return normalized;
   }
 
@@ -3725,6 +3697,9 @@
 
       function renderDetailsReadOnly(character) {
         var biographyHtml = characterBiographyHtml(character);
+        var lifecycleDates = sharedCharacters.resolveCharacterLifecycleDates
+          ? sharedCharacters.resolveCharacterLifecycleDates(character)
+          : { dateOfBirth: character.dateOfBirth, dateOfEmbrace: "", dateOfDeath: character.dateOfDeath };
 
         function readField(label, value, fullWidth) {
           return html`<article className=${"character-field-card" + (fullWidth ? " field-span-full" : "")} key=${"field-" + label}>
@@ -3746,8 +3721,9 @@
           readField("Generation", character.generation, false),
           readField("True Age", character.trueAge, false),
           readField("Apparent Age", character.apparentAge, false),
-          readField("Date of Birth", formatDisplayDate(character.dateOfBirth), false),
-          readField("Date of Death", formatDisplayDate(character.dateOfDeath), false)
+          readField("Date of Birth", formatDisplayDate(lifecycleDates.dateOfBirth), false),
+          readField("Date of Embrace", formatDisplayDate(lifecycleDates.dateOfEmbrace), false),
+          readField("Date of Death", formatDisplayDate(lifecycleDates.dateOfDeath), false)
         ];
 
         var trailingFields = [
@@ -3857,7 +3833,7 @@
       var profileSectIcon = resolveSectIcon(focused.sect);
       var profileClanIcon = resolveClanIcon(focused.clan);
       var profileRecord = normalizeCharacterRecord(focused);
-      var timelineDisplayEvents = timelineEventsForDisplay(profileRecord.timeline || [], profileRecord.dateOfBirth, profileRecord.dateOfDeath);
+      var timelineDisplayEvents = timelineEventsForDisplay(profileRecord.timeline || [], profileRecord.dateOfBirth, profileRecord.dateOfEmbrace, profileRecord.dateOfDeath);
 
       function sidebarField(label, key, multiline, inputType) {
         var value = profileRecord[key] || "";
@@ -4007,6 +3983,7 @@
             ${sidebarField("True Age", "trueAge", false)}
             ${sidebarField("Apparent Age", "apparentAge", false)}
             ${sidebarField("Date of Birth", "dateOfBirth", false, "date")}
+            ${sidebarField("Date of Embrace", "dateOfEmbrace", false, "date")}
             ${sidebarField("Date of Death", "dateOfDeath", false, "date")}
             ${sidebarField("Sire", "sire", false)}
           </aside>

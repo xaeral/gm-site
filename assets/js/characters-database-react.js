@@ -32,12 +32,6 @@
     return next || String(fallback || "");
   }
 
-  function relationshipCountFor(characterId, relationships) {
-    return (relationships || []).filter(function (entry) {
-      return entry && (entry.from === characterId || entry.to === characterId);
-    }).length;
-  }
-
   function generateCharacterId() {
     return "char-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
   }
@@ -339,7 +333,6 @@
               ${loading ? html`<p className="hint">Loading characters...</p>` : null}
               ${!loading && !filteredCharacters.length ? html`<p className="hint">No characters match your current search and filters.</p>` : null}
               ${filteredCharacters.map(function (entry) {
-                var relCount = relationshipCountFor(entry.id, relationships);
                 var isActive = entry.id === selectedId;
                 return React.createElement(
                   "button",
@@ -357,8 +350,7 @@
                     "span",
                     { className: "character-db-list-meta" },
                     React.createElement("strong", null, entry.name || "Unnamed Character"),
-                    React.createElement("span", null, normalizeString(entry.clan, "None") + " - " + normalizeString(entry.sect, "None")),
-                    React.createElement("span", null, (entry.generation ? "Generation " + entry.generation : "Generation unknown") + " - " + relCount + " relationships")
+                    React.createElement("span", null, normalizeString(entry.clan, "None") + " • " + normalizeString(entry.sect, "None"))
                   ),
                   html`<${shared.ListCardActions} actions=${[
                     { key: "favorite", icon: entry.pinned ? "★" : "☆", label: entry.pinned ? "Unpin character" : "Pin character", active: entry.pinned, onClick: function () { togglePinned(entry); } },
@@ -395,6 +387,7 @@
                       editable=${true}
                       allowPortraitEdit=${true}
                       startInEdit=${Boolean(editRequest && editRequest.id === selectedCharacter.id)}
+                      showEditButton=${false}
                       onSave=${saveSelectedCharacter}
                       onOpenStoryNote=${function (note) {
                         var focus = encodeURIComponent(String((note && note.focusText) || (note && note.title) || ""));

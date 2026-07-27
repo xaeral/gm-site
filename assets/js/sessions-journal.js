@@ -311,6 +311,14 @@
     var draft = _draft[0];
     var setDraft = _draft[1];
 
+    // Sessions open read-only by default, matching Character/Location --
+    // editing controls only render when editMode is true. Save is still
+    // the existing explicit Save button (saveSessionWithReview); this only
+    // toggles which JSX is shown.
+    var _editMode = useState(false);
+    var editMode = _editMode[0];
+    var setEditMode = _editMode[1];
+
     var _status = useState("Loading sessions...");
     var status = _status[0];
     var setStatus = _status[1];
@@ -769,6 +777,12 @@
 
     async function selectSession(sessionId) {
       setSelectedSessionId(sessionId);
+      setEditMode(false);
+    }
+
+    async function editSessionEntry(sessionId) {
+      setSelectedSessionId(sessionId);
+      setEditMode(true);
     }
 
     async function createSession() {
@@ -777,6 +791,7 @@
       var nextState = await journal.readSessionJournalState();
       setState({ sessions: nextState.sessions || [] });
       setSelectedSessionId(created.id);
+      setEditMode(true);
       setStatus("Session created.");
     }
 
@@ -887,6 +902,9 @@
                 <strong>Session ${session.sessionNumber || "?"}</strong>
                 <span>${session.title || "Untitled Session"}</span>
                 <p>${formatDateDisplay(session.datePlayed)}</p>
+                <${shared.ListCardActions} actions=${[
+                  { key: "edit", icon: "✎", label: "Edit Session " + (session.sessionNumber || ""), onClick: function () { editSessionEntry(session.id); } }
+                ]} />
               </button>`;
             }) : html`<p className="hint">${(state.sessions || []).length ? "No sessions match current search and filters." : "No sessions yet."}</p>`}
           </div>
@@ -895,8 +913,13 @@
         <section className="gm-notebook-editor session-editor">
           ${draft ? html`
             <div className="notebook-editor-header">
-              <input type="text" className="notebook-title-input" value=${draft.title || ""} placeholder="Session Title" onInput=${function (event) { updateDraftField("title", event.target.value); }} />
+              ${editMode
+                ? html`<input type="text" className="notebook-title-input" value=${draft.title || ""} placeholder="Session Title" onInput=${function (event) { updateDraftField("title", event.target.value); }} />`
+                : html`<h1 className="notebook-title-input">${draft.title || "Untitled Session"}</h1>`}
               <div className="notebook-editor-actions">
+                ${editMode
+                  ? html`<button type="button" className="profile-save-button" onClick=${function () { setEditMode(false); }}>Done</button>`
+                  : html`<button type="button" className="profile-biography-edit-button" onClick=${function () { setEditMode(true); }}>Edit</button>`}
                 <button type="button" onClick=${function () { updateDraftField("pinned", !draft.pinned); }}>${draft.pinned ? "Unpin" : "Pin"}</button>
                 <button type="button" onClick=${function () { updateDraftField("archived", !draft.archived); }}>${draft.archived ? "Unarchive" : "Archive"}</button>
                 <button type="button" className="destructive" onClick=${deleteSession}>Delete</button>
@@ -904,7 +927,7 @@
               </div>
             </div>
 
-            <div className="notebook-metadata-grid session-metadata-grid">
+            ${editMode ? html`<div className="notebook-metadata-grid session-metadata-grid">
               <label>Session Number
                 <input type="number" min="1" value=${draft.sessionNumber || 1} onInput=${function (event) { updateDraftField("sessionNumber", Number(event.target.value || 1)); }} />
               </label>
@@ -914,7 +937,20 @@
               <label>General Tags
                 <input value=${draft.tagsInput !== undefined ? draft.tagsInput : (draft.tags || []).join(", ")} onInput=${function (event) { updateTags(event.target.value); }} placeholder="boons, blood-hunt, praxis" />
               </label>
-            </div>
+            </div>` : html`<div className="notebook-metadata-grid session-metadata-grid location-overview-readonly">
+              <div className="location-readonly-field">
+                <span className="location-readonly-label">Session Number</span>
+                <strong className="location-readonly-value">${draft.sessionNumber || 1}</strong>
+              </div>
+              <div className="location-readonly-field">
+                <span className="location-readonly-label">Date Played</span>
+                <strong className="location-readonly-value">${formatDateDisplay(draft.datePlayed)}</strong>
+              </div>
+              <div className="location-readonly-field">
+                <span className="location-readonly-label">Tags</span>
+                <${shared.TagChips} items=${draft.tags || []} empty="No tags." />
+              </div>
+            </div>`}
 
             <section className="notebook-reference-card session-summary-card">
               <div className="section-heading">
@@ -933,10 +969,10 @@
             <section className="notebook-body-card session-journal-body">
               <div className="section-heading notebook-writing-heading">
                 <h3>Session Journal</h3>
-                <span className="note-subtitle">Type @ to mention Characters, Locations, Tags, Clans, Sects & Timeline Events, #Location for quick tags, !Important Event to flag a timeline event • ${status}</span>
+                <span className="note-subtitle">${editMode ? "Type @ to mention Characters, Locations, Tags, Clans, Sects & Timeline Events, #Location for quick tags, !Important Event to flag a timeline event • " + status : status}</span>
               </div>
               <${window.MentionEditor.MentionRichTextEditor}
-                editable=${true}
+                editable=${editMode}
                 value=${String(draft.bodyHtml || "")}
                 onChange=${function (htmlValue) { updateDraftField("bodyHtml", htmlValue); updateDraftField("lastEditedAt", new Date().toISOString()); }}
                 editorClassName="rich-editor profile-rich-editor character-rich-text session-rich-editor"

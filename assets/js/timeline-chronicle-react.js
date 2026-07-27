@@ -17,7 +17,6 @@
 
   var CHANNEL_NAME = "campaign-atlas-characters";
   var sourceId = "timeline-page-" + Date.now() + "-" + Math.floor(Math.random() * 100000);
-  var FALLBACK_PORTRAIT_DATA_URI = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E%3Crect width='80' height='80' fill='%2313131a'/%3E%3Ccircle cx='40' cy='30' r='14' fill='%23d10d40' fill-opacity='0.6'/%3E%3Crect x='20' y='48' width='40' height='22' rx='11' fill='%23d10d40' fill-opacity='0.4'/%3E%3C/svg%3E";
   var SORT_OPTIONS = [
     { value: "chronological-asc", label: "Chronological (Oldest -> Newest)" },
     { value: "chronological-desc", label: "Chronological (Newest -> Oldest)" },
@@ -27,24 +26,40 @@
     { value: "character-desc", label: "Character Name (Z -> A)" }
   ];
 
+  var DEFAULT_EVENT_TYPE = "character";
+  var EVENT_TYPES = [
+    { value: "character", label: "Character", icon: "../assets/Icons/Characters.svg", color: "#8b1a2b" },
+    { value: "political", label: "Political", icon: "../assets/Icons/politics.svg", color: "#d4af37" },
+    { value: "conflict", label: "Conflict", icon: "../assets/Icons/conflict.svg", color: "#cc5500" },
+    { value: "location", label: "Location", icon: "../assets/Icons/location.svg", color: "#4169e1" },
+    { value: "session", label: "Session", icon: "../assets/Icons/session.svg", color: "#7c3aed" },
+    { value: "story-arc", label: "Story Arc", icon: "../assets/Icons/story-arc.svg", color: "#109c96" }
+  ];
+  var EVENT_TYPES_BY_VALUE = EVENT_TYPES.reduce(function (map, type) {
+    map[type.value] = type;
+    return map;
+  }, {});
+
+  // System-generated lifecycle events (Born/Embraced/Died) always use their
+  // own dedicated icon, overriding whatever Event Type icon would otherwise
+  // apply -- these entries have no user-editable Event Type at all.
+  var SYSTEM_TYPE_ICONS = {
+    birth: "../assets/Icons/born.svg",
+    embrace: "../assets/Icons/embraced.svg",
+    death: "../assets/Icons/died.svg"
+  };
+
+  function eventTypeInfo(value) {
+    return EVENT_TYPES_BY_VALUE[value] || EVENT_TYPES_BY_VALUE[DEFAULT_EVENT_TYPE];
+  }
+
+  function normalizeEventType(value) {
+    return EVENT_TYPES_BY_VALUE[value] ? value : DEFAULT_EVENT_TYPE;
+  }
+
   function normalizeString(value, fallback) {
     var next = String(value || "").trim();
     return next || String(fallback || "");
-  }
-
-  function portraitSrc(character) {
-    var portraitValue = character && character.portrait;
-    if (portraitValue && typeof portraitValue === "object") {
-      portraitValue = portraitValue.image || portraitValue.src || "Default.png";
-    }
-    var raw = normalizeString(portraitValue, "Default.png");
-    if (!raw || raw === "Default.png") {
-      return FALLBACK_PORTRAIT_DATA_URI;
-    }
-    if (/^data:image\//i.test(raw) || /^https?:\/\//i.test(raw) || raw.indexOf("blob:") === 0) {
-      return raw;
-    }
-    return "../Relationship map/" + encodeURIComponent(raw);
   }
 
   function parseTags(raw) {
@@ -99,7 +114,7 @@
     };
   }
 
-  function normalizeTimelineEvent(rawEvent) {
+  function normalizeTimelineEvent(rawEvent, ownerId) {
     var event = rawEvent && typeof rawEvent === "object" ? rawEvent : {};
     var known = {
       id: true,
@@ -111,13 +126,29 @@
       session: true,
       location: true,
       gmNotes: true,
-      tags: true
+      tags: true,
+      characterIds: true,
+      eventType: true
     };
     var extraMeta = {};
     Object.keys(event).forEach(function (key) {
       if (!known[key]) {
         extraMeta[key] = event[key];
       }
+    });
+    var characterIds = Array.isArray(event.characterIds)
+      ? event.characterIds.map(function (value) { return normalizeString(value, ""); }).filter(Boolean)
+      : [];
+    if (!characterIds.length && ownerId) {
+      characterIds = [normalizeString(ownerId, "")].filter(Boolean);
+    }
+    var seenCharacterIds = {};
+    characterIds = characterIds.filter(function (id) {
+      if (seenCharacterIds[id]) {
+        return false;
+      }
+      seenCharacterIds[id] = true;
+      return true;
     });
     return {
       id: normalizeString(event.id, ""),
@@ -129,6 +160,8 @@
       location: normalizeString(event.location, ""),
       gmNotes: normalizeString(event.gmNotes, ""),
       tags: parseTags(event.tags),
+      characterIds: characterIds,
+      eventType: normalizeEventType(event.eventType),
       extraMeta: extraMeta
     };
   }
@@ -150,11 +183,17 @@
 
   function masterTimelineEntries(characters) {
     var entries = [];
+    var characterById = {};
+    (characters || []).forEach(function (character) {
+      if (character && character.id) {
+        characterById[character.id] = character;
+      }
+    });
 
     (characters || []).forEach(function (character) {
       var timeline = Array.isArray(character.timeline) ? character.timeline : [];
       timeline.forEach(function (rawEvent, index) {
-        var event = normalizeTimelineEvent(rawEvent);
+        var event = normalizeTimelineEvent(rawEvent, character.id);
         var dateInfo = parseDateInfo(event.date);
         entries.push({
           key: "evt:" + character.id + ":" + (event.id || "idx-" + index),
@@ -168,19 +207,27 @@
         });
       });
 
-      if (normalizeString(character.dateOfBirth, "")) {
-        var birthDate = normalizeString(character.dateOfBirth, "");
+      var lifecycleDates = shared.resolveCharacterLifecycleDates ? shared.resolveCharacterLifecycleDates(character) : {};
+      [
+        { type: "birth", title: "Born", date: lifecycleDates.dateOfBirth },
+        { type: "embrace", title: "Embraced", date: lifecycleDates.dateOfEmbrace },
+        { type: "death", title: "Died", date: lifecycleDates.dateOfDeath }
+      ].forEach(function (lifecycleEvent) {
+        var eventDate = normalizeString(lifecycleEvent.date, "");
+        if (!eventDate) {
+          return;
+        }
         entries.push({
-          key: "sys:" + character.id + ":birth",
+          key: "sys:" + character.id + ":" + lifecycleEvent.type,
           ownerId: character.id,
           sourceIndex: -1,
           eventId: "",
           system: true,
-          systemType: "birth",
+          systemType: lifecycleEvent.type,
           event: {
             id: "",
-            date: birthDate,
-            title: "Born",
+            date: eventDate,
+            title: lifecycleEvent.title,
             description: "",
             storyArc: "",
             relatedSession: "",
@@ -189,35 +236,37 @@
             tags: []
           },
           character: character,
-          dateInfo: parseDateInfo(birthDate)
+          dateInfo: parseDateInfo(eventDate)
         });
-      }
-
-      if (normalizeString(character.dateOfDeath, "")) {
-        var deathDate = normalizeString(character.dateOfDeath, "");
-        entries.push({
-          key: "sys:" + character.id + ":death",
-          ownerId: character.id,
-          sourceIndex: -1,
-          eventId: "",
-          system: true,
-          systemType: "death",
-          event: {
-            id: "",
-            date: deathDate,
-            title: "Died",
-            description: "",
-            storyArc: "",
-            relatedSession: "",
-            location: "",
-            gmNotes: "",
-            tags: []
-          },
-          character: character,
-          dateInfo: parseDateInfo(deathDate)
-        });
-      }
+      });
     });
+
+    // A multi-character event is physically duplicated into every linked
+    // character's own timeline array (so each character's personal Timeline
+    // section shows it), but the master Chronicle Timeline list should show
+    // it exactly once, with every linked character resolved for chip
+    // display -- so dedupe by event id and attach `linkedCharacters`.
+    var seenEventIds = {};
+    var deduped = [];
+    entries.forEach(function (entry) {
+      if (entry.system) {
+        entry.linkedCharacters = [entry.character];
+        deduped.push(entry);
+        return;
+      }
+      if (entry.eventId) {
+        if (seenEventIds[entry.eventId]) {
+          return;
+        }
+        seenEventIds[entry.eventId] = true;
+      }
+      var ids = (entry.event.characterIds && entry.event.characterIds.length) ? entry.event.characterIds : [entry.ownerId];
+      var linkedCharacters = ids.map(function (id) { return characterById[id]; }).filter(Boolean);
+      entry.linkedCharacters = linkedCharacters.length ? linkedCharacters : [entry.character];
+      entry.character = entry.linkedCharacters[0];
+      deduped.push(entry);
+    });
+    entries = deduped;
 
     entries.sort(function (a, b) {
       if (a.dateInfo.key !== b.dateInfo.key) {
@@ -300,7 +349,8 @@
       eventId: "",
       sourceIndex: -1,
       draft: {
-        characterId: "",
+        characterIds: [],
+        eventType: DEFAULT_EVENT_TYPE,
         year: "",
         title: "",
         description: "",
@@ -330,7 +380,9 @@
           var nextCharacters = Array.isArray(characters) ? characters : [];
           setCharacters(nextCharacters.map(function (character) {
             var next = Object.assign({}, character);
-            next.timeline = sortTimelineEvents((next.timeline || []).map(normalizeTimelineEvent));
+            next.timeline = sortTimelineEvents((next.timeline || []).map(function (rawEvent) {
+              return normalizeTimelineEvent(rawEvent, character.id);
+            }));
             return next;
           }));
           setLoading(false);
@@ -362,7 +414,9 @@
         if (message.type === "characters-snapshot" && Array.isArray(message.characters)) {
           setCharacters(message.characters.map(function (character) {
             var next = Object.assign({}, character);
-            next.timeline = sortTimelineEvents((next.timeline || []).map(normalizeTimelineEvent));
+            next.timeline = sortTimelineEvents((next.timeline || []).map(function (rawEvent) {
+              return normalizeTimelineEvent(rawEvent, character.id);
+            }));
             return next;
           }));
           return;
@@ -370,7 +424,9 @@
 
         if (message.type === "character-updated" && message.character && message.character.id) {
           var incoming = Object.assign({}, message.character);
-          incoming.timeline = sortTimelineEvents((incoming.timeline || []).map(normalizeTimelineEvent));
+          incoming.timeline = sortTimelineEvents((incoming.timeline || []).map(function (rawEvent) {
+            return normalizeTimelineEvent(rawEvent, incoming.id);
+          }));
           setCharacters(function (prev) {
             var found = false;
             var next = prev.map(function (entry) {
@@ -531,8 +587,14 @@
           }
         }
 
-        if (activeCharacterIds.length && activeCharacterIds.indexOf(entry.ownerId) === -1) {
-          return false;
+        if (activeCharacterIds.length) {
+          var entryCharacterIds = (entry.event && entry.event.characterIds && entry.event.characterIds.length)
+            ? entry.event.characterIds
+            : [entry.ownerId];
+          var matchesActiveCharacter = entryCharacterIds.some(function (id) { return activeCharacterIds.indexOf(id) !== -1; });
+          if (!matchesActiveCharacter) {
+            return false;
+          }
         }
 
         if (activeClans.length && activeClans.indexOf(clan) === -1) {
@@ -920,7 +982,8 @@
         eventId: "",
         sourceIndex: -1,
         draft: {
-          characterId: defaultCharacter,
+          characterIds: defaultCharacter ? [defaultCharacter] : [],
+          eventType: DEFAULT_EVENT_TYPE,
           year: "",
           title: "",
           description: "",
@@ -938,6 +1001,9 @@
       if (!entry || entry.system) {
         return;
       }
+      var linkedIds = (entry.event.characterIds && entry.event.characterIds.length)
+        ? entry.event.characterIds.slice()
+        : [entry.ownerId];
       setModalState({
         open: true,
         mode: "edit",
@@ -945,7 +1011,8 @@
         eventId: entry.eventId,
         sourceIndex: entry.sourceIndex,
         draft: {
-          characterId: entry.ownerId,
+          characterIds: linkedIds,
+          eventType: normalizeEventType(entry.event.eventType),
           year: normalizeString(entry.event.date, ""),
           title: normalizeString(entry.event.title, ""),
           description: normalizeString(entry.event.description, ""),
@@ -992,15 +1059,16 @@
         return;
       }
       var draft = modalState.draft || {};
-      var targetCharacterId = normalizeString(draft.characterId, "");
+      var targetCharacterIds = Array.isArray(draft.characterIds) ? draft.characterIds.filter(Boolean) : [];
       var title = normalizeString(draft.title, "");
-      if (!targetCharacterId || !title) {
-        window.alert("Character and Event Title are required.");
+      if (!targetCharacterIds.length || !title) {
+        window.alert("At least one Character and an Event Title are required.");
         return;
       }
 
+      var eventId = modalState.mode === "edit" && modalState.eventId ? modalState.eventId : createEventId();
       var normalizedEvent = {
-        id: modalState.mode === "edit" && modalState.eventId ? modalState.eventId : createEventId(),
+        id: eventId,
         date: normalizeString(draft.year, ""),
         title: title,
         description: normalizeString(draft.description, ""),
@@ -1009,6 +1077,8 @@
         location: normalizeString(draft.location, ""),
         gmNotes: normalizeString(draft.gmNotes, ""),
         tags: parseTags(draft.tags),
+        characterIds: targetCharacterIds,
+        eventType: normalizeEventType(draft.eventType),
         extraMeta: Object.assign({}, draft.extraMeta || {})
       };
       if (modalState.mode !== "edit") {
@@ -1018,35 +1088,38 @@
       var changedById = {};
       var nextCharacters = characters.map(function (character) {
         var next = Object.assign({}, character);
-        next.timeline = sortTimelineEvents((character.timeline || []).map(normalizeTimelineEvent));
+        next.timeline = sortTimelineEvents((character.timeline || []).map(function (rawEvent) {
+          return normalizeTimelineEvent(rawEvent, character.id);
+        }));
         return next;
       });
 
       if (modalState.mode === "edit") {
-        var sourceCharacter = nextCharacters.find(function (entry) { return entry.id === modalState.ownerId; });
-        if (sourceCharacter) {
-          var removed = false;
-          sourceCharacter.timeline = sourceCharacter.timeline.filter(function (event, index) {
+        // The event may have been physically duplicated into several
+        // characters' own timeline arrays -- drop every existing copy
+        // (wherever it lives) before re-adding it under the current set of
+        // linked characters, since that set may have changed.
+        nextCharacters.forEach(function (character) {
+          var before = character.timeline.length;
+          character.timeline = character.timeline.filter(function (event) {
             var matchesId = modalState.eventId && event.id === modalState.eventId;
-            var matchesIndex = !modalState.eventId && index === modalState.sourceIndex;
-            if ((matchesId || matchesIndex) && !removed) {
-              removed = true;
-              return false;
-            }
-            return true;
+            var matchesLegacyIndex = !modalState.eventId && character.id === modalState.ownerId;
+            return !(matchesId || matchesLegacyIndex);
           });
-          sourceCharacter.timeline = sortTimelineEvents(sourceCharacter.timeline);
-          changedById[sourceCharacter.id] = sourceCharacter;
-        }
+          if (character.timeline.length !== before) {
+            changedById[character.id] = character;
+          }
+        });
       }
 
-      var targetCharacter = nextCharacters.find(function (entry) { return entry.id === targetCharacterId; });
-      if (!targetCharacter) {
-        window.alert("Selected character could not be found.");
-        return;
-      }
-      targetCharacter.timeline = sortTimelineEvents((targetCharacter.timeline || []).concat([normalizedEvent]));
-      changedById[targetCharacter.id] = targetCharacter;
+      targetCharacterIds.forEach(function (characterId) {
+        var targetCharacter = nextCharacters.find(function (entry) { return entry.id === characterId; });
+        if (!targetCharacter) {
+          return;
+        }
+        targetCharacter.timeline = sortTimelineEvents((targetCharacter.timeline || []).concat([normalizedEvent]));
+        changedById[targetCharacter.id] = targetCharacter;
+      });
 
       setCharacters(nextCharacters);
       persistCharacters(Object.keys(changedById).map(function (id) { return changedById[id]; }));
@@ -1061,22 +1134,20 @@
         return;
       }
 
+      var eventId = modalState.eventId;
       var changedCharacters = [];
       var nextCharacters = characters.map(function (character) {
         var next = Object.assign({}, character);
-        next.timeline = sortTimelineEvents((character.timeline || []).map(normalizeTimelineEvent));
-        if (next.id === modalState.ownerId) {
-          var removed = false;
-          next.timeline = next.timeline.filter(function (event, index) {
-            var matchesId = modalState.eventId && event.id === modalState.eventId;
-            var matchesIndex = !modalState.eventId && index === modalState.sourceIndex;
-            if ((matchesId || matchesIndex) && !removed) {
-              removed = true;
-              return false;
-            }
-            return true;
-          });
-          next.timeline = sortTimelineEvents(next.timeline);
+        next.timeline = sortTimelineEvents((character.timeline || []).map(function (rawEvent) {
+          return normalizeTimelineEvent(rawEvent, character.id);
+        }));
+        var before = next.timeline.length;
+        next.timeline = next.timeline.filter(function (event, index) {
+          var matchesId = eventId && event.id === eventId;
+          var matchesLegacyIndex = !eventId && next.id === modalState.ownerId && index === modalState.sourceIndex;
+          return !(matchesId || matchesLegacyIndex);
+        });
+        if (next.timeline.length !== before) {
           changedCharacters.push(next);
         }
         return next;
@@ -1120,12 +1191,23 @@
           <div className="chronicle-list" role="list">
             ${loading ? html`<p className="hint">Loading timeline events...</p>` : null}
             ${!loading && !sortedEntries.length ? html`<p className="hint">No timeline events match your current search and filters.</p>` : null}
-            ${sortedEntries.map(function (entry) {
+            ${sortedEntries.map(function (entry, index) {
               var isExpanded = expandedEntryKey === entry.key;
-              var characterName = normalizeString(entry.character && entry.character.name, "Unnamed Character");
-              return html`<article
+              var linkedCharacters = (entry.linkedCharacters && entry.linkedCharacters.length ? entry.linkedCharacters : [entry.character]).filter(Boolean);
+              var characterNames = linkedCharacters.map(function (character) { return normalizeString(character.name, "Unnamed Character"); }).join(", ");
+              var eventType = eventTypeInfo(entry.event.eventType);
+              var iconPath = entry.system ? (SYSTEM_TYPE_ICONS[entry.systemType] || SYSTEM_TYPE_ICONS.birth) : eventType.icon;
+              var iconColor = entry.system ? undefined : eventType.color;
+              var accentStyle = entry.system ? undefined : { "--chronicle-entry-accent": eventType.color };
+              var showYearHeading = index === 0 || sortedEntries[index - 1].dateInfo.yearLabel !== entry.dateInfo.yearLabel;
+              return html`${showYearHeading ? html`<div key=${"year-" + entry.key} className="chronicle-year-heading" role="presentation">
+                <span className="chronicle-year-label">${entry.dateInfo.yearLabel}</span>
+                <span className="chronicle-year-rule" aria-hidden="true"></span>
+              </div>` : null}
+              <article
                 key=${entry.key}
                 className=${"chronicle-entry" + (isExpanded ? " expanded" : "") + (entry.system ? " system" : "")}
+                style=${accentStyle}
                 role="listitem"
                 onClick=${function () { setExpandedEntryKey(isExpanded ? null : entry.key); }}>
                 <div className="chronicle-entry-actions">
@@ -1140,32 +1222,38 @@
                     }}
                   >✎</button>` : null}
                 </div>
-                <div className="chronicle-entry-row">
-                  <div className="chronicle-entry-year">${entry.dateInfo.yearLabel}</div>
-                  <img className="chronicle-entry-portrait" src=${portraitSrc(entry.character)} alt=${characterName} onError=${function (event) { event.currentTarget.src = FALLBACK_PORTRAIT_DATA_URI; }} />
-                  <div className="chronicle-entry-main">
-                    <strong>${characterName}</strong>
-                    <p>${entry.event.title || "Untitled Event"}</p>
-                  </div>
+                <div className="chronicle-entry-summary">
+                  <span className="chronicle-entry-icon">${shared.Icon({ icon: iconPath, color: iconColor, className: "chronicle-entry-icon-svg" })}</span>
+                  <span className="chronicle-entry-title">${entry.event.title || "Untitled Event"}</span>
+                  ${characterNames ? html`<span className="chronicle-entry-badge"><span aria-hidden="true">👥</span> ${characterNames}</span>` : null}
+                  ${entry.event.location ? html`<span className="chronicle-entry-badge"><span aria-hidden="true">📍</span> ${entry.event.location}</span>` : null}
+                  ${entry.event.relatedSession ? html`<span className="chronicle-entry-badge"><span aria-hidden="true">📅</span> ${entry.event.relatedSession}</span>` : null}
                 </div>
                 ${isExpanded ? html`<div className="chronicle-entry-details">
+                  ${!entry.system && linkedCharacters.length ? html`<div className="chronicle-entry-characters">
+                    <strong>Characters:</strong>
+                    <div className="notebook-chip-list">
+                      ${linkedCharacters.map(function (character) {
+                        return html`<button
+                          type="button"
+                          key=${"linked-char-" + character.id}
+                          className="notebook-chip location-link-chip"
+                          onClick=${function (event) {
+                            event.stopPropagation();
+                            window.location.href = "characters.html?character=" + character.id;
+                          }}
+                        ><span>${normalizeString(character.name, "Unnamed Character")}</span></button>`;
+                      })}
+                    </div>
+                  </div>` : null}
                   <p><strong>Date:</strong> ${entry.dateInfo.displayDate || "Unknown"}</p>
+                  ${!entry.system ? html`<p className="chronicle-entry-type-row"><strong>Event Type:</strong> ${shared.Icon({ icon: eventType.icon, color: eventType.color, className: "chronicle-entry-type-icon" })} ${eventType.label}</p>` : null}
                   ${entry.event.description ? html`<p><strong>Description:</strong> ${entry.event.description}</p>` : null}
-                  ${entry.event.gmNotes ? html`<p><strong>GM Notes:</strong> ${entry.event.gmNotes}</p>` : null}
-                  ${entry.event.storyArc ? html`<p><strong>Story Arc:</strong> ${entry.event.storyArc}</p>` : null}
-                  ${entry.event.relatedSession ? html`<p><strong>Related Session:</strong> ${entry.event.relatedSession}</p>` : null}
-                  ${entry.event.location ? html`<p><strong>Location:</strong> ${entry.event.location}</p>` : null}
                   ${entry.event.tags && entry.event.tags.length ? html`<p><strong>Tags:</strong> ${entry.event.tags.join(", ")}</p>` : null}
-                  ${Object.keys(entry.event.extraMeta || {}).map(function (key) {
-                    var value = entry.event.extraMeta[key];
-                    if (value === undefined || value === null || value === "") {
-                      return null;
-                    }
-                    var label = key.replace(/([A-Z])/g, " $1").replace(/^./, function (letter) { return letter.toUpperCase(); });
-                    var rendered = typeof value === "string" ? value : JSON.stringify(value);
-                    return html`<p key=${entry.key + "-extra-" + key}><strong>${label}:</strong> ${rendered}</p>`;
-                  })}
-                  ${entry.system ? html`<p className="hint">System-generated event from date of birth/death.</p>` : html`<p className="hint">Use the pencil icon to edit this event.</p>`}
+                  ${entry.event.gmNotes ? html`<p><strong>GM Notes:</strong> ${entry.event.gmNotes}</p>` : null}
+                  ${entry.event.relatedSession ? html`<p><strong>Related Session:</strong> ${entry.event.relatedSession}</p>` : null}
+                  ${entry.event.storyArc ? html`<p><strong>Story Arc:</strong> ${entry.event.storyArc}</p>` : null}
+                  ${entry.event.location ? html`<p><strong>Location:</strong> ${entry.event.location}</p>` : null}
                 </div>` : null}
               </article>`;
             })}
@@ -1180,13 +1268,37 @@
               <button type="button" className="icon-button chronicle-modal-close-button" aria-label="Close dialog" onClick=${closeModal}>×</button>
             </div>
             <div className="chronicle-modal-grid">
-              <label>Character
-                <select value=${modalState.draft.characterId} onChange=${function (event) { updateModalField("characterId", event.target.value); }}>
-                  ${characterOptions.map(function (option) {
-                    return html`<option key=${"modal-character-" + option.value} value=${option.value}>${option.label}</option>`;
+              <div className="chronicle-span-2">
+                <${shared.OwnerDropdown}
+                  id="timelineEventCharacterField"
+                  label="Characters"
+                  characters=${characters}
+                  values=${modalState.draft.characterIds}
+                  onChange=${function (ids) { updateModalField("characterIds", ids); }}
+                  noneLabel="No characters selected"
+                  itemLabelPlural="Characters"
+                />
+              </div>
+              <div className="chronicle-span-2">
+                <span className="character-filter-label">Event Type</span>
+                <div className="event-type-picker" role="radiogroup" aria-label="Event Type">
+                  ${EVENT_TYPES.map(function (type) {
+                    var selected = normalizeEventType(modalState.draft.eventType) === type.value;
+                    return html`<button
+                      type="button"
+                      key=${"event-type-" + type.value}
+                      role="radio"
+                      aria-checked=${selected ? "true" : "false"}
+                      className=${"event-type-option" + (selected ? " selected" : "")}
+                      style=${{ "--event-type-color": type.color }}
+                      onClick=${function () { updateModalField("eventType", type.value); }}
+                    >
+                      <span className="event-type-icon">${shared.Icon({ icon: type.icon, color: type.color, className: "event-type-icon-svg" })}</span>
+                      <span>${type.label}</span>
+                    </button>`;
                   })}
-                </select>
-              </label>
+                </div>
+              </div>
               <label>Year / Date
                 <input type="text" value=${modalState.draft.year} onInput=${function (event) { updateModalField("year", event.target.value); }} placeholder="YYYY or YYYY-MM-DD" />
               </label>

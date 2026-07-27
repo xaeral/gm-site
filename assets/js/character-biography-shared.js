@@ -6,6 +6,7 @@
 
   var useEffect = ReactRef.useEffect;
   var useLayoutEffect = ReactRef.useLayoutEffect;
+  var useMemo = ReactRef.useMemo;
   var useRef = ReactRef.useRef;
   var useState = ReactRef.useState;
   var html = window.htm ? window.htm.bind(ReactRef.createElement) : null;
@@ -48,6 +49,8 @@
     "Thin-Blood"
   ];
   var STATUS_OPTIONS = ["Unknown", "Alive", "Embraced", "In Torpor", "Missing", "Destroyed"];
+  var ORIGIN_OPTIONS = ["Vampire", "Mortal", "Werewolf", "Changeling", "Mage"];
+  var DEFAULT_ORIGIN = "Vampire";
 
   // The single source of truth for the Tag Manager's starter tags, shared
   // between relationship-map-react.js (seeds a brand-new chronicle's
@@ -185,40 +188,21 @@
     return clan && clan !== "None" ? (CLAN_ICON_LOOKUP[clan] || "") : "";
   }
 
-  function FactionIcon(config) {
+  // Circular red icon badge (existing Clan/Sect treatment reused from the
+  // Relationship Map's character profile view) -- built on the shared
+  // Icon() mask-image renderer, same as everywhere else Icon() is used.
+  function IconBadge(config) {
     if (!config || !config.icon) {
       return null;
     }
-    var className = "atlas-icon" + (config.className ? " " + config.className : "");
-    var maskSource = "url('" + config.icon + "')";
-    var style = {
-      color: config.color || "currentColor",
-      backgroundColor: "currentColor",
-      maskImage: maskSource,
-      maskRepeat: "no-repeat",
-      maskPosition: "center",
-      maskSize: "contain",
-      maskMode: "alpha",
-      WebkitMaskImage: maskSource,
-      WebkitMaskRepeat: "no-repeat",
-      WebkitMaskPosition: "center",
-      WebkitMaskSize: "contain",
-      WebkitMaskMode: "alpha"
-    };
-    return html`<span className=${className} style=${style} aria-hidden="true"></span>`;
-  }
-
-  function FactionIconBadge(config) {
-    if (!config || !config.icon) {
-      return null;
-    }
-    var size = Math.max(24, Number(config.size) || 30);
-    var backgroundColor = config.backgroundColor || "var(--accent-red)";
+    var size = Math.max(24, Number(config.size) || 44);
+    var backgroundColor = config.backgroundColor || "#6d132a";
     var tooltip = config.tooltip || "";
     var className = "icon-badge" + (config.className ? " " + config.className : "");
+    var imageClassName = "icon-badge-image" + (config.imageClassName ? " " + config.imageClassName : "");
     var badgeStyle = { width: size + "px", height: size + "px", background: backgroundColor };
     return html`<span className=${className} style=${badgeStyle} title=${tooltip} aria-label=${tooltip}>
-      ${FactionIcon({ icon: config.icon, color: "#ffffff", className: "icon-badge-image" })}
+      ${Icon({ icon: config.icon, color: config.iconColor || "#ffffff", className: imageClassName })}
     </span>`;
   }
 
@@ -1086,6 +1070,30 @@
     return parsed.toISOString().slice(0, 10);
   }
 
+  // Historically "Date of Death" stored what is now "Date of Embrace" --
+  // resolves the effective birth/embrace/death dates for any consumer that
+  // just needs to DISPLAY them correctly, whether or not the character has
+  // already been through the one-time migration (which additionally clears
+  // the old field and persists `dateFieldsMigrated` -- see
+  // normalizeCharacterForProfile). Safe to call repeatedly since it never
+  // mutates its input.
+  function resolveCharacterLifecycleDates(character) {
+    var source = character && typeof character === "object" ? character : {};
+    var dateOfBirth = normalizeIsoDate(source.dateOfBirth);
+    if (source.dateFieldsMigrated) {
+      return {
+        dateOfBirth: dateOfBirth,
+        dateOfEmbrace: normalizeIsoDate(source.dateOfEmbrace),
+        dateOfDeath: normalizeIsoDate(source.dateOfDeath)
+      };
+    }
+    return {
+      dateOfBirth: dateOfBirth,
+      dateOfEmbrace: normalizeIsoDate(source.dateOfEmbrace) || normalizeIsoDate(source.dateOfDeath),
+      dateOfDeath: ""
+    };
+  }
+
   function formatDisplayDate(value) {
     var iso = normalizeIsoDate(value);
     if (!iso) {
@@ -1100,12 +1108,44 @@
 
   function normalizeTimelineEvent(event) {
     var input = event && typeof event === "object" ? event : {};
-    return {
+    var normalized = {
       date: normalizeIsoDate(input.date),
       title: String(input.title || ""),
       description: String(input.description || ""),
       gmNotes: String(input.gmNotes || "")
     };
+    // This page's own timeline UI only reads/writes the fields above, but
+    // events may also carry fields owned by the Timeline Chronicle page
+    // (id, characterIds, storyArc, ...) -- preserve them losslessly on
+    // round-trip instead of silently dropping them on every character save.
+    if (input.id !== undefined) {
+      normalized.id = input.id;
+    }
+    if (Array.isArray(input.characterIds)) {
+      normalized.characterIds = input.characterIds.slice();
+    }
+    if (input.storyArc !== undefined) {
+      normalized.storyArc = input.storyArc;
+    }
+    if (input.relatedSession !== undefined) {
+      normalized.relatedSession = input.relatedSession;
+    }
+    if (input.location !== undefined) {
+      normalized.location = input.location;
+    }
+    if (Array.isArray(input.tags)) {
+      normalized.tags = input.tags.slice();
+    }
+    if (input.extraMeta && typeof input.extraMeta === "object") {
+      normalized.extraMeta = Object.assign({}, input.extraMeta);
+    }
+    if (input.createdAt !== undefined) {
+      normalized.createdAt = input.createdAt;
+    }
+    if (input.eventType !== undefined) {
+      normalized.eventType = input.eventType;
+    }
+    return normalized;
   }
 
   function timelineEventsFromAny(rawTimeline) {
@@ -1153,7 +1193,7 @@
     return mapped.map(function (entry) { return entry.event; });
   }
 
-  function timelineEventsForDisplay(events, dateOfBirth, dateOfDeath) {
+  function timelineEventsForDisplay(events, dateOfBirth, dateOfEmbrace, dateOfDeath) {
     var merged = (events || []).map(function (event, sourceIndex) {
       var normalized = normalizeTimelineEvent(event);
       return {
@@ -1176,8 +1216,9 @@
     }, {});
 
     [
-      { id: "birth", title: "Birth", date: normalizeIsoDate(dateOfBirth) },
-      { id: "death", title: "Death", date: normalizeIsoDate(dateOfDeath) }
+      { id: "birth", title: "Born", date: normalizeIsoDate(dateOfBirth), priority: 0 },
+      { id: "embrace", title: "Embraced", date: normalizeIsoDate(dateOfEmbrace), priority: 1 },
+      { id: "death", title: "Died", date: normalizeIsoDate(dateOfDeath), priority: 3 }
     ].forEach(function (systemEvent, systemIndex) {
       if (!systemEvent.date || manualTitles[systemEvent.title.toLowerCase()]) {
         return;
@@ -1187,7 +1228,7 @@
         event: { date: systemEvent.date, title: systemEvent.title, description: "", gmNotes: "" },
         isSystem: true,
         sequence: (events || []).length + systemIndex,
-        sortPriority: systemEvent.id === "birth" ? 0 : 2,
+        sortPriority: systemEvent.priority,
         hasDate: true,
         dateValue: Date.parse(systemEvent.date + "T00:00:00")
       });
@@ -1455,8 +1496,12 @@
     source.gmOnlyInformation = source.gmOnlyInformation !== undefined
       ? String(source.gmOnlyInformation || "")
       : String(source.gmNotes || "");
-    source.dateOfBirth = normalizeIsoDate(source.dateOfBirth);
-    source.dateOfDeath = normalizeIsoDate(source.dateOfDeath);
+    var lifecycleDates = resolveCharacterLifecycleDates(source);
+    source.dateOfBirth = lifecycleDates.dateOfBirth;
+    source.dateOfEmbrace = lifecycleDates.dateOfEmbrace;
+    source.dateOfDeath = lifecycleDates.dateOfDeath;
+    source.dateFieldsMigrated = true;
+    source.origin = ORIGIN_OPTIONS.indexOf(source.origin) !== -1 ? source.origin : DEFAULT_ORIGIN;
     source.tags = Array.isArray(source.tags) ? source.tags.slice() : [];
     source.bioHtml = characterBiographyHtml(source);
     return source;
@@ -1935,6 +1980,12 @@
     var onSave = typeof settings.onSave === "function" ? settings.onSave : function () {};
     var onRequestClose = typeof settings.onRequestClose === "function" ? settings.onRequestClose : null;
     var editable = settings.editable !== false;
+    // Callers with their own entry point into edit mode (e.g. the
+    // Character List's pencil icon, via startInEdit) can suppress this
+    // component's own "Edit" button so there's exactly one way in. Defaults
+    // to shown, since not every consumer (e.g. the Relationship Map's
+    // character panel) has an equivalent external entry point.
+    var showEditButton = settings.showEditButton !== false;
 
     var _editMode = useState(Boolean(settings.startInEdit));
     var editMode = _editMode[0];
@@ -2135,7 +2186,7 @@
     var linked = relationships.filter(function (rel) {
       return rel && (rel.from === character.id || rel.to === character.id);
     });
-    var timelineDisplayEvents = timelineEventsForDisplay(draft.timeline || [], draft.dateOfBirth, draft.dateOfDeath);
+    var timelineDisplayEvents = timelineEventsForDisplay(draft.timeline || [], draft.dateOfBirth, draft.dateOfEmbrace, draft.dateOfDeath);
     var timelineCanEdit = editMode && editable;
     var portraitEditable = timelineCanEdit && Boolean(settings.allowPortraitEdit);
     var hasCustomPortrait = Boolean(draft.portrait && (typeof draft.portrait === "object" ? draft.portrait.image : draft.portrait));
@@ -2414,11 +2465,7 @@
       </div>`;
     }
 
-    var statusTags = (draft.tags || []).slice();
-    if (draft.status) {
-      statusTags.unshift(draft.status);
-    }
-
+    var isVampireOrigin = (draft.origin || DEFAULT_ORIGIN) === "Vampire";
     var headerClanIcon = resolveClanIcon(draft.clan);
     var headerSectIcon = resolveSectIcon(draft.sect);
 
@@ -2441,52 +2488,71 @@
                 ${timelineCanEdit
                   ? html`<input className="profile-name-input" value=${draft.name || ""} placeholder="Character Name" onInput=${function (event) { updateDraftField("name", event.target.value); }} />`
                   : html`<h1>${draft.name || "Unnamed Character"}</h1>`}
-                <div className="profile-header-facts">
-                  <div className="profile-fact-row">
-                    ${headerClanIcon ? FactionIconBadge({ icon: headerClanIcon, size: 28, tooltip: draft.clan }) : null}
-                    <span className="profile-fact-value">${draft.clan || "None"}</span>
+                ${!timelineCanEdit ? html`<div key="profile-identity-grid" className="profile-identity-grid">
+                  <div className="profile-identity-field">
+                    <span className="profile-identity-label">Origin</span>
+                    <p className="profile-identity-value">${draft.origin || DEFAULT_ORIGIN}</p>
                   </div>
-                  <div className="profile-fact-row">
-                    ${headerSectIcon ? FactionIconBadge({ icon: headerSectIcon, size: 28, tooltip: draft.sect }) : null}
-                    <span className="profile-fact-value">${draft.sect || "None"}</span>
+                  ${isVampireOrigin ? html`<div className="profile-identity-field">
+                    <span className="profile-identity-label">Clan</span>
+                    <p className="profile-identity-value">
+                      ${headerClanIcon ? IconBadge({ icon: headerClanIcon, size: 26, tooltip: draft.clan }) : null}
+                      <span>${draft.clan || "None"}</span>
+                    </p>
+                  </div>` : null}
+                  ${isVampireOrigin ? html`<div className="profile-identity-field">
+                    <span className="profile-identity-label">Sect</span>
+                    <p className="profile-identity-value">
+                      ${headerSectIcon ? IconBadge({ icon: headerSectIcon, size: 26, tooltip: draft.sect }) : null}
+                      <span>${draft.sect || "None"}</span>
+                    </p>
+                  </div>` : null}
+                  <div className="profile-identity-field">
+                    <span className="profile-identity-label">Status</span>
+                    <p className="profile-identity-value">${draft.status || "Unknown"}</p>
                   </div>
                 </div>
-                <div className="profile-header-tags" aria-label="Status tags">
-                  ${statusTags.length
-                    ? statusTags.map(function (tag, index) {
-                        return html`<span className="tag" key=${"header-tag-" + index}>${tag}</span>`;
-                      })
-                    : html`<span className="tag">No Status Tags</span>`}
-                </div>
-                ${timelineCanEdit ? html`<div className="profile-header-editor-grid">
-                  <div className="profile-header-editor-field">
-                    <label className="profile-header-editor-label" htmlFor="profile-header-clan-select">Clan</label>
+                <div key="profile-tags-row" className="profile-identity-field profile-tags-row">
+                  <span className="profile-identity-label">Tags</span>
+                  ${TagChips({ items: draft.tags || [], empty: "No tags." })}
+                </div>` : null}
+                ${timelineCanEdit ? html`<div key="profile-identity-grid" className="profile-identity-grid">
+                  <div className="profile-identity-field">
+                    <label className="profile-identity-label" htmlFor="profile-origin-select">Origin</label>
+                    <select id="profile-origin-select" value=${draft.origin || DEFAULT_ORIGIN} onChange=${function (event) { updateDraftField("origin", event.target.value); }}>
+                      ${ORIGIN_OPTIONS.map(function (option) {
+                        return html`<option key=${"origin-opt-" + option} value=${option}>${option}</option>`;
+                      })}
+                    </select>
+                  </div>
+                  ${isVampireOrigin ? html`<div className="profile-identity-field">
+                    <label className="profile-identity-label" htmlFor="profile-header-clan-select">Clan</label>
                     <select id="profile-header-clan-select" value=${draft.clan || "None"} onChange=${function (event) { updateDraftField("clan", event.target.value); }}>
                       ${optionsWithCurrentValue(CLAN_OPTIONS, draft.clan).map(function (option) {
                         return html`<option key=${"clan-opt-" + option} value=${option}>${option}</option>`;
                       })}
                     </select>
-                  </div>
-                  <div className="profile-header-editor-field">
-                    <label className="profile-header-editor-label" htmlFor="profile-header-sect-select">Sect</label>
+                  </div>` : null}
+                  ${isVampireOrigin ? html`<div className="profile-identity-field">
+                    <label className="profile-identity-label" htmlFor="profile-header-sect-select">Sect</label>
                     <select id="profile-header-sect-select" value=${draft.sect || "None"} onChange=${function (event) { updateDraftField("sect", event.target.value); }}>
                       ${optionsWithCurrentValue(SECT_OPTIONS, draft.sect).map(function (option) {
                         return html`<option key=${"sect-opt-" + option} value=${option}>${option}</option>`;
                       })}
                     </select>
-                  </div>
-                  <div className="profile-header-editor-field">
-                    <label className="profile-header-editor-label" htmlFor="profile-header-status-select">Status</label>
+                  </div>` : null}
+                  <div className="profile-identity-field">
+                    <label className="profile-identity-label" htmlFor="profile-header-status-select">Status</label>
                     <select id="profile-header-status-select" value=${draft.status || "Unknown"} onChange=${function (event) { updateDraftField("status", event.target.value); }}>
                       ${optionsWithCurrentValue(STATUS_OPTIONS, draft.status).map(function (option) {
                         return html`<option key=${"status-opt-" + option} value=${option}>${option}</option>`;
                       })}
                     </select>
                   </div>
-                  <div className="profile-header-editor-field">
-                    <label className="profile-header-editor-label" htmlFor="profile-header-tags-input">Tags</label>
-                    <${TagPickerField} inputId="profile-header-tags-input" tags=${draft.tags} onChange=${function (nextTags) { updateDraftField("tags", nextTags); }} />
-                  </div>
+                </div>
+                <div key="profile-tags-row" className="profile-identity-field profile-tags-row">
+                  <label className="profile-identity-label" htmlFor="profile-header-tags-input">Tags</label>
+                  <${TagPickerField} inputId="profile-header-tags-input" tags=${draft.tags} onChange=${function (nextTags) { updateDraftField("tags", nextTags); }} />
                 </div>` : null}
               </div>
             </div>
@@ -2496,7 +2562,7 @@
                     <button type="button" className="profile-save-button" onClick=${commitSave}>Save</button>
                     <button type="button" className="profile-cancel-button secondary" onClick=${function () { setDraft(normalizeCharacterForProfile(character)); setEditMode(false); }}>Cancel</button>
                   </div>`
-                : html`<button type="button" className="profile-biography-edit-button" onClick=${function () { setEditMode(true); }}>Edit</button>`) : null}
+                : (showEditButton ? html`<button type="button" className="profile-biography-edit-button" onClick=${function () { setEditMode(true); }}>Edit</button>` : null)) : null}
               ${onRequestClose ? html`<button type="button" className="icon-button-34 profile-close-button" onClick=${onRequestClose}>x</button>` : null}
             </div>
           </header>
@@ -2630,11 +2696,11 @@
               <article className="profile-section profile-details-panel">
                 <h3>Character Details</h3>
                 <dl className="profile-details-table">
-                  <div className="profile-details-group-label">Identity</div>
+                  ${isVampireOrigin ? html`<div key="profile-details-vampire-heading" className="profile-details-group-label">Identity</div>
                   ${detailTableRow("Clan", "clan")}
                   ${detailTableRow("Sect", "sect")}
                   ${detailTableRow("Generation", "generation")}
-                  ${detailTableRow("Predator Type", "predatorType")}
+                  ${detailTableRow("Predator Type", "predatorType")}` : null}
                   <div className="profile-details-group-label">Roleplay Hooks</div>
                   ${detailTableRow("Concept", "concept", { multiline: true })}
                   ${detailTableRow("Ambition", "ambition", { multiline: true })}
@@ -2645,8 +2711,9 @@
                   ${detailTableRow("True Age", "trueAge")}
                   ${detailTableRow("Apparent Age", "apparentAge")}
                   ${detailTableRow("Date of Birth", "dateOfBirth", { type: "date" })}
+                  ${detailTableRow("Date of Embrace", "dateOfEmbrace", { type: "date" })}
                   ${detailTableRow("Date of Death", "dateOfDeath", { type: "date" })}
-                  ${detailTableRow("Sire", "sire")}
+                  ${isVampireOrigin ? detailTableRow("Sire", "sire") : null}
                 </dl>
                 ${!timelineCanEdit ? dossierEntryGroup({ key: "profile-convictions-" + character.id, title: "Convictions", entryText: draft.convictions, accentColor: "#d10d40", emptyText: "Not set" }) : null}
                 ${!timelineCanEdit ? dossierEntryGroup({ key: "profile-touchstones-" + character.id, title: "Touchstones", entryText: draft.touchstones, accentColor: "#d10d40", emptyText: "Not set" }) : null}
@@ -2657,6 +2724,71 @@
       </div>
       ${portraitEditable ? renderPortraitWorkflowModal() : null}
     </section>`;
+  }
+
+  // Renders an SVG asset (from assets/Icons/) as a recolorable glyph via
+  // mask-image + currentColor, rather than an <img> -- since a plain <img>
+  // bakes in whatever colors the source file has, while a CSS mask lets any
+  // consumer (Timeline Event accent colors, Clan/Sect badges, ...) tint the
+  // same source asset differently just by passing a different `color`,
+  // with zero per-consumer copies of the asset. `config`: `icon` (path,
+  // required), `color` (defaults to currentColor), `size` (square) or
+  // `width`/`height` (for non-square source assets), `className`.
+  function Icon(config) {
+    if (!config || !config.icon) {
+      return null;
+    }
+    var iconSize = Number(config.size) || null;
+    var iconWidth = Number(config.width) || iconSize;
+    var iconHeight = Number(config.height) || iconSize;
+    var className = "atlas-icon" + (config.className ? " " + config.className : "");
+    var maskSource = "url('" + config.icon + "')";
+    var style = {
+      color: config.color || "currentColor",
+      backgroundColor: "currentColor",
+      maskImage: maskSource,
+      maskRepeat: "no-repeat",
+      maskPosition: "center",
+      maskSize: "contain",
+      maskMode: "alpha",
+      WebkitMaskImage: maskSource,
+      WebkitMaskRepeat: "no-repeat",
+      WebkitMaskPosition: "center",
+      WebkitMaskSize: "contain",
+      WebkitMaskMode: "alpha"
+    };
+    if (iconWidth) {
+      style.width = iconWidth + "px";
+    }
+    if (iconHeight) {
+      style.height = iconHeight + "px";
+    }
+    return html`<span className=${className} style=${style} aria-hidden="true"></span>`;
+  }
+
+  // Reusable read-only chip list -- used for "Tags", "Owners", and similar
+  // multi-value fields wherever a page's read-only view needs the same
+  // pill styling as its own editable chip UI (or another page's). Passive
+  // display only unless `onRemove` is given, in which case each chip gets
+  // a removable × (still safe to click inside a clickable parent card,
+  // since it stops propagation itself).
+  function TagChips(props) {
+    var items = (props && props.items) || [];
+    var empty = (props && props.empty) || "None";
+    var onRemove = props && props.onRemove;
+
+    if (!items.length) {
+      return html`<p className="hint">${empty}</p>`;
+    }
+
+    return html`<div className="notebook-chip-list">
+      ${items.map(function (item) {
+        return html`<button type="button" key=${item} className="notebook-chip">
+          <span>${item}</span>
+          ${onRemove ? html`<strong aria-hidden="true" onClick=${function (event) { event.stopPropagation(); onRemove(item); }}>×</strong>` : null}
+        </button>`;
+      })}
+    </div>`;
   }
 
   // Reusable list-card action row -- a small overlay of icon buttons
@@ -2704,6 +2836,168 @@
     </span>`;
   }
 
+  // Reusable searchable multi-select-with-chips dropdown (originally built
+  // for Locations' Owner field). Dropdown stays open across selections;
+  // "None" is a distinct clear-all row, not a togglable option; closes via
+  // outside click, Escape, or re-clicking the trigger.
+  //
+  // Usage: `<${OwnerDropdown} id="..." label="Characters" characters=${characters}
+  //   values=${draft.characterIds} onChange=${(nextIds) => ...}
+  //   noneLabel="No characters" itemLabelPlural="Characters" />`
+  function OwnerDropdown(props) {
+    var id = props.id;
+    var label = props.label || "Owner";
+    var noneLabel = props.noneLabel || "None";
+    var itemLabelPlural = props.itemLabelPlural || "Owners";
+    var characters = Array.isArray(props.characters) ? props.characters : [];
+    var values = Array.isArray(props.values) ? props.values.map(String) : [];
+    var onChange = typeof props.onChange === "function" ? props.onChange : function () {};
+    var _open = useState(false);
+    var open = _open[0];
+    var setOpen = _open[1];
+    var _searchTerm = useState("");
+    var searchTerm = _searchTerm[0];
+    var setSearchTerm = _searchTerm[1];
+    var rootRef = useRef(null);
+
+    var ownerOptions = useMemo(function () {
+      var seen = {};
+      return characters.map(function (character) {
+        return {
+          value: String(character && character.id ? character.id : ""),
+          label: String((character && character.name) || (character && character.id) || "")
+        };
+      }).filter(function (option) {
+        return option.value && option.label;
+      }).sort(function (a, b) {
+        return a.label.localeCompare(b.label);
+      }).filter(function (option) {
+        if (seen[option.value]) {
+          return false;
+        }
+        seen[option.value] = true;
+        return true;
+      });
+    }, [characters]);
+
+    var ownerLabelById = useMemo(function () {
+      var map = {};
+      ownerOptions.forEach(function (option) { map[option.value] = option.label; });
+      return map;
+    }, [ownerOptions]);
+
+    var selectedChips = values.map(function (ownerId) {
+      return { value: ownerId, label: ownerLabelById[ownerId] || ownerId };
+    });
+
+    var summaryLabel = !selectedChips.length
+      ? noneLabel
+      : (selectedChips.length === 1 ? selectedChips[0].label : (selectedChips.length + " " + itemLabelPlural));
+
+    var filteredOptions = useMemo(function () {
+      var term = String(searchTerm || "").trim().toLowerCase();
+      if (!term) {
+        return ownerOptions;
+      }
+      return ownerOptions.filter(function (option) {
+        return option.label.toLowerCase().indexOf(term) >= 0;
+      });
+    }, [ownerOptions, searchTerm]);
+
+    useEffect(function () {
+      if (!open) {
+        setSearchTerm("");
+        return;
+      }
+      function onPointerDown(event) {
+        if (rootRef.current && !rootRef.current.contains(event.target)) {
+          setOpen(false);
+        }
+      }
+      function onEscape(event) {
+        if (event.key === "Escape") {
+          setOpen(false);
+        }
+      }
+      document.addEventListener("pointerdown", onPointerDown);
+      document.addEventListener("keydown", onEscape);
+      return function () {
+        document.removeEventListener("pointerdown", onPointerDown);
+        document.removeEventListener("keydown", onEscape);
+      };
+    }, [open]);
+
+    function toggleOwner(ownerId) {
+      if (values.indexOf(ownerId) !== -1) {
+        onChange(values.filter(function (id) { return id !== ownerId; }));
+      } else {
+        onChange(values.concat([ownerId]));
+      }
+    }
+
+    function removeChip(ownerId) {
+      onChange(values.filter(function (id) { return id !== ownerId; }));
+    }
+
+    return html`<div className="character-filter-dropdown entity-multiselect-dropdown" ref=${rootRef}>
+      <span className="character-filter-label">${label}</span>
+      <button
+        type="button"
+        className=${"character-filter-trigger" + (open ? " open" : "")}
+        aria-haspopup="listbox"
+        aria-expanded=${open ? "true" : "false"}
+        aria-controls=${id}
+        onClick=${function () { setOpen(!open); }}
+      >
+        <span className="character-filter-trigger-text">${summaryLabel}</span>
+        <span className="character-filter-trigger-caret" aria-hidden="true">v</span>
+      </button>
+      ${selectedChips.length ? html`<div className="notebook-chip-list">
+        ${selectedChips.map(function (chip) {
+          return html`<button type="button" key=${"owner-chip-" + chip.value} className="notebook-chip">
+            <span>${chip.label}</span>
+            <strong aria-hidden="true" onClick=${function (event) { event.stopPropagation(); removeChip(chip.value); }}>×</strong>
+          </button>`;
+        })}
+      </div>` : null}
+      ${open ? html`<div id=${id} className="character-filter-menu entity-multiselect-menu" role="listbox" aria-multiselectable="true">
+        <div className="entity-multiselect-search-row">
+          <input
+            type="search"
+            placeholder="Search..."
+            value=${searchTerm}
+            autoFocus=${true}
+            onInput=${function (event) { setSearchTerm(event.target.value); }}
+          />
+        </div>
+        <button
+          type="button"
+          className=${"character-filter-option" + (!values.length ? " checked" : "")}
+          role="option"
+          aria-selected=${!values.length ? "true" : "false"}
+          onClick=${function () { onChange([]); }}
+        >
+          <span className="character-filter-check" aria-hidden="true"></span>
+          <span>${noneLabel}</span>
+        </button>
+        ${filteredOptions.length ? filteredOptions.map(function (option) {
+          var checked = values.indexOf(option.value) !== -1;
+          return html`<button
+            key=${"owner-option-" + option.value}
+            type="button"
+            className=${"character-filter-option" + (checked ? " checked" : "")}
+            role="option"
+            aria-selected=${checked ? "true" : "false"}
+            onClick=${function () { toggleOwner(option.value); }}
+          >
+            <span className="character-filter-check" aria-hidden="true"></span>
+            <span>${option.label}</span>
+          </button>`;
+        }) : html`<div className="character-filter-option notebook-filter-empty"><span></span><span>No results found.</span></div>`}
+      </div>` : null}
+    </div>`;
+  }
+
   window.CampaignAtlasCharactersShared = {
     DB_NAME: DB_NAME,
     DB_VERSION: DB_VERSION,
@@ -2711,10 +3005,13 @@
     CLAN_OPTIONS: CLAN_OPTIONS,
     SECT_OPTIONS: SECT_OPTIONS,
     STATUS_OPTIONS: STATUS_OPTIONS,
+    ORIGIN_OPTIONS: ORIGIN_OPTIONS,
+    DEFAULT_ORIGIN: DEFAULT_ORIGIN,
     clone: clone,
     openCampaignAtlasDb: openCampaignAtlasDb,
     characterBiographyHtml: characterBiographyHtml,
     normalizeIsoDate: normalizeIsoDate,
+    resolveCharacterLifecycleDates: resolveCharacterLifecycleDates,
     formatDisplayDate: formatDisplayDate,
     normalizeTimelineEvent: normalizeTimelineEvent,
     timelineEventsFromAny: timelineEventsFromAny,
@@ -2744,6 +3041,9 @@
     CharacterBiographyWorkspace: CharacterBiographyWorkspace,
     CharacterProfilePortrait: CharacterProfilePortrait,
     CharacterProfileWorkspace: CharacterProfileWorkspace,
-    ListCardActions: ListCardActions
+    ListCardActions: ListCardActions,
+    TagChips: TagChips,
+    OwnerDropdown: OwnerDropdown,
+    Icon: Icon
   };
 })();
