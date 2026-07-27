@@ -409,6 +409,26 @@ h6 {
   opacity: 1;
 }
 
+/* React Flow's edge-reconnect endpoints (edgesReconnectable on <ReactFlow>)
+   render unconditionally and fully interactive by default. Same
+   opacity-only toggle as the node handles above -- hidden until the edge
+   is selected, so "drag an endpoint to a new connection point" only shows
+   up once a relationship is actually selected, matching the node handles'
+   own reveal-on-demand behavior instead of cluttering the map with
+   draggable dots on every edge all the time. */
+.react-flow__edge .react-flow__edgeupdater-source,
+.react-flow__edge .react-flow__edgeupdater-target {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+.react-flow__edge.selected .react-flow__edgeupdater-source,
+.react-flow__edge.selected .react-flow__edgeupdater-target {
+  opacity: 1;
+  pointer-events: all;
+}
+
 .flow-node.selected .node-portrait-frame {
   border-color: #ffffff;
   box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.28);

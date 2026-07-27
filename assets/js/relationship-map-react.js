@@ -2850,6 +2850,36 @@
       }
     }
 
+    // Dragging either endpoint of a selected edge to a new connection point
+    // (React Flow's built-in reconnect feature, enabled via
+    // edgesReconnectable on <ReactFlow> below). React Flow already handles
+    // the live drag preview and snap-to-nearest-handle-on-release; this only
+    // needs to persist the result. Routing/markers/decorations/labels all
+    // recompute automatically from sourceHandle/targetHandle on the next
+    // render -- see RelationshipFlowEdge, which derives everything from
+    // sourceX/Y/targetX/Y props it's given fresh each time. A brand new
+    // relationship (created via handleFlowConnect) still gets whichever
+    // handle the user dragged from/to at creation time and is otherwise left
+    // alone until reconnected here -- there is no separate "automatic"
+    // recomputation to preserve or disturb.
+    function onFlowReconnect(oldEdge, newConnection) {
+      if (!newConnection || !newConnection.source || !newConnection.target) {
+        return;
+      }
+      setData(function (prev) {
+        var next = clone(prev);
+        var relationship = next.relationships.find(function (entry) { return entry.id === oldEdge.id; });
+        if (!relationship) {
+          return prev;
+        }
+        relationship.from = newConnection.source;
+        relationship.to = newConnection.target;
+        relationship.sourceHandle = newConnection.sourceHandle || null;
+        relationship.targetHandle = newConnection.targetHandle || null;
+        return next;
+      });
+    }
+
     function saveRelationshipEditor() {
       if (!relationshipEditor) {
         return;
@@ -4616,9 +4646,11 @@
               onConnectStart=${handleFlowConnectStart}
               onConnectEnd=${handleFlowConnectEnd}
               onEdgeClick=${onFlowEdgeClick}
+              onReconnect=${onFlowReconnect}
               onMove=${onFlowMove}
               nodesConnectable=${true}
               elementsSelectable=${true}
+              edgesReconnectable=${true}
               connectionMode=${ReactFlowConnectionMode.Loose}
               deleteKeyCode=${null}
               defaultViewport=${defaultViewport}
