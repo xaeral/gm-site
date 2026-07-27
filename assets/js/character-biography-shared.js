@@ -379,6 +379,76 @@
     });
   }
 
+  // Upgrades every `.bio-checklist > li` inside `root` to the interactive
+  // checkbox shape (a real, focusable `.bio-checklist-box` child + a
+  // `.bio-checklist-text` wrapper around the item's existing content) if it
+  // doesn't already have one. Idempotent and safe to call on every render --
+  // items already in the new shape are left untouched -- so checklist items
+  // saved before this feature existed (plain `<li>text</li>`) upgrade
+  // transparently the moment they're displayed, with no data migration
+  // step required. `data-checked` defaults to "false" (unchecked) for any
+  // li that doesn't already carry it, which is exactly what old items lack.
+  function normalizeChecklistItems(root) {
+    if (!root || typeof root.querySelectorAll !== "function") {
+      return;
+    }
+    var items = root.querySelectorAll(".bio-checklist > li");
+    for (var i = 0; i < items.length; i += 1) {
+      var li = items[i];
+      if (li.querySelector(".bio-checklist-box")) {
+        continue;
+      }
+      var checked = li.getAttribute("data-checked") === "true";
+      var textSpan = document.createElement("span");
+      textSpan.className = "bio-checklist-text";
+      while (li.firstChild) {
+        textSpan.appendChild(li.firstChild);
+      }
+      var box = document.createElement("span");
+      box.className = "bio-checklist-box";
+      box.setAttribute("contenteditable", "false");
+      box.setAttribute("role", "checkbox");
+      box.setAttribute("tabindex", "0");
+      box.setAttribute("aria-checked", checked ? "true" : "false");
+      li.setAttribute("data-checked", checked ? "true" : "false");
+      li.appendChild(box);
+      li.appendChild(textSpan);
+    }
+  }
+
+  // String-in-string-out wrapper around normalizeChecklistItems for the
+  // read-only viewer path, which renders via dangerouslySetInnerHTML rather
+  // than a live DOM node -- builds a detached container, normalizes it, and
+  // serializes the result back out. Skipped entirely (common case) when the
+  // content has no checklist at all.
+  function normalizeChecklistHtmlString(htmlString) {
+    if (!htmlString || htmlString.indexOf("bio-checklist") === -1) {
+      return htmlString;
+    }
+    var container = document.createElement("div");
+    container.innerHTML = htmlString;
+    normalizeChecklistItems(container);
+    return container.innerHTML;
+  }
+
+  // Flips a single checklist item's checked state in place (DOM mutation
+  // only -- callers are responsible for propagating the change via
+  // onChange/syncEditorToChange). No-op if `li` isn't actually a checklist
+  // item, so callers can pass the result of a loose `closest()` lookup
+  // without extra guards.
+  function toggleChecklistItem(li) {
+    if (!li || !li.classList || !li.classList.contains) {
+      return;
+    }
+    var box = li.querySelector(".bio-checklist-box");
+    if (!box) {
+      return;
+    }
+    var nextChecked = li.getAttribute("data-checked") !== "true";
+    li.setAttribute("data-checked", nextChecked ? "true" : "false");
+    box.setAttribute("aria-checked", nextChecked ? "true" : "false");
+  }
+
   function characterBiographyHtml(character) {
     if (!character) {
       return "";
@@ -825,6 +895,16 @@
     var onEditorKeyUp = typeof settings.onEditorKeyUp === "function" ? settings.onEditorKeyUp : function () {};
     var onEditorKeyDown = typeof settings.onEditorKeyDown === "function" ? settings.onEditorKeyDown : function () {};
     var onEditorFocus = typeof settings.onEditorFocus === "function" ? settings.onEditorFocus : function () {};
+    // Fired (in addition to onChange) specifically when a checklist checkbox
+    // is toggled, with the fully updated HTML. onChange alone only ever
+    // reaches a page's local draft state, which on every page that hosts
+    // this editor requires a separate explicit Save to actually persist --
+    // checklist toggles are meant to save immediately, the same way a Pin
+    // toggle does, regardless of whether the page is even in edit mode.
+    // Consumers that want that behaviour pass onChecklistToggle to write the
+    // change straight to storage; it's optional so existing callers that
+    // don't need immediate persistence are unaffected.
+    var onChecklistToggle = typeof settings.onChecklistToggle === "function" ? settings.onChecklistToggle : null;
 
     var editorRef = useRef(null);
     var lastSyncedRef = useRef(null);
@@ -845,6 +925,7 @@
       if (editor.innerHTML !== htmlValue) {
         editor.innerHTML = htmlValue;
       }
+      normalizeChecklistItems(editor);
       lastSyncedRef.current = { html: htmlValue };
     }, [editable, htmlValue]);
 
@@ -901,6 +982,11 @@
       if (!editor) {
         return;
       }
+      // Native contentEditable list-splitting (pressing Enter inside a
+      // checklist item) or pasting can produce a plain `<li>` without the
+      // interactive box -- catch that here so it upgrades on the very next
+      // input event rather than staying inert until the page reloads.
+      normalizeChecklistItems(editor);
       var nextHtml = editor.innerHTML;
       lastSyncedRef.current = { html: nextHtml };
       onChange(nextHtml);
@@ -975,13 +1061,57 @@
     }
 
     function insertChecklist() {
-      insertHtml('<ul class="bio-checklist"><li>Checklist item</li><li>Checklist item</li></ul>');
+      var item = '<li data-checked="false"><span class="bio-checklist-box" contenteditable="false" role="checkbox" tabindex="0" aria-checked="false"></span><span class="bio-checklist-text">Checklist item</span></li>';
+      insertHtml('<ul class="bio-checklist">' + item + item + '</ul>');
+    }
+
+    // Shared by both the read-only viewer and the contentEditable editor:
+    // finds the checklist box (if any) a click/keydown landed on, flips its
+    // li's data-checked in place, and returns the li so the caller can
+    // propagate the change (each render path has its own way to do that).
+    function findChecklistBoxTarget(eventTarget) {
+      if (!eventTarget || typeof eventTarget.closest !== "function") {
+        return null;
+      }
+      var box = eventTarget.closest(".bio-checklist-box");
+      return box ? box.closest("li") : null;
+    }
+
+    function isSpaceKey(event) {
+      return event.key === " " || event.key === "Spacebar" || event.code === "Space";
+    }
+
+    function emitChecklistChange(nextHtml) {
+      onChange(nextHtml);
+      if (onChecklistToggle) {
+        onChecklistToggle(nextHtml);
+      }
     }
 
     if (!editable) {
       return ReactRef.createElement("div", {
         className: viewerClassName,
-        dangerouslySetInnerHTML: { __html: characterBiographyHtml({ bioHtml: htmlValue }) }
+        onClick: function (event) {
+          var li = findChecklistBoxTarget(event.target);
+          if (!li) {
+            return;
+          }
+          toggleChecklistItem(li);
+          emitChecklistChange(event.currentTarget.innerHTML);
+        },
+        onKeyDown: function (event) {
+          if (!isSpaceKey(event)) {
+            return;
+          }
+          var li = findChecklistBoxTarget(event.target);
+          if (!li) {
+            return;
+          }
+          event.preventDefault();
+          toggleChecklistItem(li);
+          emitChecklistChange(event.currentTarget.innerHTML);
+        },
+        dangerouslySetInnerHTML: { __html: normalizeChecklistHtmlString(characterBiographyHtml({ bioHtml: htmlValue })) }
       });
     }
 
@@ -1044,7 +1174,41 @@
           onEditorKeyUp(event, editorRef.current);
         },
         onKeyDown: function (event) {
+          if (isSpaceKey(event)) {
+            var li = findChecklistBoxTarget(event.target);
+            if (li) {
+              event.preventDefault();
+              toggleChecklistItem(li);
+              syncEditorToChange();
+              if (onChecklistToggle && editorRef.current) {
+                onChecklistToggle(editorRef.current.innerHTML);
+              }
+              return;
+            }
+          }
           onEditorKeyDown(event, editorRef.current);
+        },
+        onMouseDown: function (event) {
+          var li = findChecklistBoxTarget(event.target);
+          if (!li) {
+            return;
+          }
+          // preventDefault keeps contentEditable from placing the text
+          // caret at the click point (the default mousedown behaviour) --
+          // the checkbox toggles as an atomic action, never engaging text
+          // editing. Focusing it manually afterward (rather than relying on
+          // the now-prevented default focus behaviour) keeps Space working
+          // immediately after a mouse click.
+          event.preventDefault();
+          toggleChecklistItem(li);
+          syncEditorToChange();
+          if (onChecklistToggle && editorRef.current) {
+            onChecklistToggle(editorRef.current.innerHTML);
+          }
+          var box = li.querySelector(".bio-checklist-box");
+          if (box) {
+            box.focus();
+          }
         },
         onMouseUp: refreshToolbarState,
         onInput: syncEditorToChange
@@ -2182,6 +2346,24 @@
       setEditMode(false);
     }
 
+    // Checklist checkboxes save immediately (like a Pin toggle) regardless
+    // of edit mode, rather than waiting on the explicit Save button --
+    // unlike commitSave, this deliberately leaves editMode/timeline/
+    // portrait/tags untouched, since a checklist toggle should never kick
+    // an in-progress edit session back to view mode.
+    function persistChecklistToggle(nextBioHtml) {
+      if (!character) {
+        return;
+      }
+      var next = clone(character);
+      next.bioHtml = String(nextBioHtml || "");
+      next.bio = next.bioHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      onSave(next);
+      setDraft(function (current) {
+        return current ? Object.assign({}, current, { bioHtml: next.bioHtml, bio: next.bio }) : current;
+      });
+    }
+
     if (!character || !draft) {
       return html`<section className="character-profile-page"><div className="profile-empty">No character selected.</div></section>`;
     }
@@ -2602,6 +2784,7 @@
                       editable=${timelineCanEdit}
                       value=${String(draft.bioHtml || "")}
                       onChange=${function (htmlValue) { updateDraftField("bioHtml", htmlValue); }}
+                      onChecklistToggle=${persistChecklistToggle}
                       editorClassName="rich-editor profile-rich-editor character-rich-text"
                       viewerClassName="profile-biography-content character-rich-text"
                     />

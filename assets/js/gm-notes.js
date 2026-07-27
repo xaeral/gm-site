@@ -440,6 +440,28 @@
       }
     }
 
+    // Checklist checkboxes save immediately, the same way pinning does --
+    // regardless of whether the note is even in edit mode -- rather than
+    // waiting on the page's normal explicit Save button. Reuses the exact
+    // fetch-full-record/overlay-one-field/save pattern toggleNotePinned
+    // already established above.
+    async function persistChecklistToggle(nextBodyHtml) {
+      if (!selectedNoteId) {
+        return;
+      }
+      var full = noteBodyCacheRef.current[selectedNoteId] || await notebook.readNoteById(selectedNoteId);
+      if (!full) {
+        return;
+      }
+      var next = clone(full);
+      next.bodyHtml = nextBodyHtml;
+      var savedNote = await notebook.saveNote(next, next.folderId);
+      applySavedNoteToState(savedNote);
+      setDraft(function (current) {
+        return current && current.id === savedNote.id ? Object.assign({}, current, { bodyHtml: savedNote.bodyHtml }) : current;
+      });
+    }
+
     function toggleFilterValue(field, value) {
       setFilters(function (current) {
         var next = clone(current);
@@ -853,6 +875,7 @@
                 editable=${editMode}
                 value=${String(draft.bodyHtml || "")}
                 onChange=${function (htmlValue) { updateDraftField("bodyHtml", htmlValue); }}
+                onChecklistToggle=${persistChecklistToggle}
                 editorClassName="rich-editor profile-rich-editor character-rich-text notebook-editor"
                 viewerClassName="profile-biography-content character-rich-text"
               />

@@ -1339,16 +1339,21 @@ h6 {
 
 .character-rich-text .bio-checklist li {
   position: relative;
-  padding-left: 1.4rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
 }
 
-.character-rich-text .bio-checklist li::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0.15em;
+/* Interactive checkbox -- a real, focusable element (not a ::before
+   pseudo-element) so it can be clicked and Space-toggled, and marked
+   contenteditable="false" so it behaves as an atomic, non-text island
+   inside the contentEditable surface, same technique as mention chips
+   (see mention-editor.js). */
+.character-rich-text .bio-checklist-box {
+  flex: 0 0 auto;
   width: 0.95rem;
   height: 0.95rem;
+  margin-top: 0.2em;
   background-color: #ff9fb5;
   -webkit-mask-image: url('../Icons/checkbox-empty.svg');
   mask-image: url('../Icons/checkbox-empty.svg');
@@ -1358,6 +1363,26 @@ h6 {
   mask-position: center;
   -webkit-mask-size: contain;
   mask-size: contain;
+  cursor: pointer;
+}
+
+.character-rich-text .bio-checklist-box:focus-visible {
+  outline: 2px solid #ff88a8;
+  outline-offset: 2px;
+}
+
+.character-rich-text .bio-checklist li[data-checked="true"] .bio-checklist-box {
+  -webkit-mask-image: url('../Icons/check.svg');
+  mask-image: url('../Icons/check.svg');
+}
+
+.character-rich-text .bio-checklist-text {
+  min-width: 0;
+}
+
+.character-rich-text .bio-checklist li[data-checked="true"] .bio-checklist-text {
+  text-decoration: line-through;
+  opacity: 0.6;
 }
 
 .character-rich-text table {

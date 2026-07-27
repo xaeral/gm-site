@@ -622,6 +622,21 @@
       });
     }
 
+    // Checklist checkboxes save immediately (like every other immediate
+    // location action on this page), regardless of edit mode --
+    // saveLocationRecord merges against the existing stored record, so a
+    // minimal {id, detailsHtml} overlay can't wipe out other fields.
+    function persistChecklistToggle(nextDetailsHtml) {
+      if (!selectedLocation) {
+        return;
+      }
+      persistAndReload({ id: selectedLocation.id, detailsHtml: nextDetailsHtml, description: stripHtml(nextDetailsHtml) });
+      if (draft && draft.id === selectedLocation.id) {
+        handleDraftChange("detailsHtml", nextDetailsHtml);
+        handleDraftChange("description", stripHtml(nextDetailsHtml));
+      }
+    }
+
     function linkedCharactersFor(location) {
       if (!location) {
         return [];
@@ -857,6 +872,7 @@
                   editable=${editMode}
                   value=${String(draft ? draft.detailsHtml : selectedLocation.detailsHtml || "")}
                   onChange=${function (htmlValue) { handleDraftChange("detailsHtml", htmlValue); handleDraftChange("description", stripHtml(htmlValue)); }}
+                  onChecklistToggle=${persistChecklistToggle}
                   editorClassName="rich-editor profile-rich-editor character-rich-text location-rich-editor"
                   viewerClassName="profile-biography-content character-rich-text"
                 />`}

@@ -714,6 +714,27 @@
       setEditMode(true);
     }
 
+    // Checklist checkboxes save immediately (like a Pin toggle), regardless
+    // of edit mode -- journal.saveSession merges against the existing stored
+    // record, so a minimal {id, bodyHtml} overlay is enough; it can't wipe
+    // out sessionNumber/tags/characterIds/etc. the way gm-notes.js's
+    // notebook.saveNote would without a full-record fetch first.
+    async function persistChecklistToggle(nextBodyHtml) {
+      if (!selectedSessionId) {
+        return;
+      }
+      var saved = await journal.saveSession({ id: selectedSessionId, bodyHtml: nextBodyHtml });
+      if (!saved) {
+        return;
+      }
+      draftCacheRef.current[saved.id] = clone(saved);
+      setDraft(function (current) {
+        return current && current.id === saved.id ? Object.assign({}, current, { bodyHtml: saved.bodyHtml, updatedAt: saved.updatedAt, lastEditedAt: saved.lastEditedAt }) : current;
+      });
+      var nextState = await journal.readSessionJournalState();
+      setState({ sessions: nextState.sessions || [] });
+    }
+
     async function createSession() {
       var created = await journal.createSession();
       draftCacheRef.current[created.id] = clone(created);
@@ -895,6 +916,7 @@
                 editable=${editMode}
                 value=${String(draft.bodyHtml || "")}
                 onChange=${function (htmlValue) { updateDraftField("bodyHtml", htmlValue); updateDraftField("lastEditedAt", new Date().toISOString()); }}
+                onChecklistToggle=${persistChecklistToggle}
                 editorClassName="rich-editor profile-rich-editor character-rich-text session-rich-editor"
                 viewerClassName="profile-biography-content character-rich-text"
               />

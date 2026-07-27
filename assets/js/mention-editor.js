@@ -647,6 +647,7 @@
     var passthroughKeyDown = typeof settings.onEditorKeyDown === "function" ? settings.onEditorKeyDown : function () {};
     var passthroughFocus = typeof settings.onEditorFocus === "function" ? settings.onEditorFocus : function () {};
     var onMentionNavigate = typeof settings.onMentionNavigate === "function" ? settings.onMentionNavigate : null;
+    var onChecklistToggle = typeof settings.onChecklistToggle === "function" ? settings.onChecklistToggle : null;
 
     var wrapperRef = useRef(null);
     var internalEditorRef = useRef(null);
@@ -987,6 +988,7 @@
         editable=${editable}
         value=${value}
         onChange=${onChange}
+        onChecklistToggle=${onChecklistToggle}
         editorClassName=${editorClassName}
         viewerClassName=${viewerClassName}
         editorRef=${internalEditorRef}
