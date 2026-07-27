@@ -1396,8 +1396,7 @@ button:focus-visible {
 
 .character-filter-option {
   width: 100%;
-  display: grid;
-  grid-template-columns: 1.05rem minmax(0, 1fr);
+  display: flex;
   align-items: center;
   gap: 0.55rem;
   border: 1px solid transparent;
@@ -1406,6 +1405,11 @@ button:focus-visible {
   border-radius: 0.52rem;
   padding: 0.35rem 0.45rem;
   text-align: left;
+}
+
+.character-filter-option > span:last-child {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .character-filter-option:hover,
@@ -1422,6 +1426,7 @@ button:focus-visible {
 .character-filter-check {
   width: 0.95rem;
   height: 0.95rem;
+  flex-shrink: 0;
   border: 1px solid rgba(209, 13, 64, 0.68);
   border-radius: 0.22rem;
   background: #0c0c14;
@@ -2715,6 +2720,81 @@ button:focus-visible {
 .note-subtitle {
   color: var(--text-muted);
   font-size: 0.8rem;
+}
+
+/* Reusable "?" help icon (character-biography-shared.js HelpTooltip) --
+   replaces a section-heading description with a small trigger that reveals
+   the same text on hover/focus/tap. The bubble reuses the same floating
+   dark-panel look as the app's dropdown menus (.character-filter-menu)
+   for visual consistency. */
+.help-tooltip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.help-tooltip-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 1px solid rgba(209, 13, 64, 0.4);
+  background: rgba(209, 13, 64, 0.12);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+  cursor: help;
+}
+
+.help-tooltip-trigger:hover,
+.help-tooltip-trigger:focus-visible {
+  border-color: rgba(209, 13, 64, 0.78);
+  color: #ffffff;
+  background: rgba(209, 13, 64, 0.26);
+}
+
+.help-tooltip-trigger:focus-visible {
+  outline: 2px solid rgba(255, 118, 154, 0.8);
+  outline-offset: 2px;
+}
+
+.help-tooltip-bubble {
+  position: absolute;
+  z-index: 60;
+  width: max-content;
+  max-width: 15rem;
+  border: 1px solid rgba(209, 13, 64, 0.58);
+  border-radius: 0.55rem;
+  background: linear-gradient(165deg, rgba(15, 15, 24, 0.98), rgba(10, 10, 16, 0.98));
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.45);
+  padding: 0.45rem 0.6rem;
+  color: #f4f4ff;
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.35;
+  white-space: normal;
+  pointer-events: none;
+}
+
+.help-tooltip-bottom {
+  top: calc(100% + 0.4rem);
+}
+
+.help-tooltip-top {
+  bottom: calc(100% + 0.4rem);
+}
+
+.help-tooltip-left {
+  left: 0;
+}
+
+.help-tooltip-right {
+  right: 0;
 }
 
 @media (max-width: 1160px) {

@@ -7,6 +7,7 @@
   var useRef = React.useRef;
   var html = htm.bind(React.createElement);
   var tools = window.ChronicleCampaignDataTools;
+  var shared = window.CampaignAtlasCharactersShared || {};
 
   var DANGER_ACTIONS = [
     {
@@ -219,7 +220,7 @@
     return html`<section className="card dev-tools-card">
       <div className="section-heading">
         <h3>Developer Tools</h3>
-        <span className="note-subtitle">Utilities for managing campaign data during development and testing.</span>
+        <${shared.HelpTooltip} text="Utilities for managing campaign data during development and testing." />
       </div>
 
       <div className="dev-tools-campaign-management">

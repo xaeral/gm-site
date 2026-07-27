@@ -3129,6 +3129,91 @@
     </div>`;
   }
 
+  // Reusable "?" help icon that reveals a section's description in a
+  // tooltip on hover/focus/tap, instead of that description sitting in the
+  // section heading permanently. Positioning is measured (not pure CSS):
+  // once the bubble is in the DOM, a layout effect checks its own rect
+  // against the viewport and flips to whichever vertical/horizontal side
+  // still fits, so it never renders off-screen regardless of where the
+  // triggering "?" happens to sit on the page.
+  //
+  // Usage: `<${HelpTooltip} text="Events referencing this location" />`
+  function HelpTooltip(props) {
+    var text = String((props && props.text) || "").trim();
+    var extraClassName = (props && props.className) || "";
+    if (!text) {
+      return null;
+    }
+
+    var idRef = useRef(null);
+    if (!idRef.current) {
+      idRef.current = "help-tooltip-" + Math.random().toString(36).slice(2, 9);
+    }
+    var _open = useState(false);
+    var open = _open[0];
+    var setOpen = _open[1];
+    var rootRef = useRef(null);
+    var bubbleRef = useRef(null);
+    var _placement = useState({ vertical: "bottom", horizontal: "left" });
+    var placement = _placement[0];
+    var setPlacement = _placement[1];
+
+    useLayoutEffect(function () {
+      if (!open || !bubbleRef.current) {
+        return;
+      }
+      var margin = 8;
+      var rect = bubbleRef.current.getBoundingClientRect();
+      var vertical = rect.bottom > window.innerHeight - margin ? "top" : "bottom";
+      var horizontal = rect.right > window.innerWidth - margin ? "right" : "left";
+      setPlacement(function (prev) {
+        return (prev.vertical === vertical && prev.horizontal === horizontal) ? prev : { vertical: vertical, horizontal: horizontal };
+      });
+    }, [open, text]);
+
+    useEffect(function () {
+      if (!open) {
+        return;
+      }
+      function onPointerDown(event) {
+        if (rootRef.current && !rootRef.current.contains(event.target)) {
+          setOpen(false);
+        }
+      }
+      function onEscape(event) {
+        if (event.key === "Escape") {
+          setOpen(false);
+        }
+      }
+      document.addEventListener("pointerdown", onPointerDown);
+      document.addEventListener("keydown", onEscape);
+      return function () {
+        document.removeEventListener("pointerdown", onPointerDown);
+        document.removeEventListener("keydown", onEscape);
+      };
+    }, [open]);
+
+    return html`<span className=${"help-tooltip" + (extraClassName ? " " + extraClassName : "")} ref=${rootRef}>
+      <button
+        type="button"
+        className="help-tooltip-trigger"
+        aria-describedby=${open ? idRef.current : undefined}
+        aria-label="Help"
+        onMouseEnter=${function () { setOpen(true); }}
+        onMouseLeave=${function () { setOpen(false); }}
+        onFocus=${function () { setOpen(true); }}
+        onBlur=${function () { setOpen(false); }}
+        onClick=${function (event) { event.stopPropagation(); setOpen(function (prev) { return !prev; }); }}
+      >?</button>
+      ${open ? html`<span
+        ref=${bubbleRef}
+        role="tooltip"
+        id=${idRef.current}
+        className=${"help-tooltip-bubble help-tooltip-" + placement.vertical + " help-tooltip-" + placement.horizontal}
+      >${text}</span>` : null}
+    </span>`;
+  }
+
   window.CampaignAtlasCharactersShared = {
     DB_NAME: DB_NAME,
     DB_VERSION: DB_VERSION,
@@ -3176,6 +3261,7 @@
     TagChips: TagChips,
     OwnerDropdown: OwnerDropdown,
     Icon: Icon,
-    EntityPickerField: EntityPickerField
+    EntityPickerField: EntityPickerField,
+    HelpTooltip: HelpTooltip
   };
 })();

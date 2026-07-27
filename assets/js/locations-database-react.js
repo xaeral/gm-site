@@ -851,7 +851,7 @@
               <section className="profile-section location-details-section">
                 <div className="section-heading">
                   <h3>Details</h3>
-                  <span className="note-subtitle">Rich text description</span>
+                  <${shared.HelpTooltip} text="Rich text description" />
                 </div>
                 ${dialogOpen ? html`<p className="hint">Close the new location dialog to edit the selected location details.</p>` : html`<${shared.CharacterBiographyWorkspace}
                   editable=${editMode}
@@ -865,7 +865,7 @@
               <section className="profile-section location-linked-section">
                 <div className="section-heading">
                   <h3>Linked Characters</h3>
-                  <span className="note-subtitle">Characters connected through ownership or timeline references</span>
+                  <${shared.HelpTooltip} text="Characters connected through ownership or timeline references" />
                 </div>
                 ${linkedCharacters.length ? html`<div className="notebook-chip-list location-link-chip-list">
                   ${linkedCharacters.map(function (character) {
@@ -879,7 +879,7 @@
               <section className="profile-section location-timeline-section">
                 <div className="section-heading">
                   <h3>Timeline Events</h3>
-                  <span className="note-subtitle">Events referencing this location</span>
+                  <${shared.HelpTooltip} text="Events referencing this location" />
                 </div>
                 ${timelineEvents.length ? html`<div className="story-notes-list">
                   ${timelineEvents.map(function (entry) {
@@ -895,7 +895,7 @@
               <section className="profile-section location-story-notes-section">
                 <div className="section-heading">
                   <h3>Story Notes</h3>
-                  <span className="note-subtitle">GM Notes tagged with this location</span>
+                  <${shared.HelpTooltip} text="GM Notes tagged with this location" />
                 </div>
                 ${storyNotesFiltered.length ? html`<div className="story-notes-list">
                   ${storyNotesFiltered.map(function (note, index) {
@@ -913,7 +913,7 @@
               <section className="profile-section location-imagery-section">
                 <div className="section-heading">
                   <h3>Imagery</h3>
-                  <span className="note-subtitle">Upload a single image, map, and floor plan</span>
+                  <${shared.HelpTooltip} text="Upload a single image, map, and floor plan" />
                 </div>
                 <div className="location-future-grid">
                   ${renderImageField("images", "Image")}
@@ -958,7 +958,7 @@
             <div className="chronicle-span-2">
               <div className="section-heading">
                 <h3>Details</h3>
-                <span className="note-subtitle">Rich text description</span>
+                <${shared.HelpTooltip} text="Rich text description" />
               </div>
               <${shared.CharacterBiographyWorkspace}
                 editable=${true}

@@ -875,7 +875,7 @@
             <section className="notebook-reference-card session-summary-card">
               <div className="section-heading">
                 <h3>Live Summary</h3>
-                <span className="note-subtitle">Updates as you write</span>
+                <${shared.HelpTooltip} text="Updates as you write" />
               </div>
               <div className="session-summary-grid">
                 <article><strong>Characters Mentioned</strong><span>${liveSummary.characterCount}</span></article>
