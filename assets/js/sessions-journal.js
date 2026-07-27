@@ -72,48 +72,6 @@
     return text;
   }
 
-  function detectMentionState(editor) {
-    if (!editor) {
-      return null;
-    }
-    var selection = window.getSelection();
-    if (!selection || !selection.rangeCount) {
-      return null;
-    }
-    var range = selection.getRangeAt(0).cloneRange();
-    try {
-      range.selectNodeContents(editor);
-      range.setEnd(selection.anchorNode, selection.anchorOffset);
-    } catch (_error) {
-      return null;
-    }
-    var textBeforeCaret = range.toString();
-    // "@" is now handled by the Mention Editor (inline, structured mentions
-    // in the body text itself) -- this popup only owns "#" for quick
-    // location-tag autocompletion.
-    var match = /(?:^|\s)(#)([\w'-]*)$/.exec(textBeforeCaret);
-    if (!match) {
-      return null;
-    }
-    return { trigger: match[1], query: match[2] };
-  }
-
-  function applyMentionAutocomplete(mentionState, optionLabel) {
-    if (!mentionState || !optionLabel) {
-      return;
-    }
-    var selection = window.getSelection();
-    if (!selection || !selection.rangeCount) {
-      return;
-    }
-    var query = String(mentionState.query || "");
-    var normalizedOption = String(optionLabel || "");
-    var suffix = normalizedOption;
-    if (query && normalizedOption.toLowerCase().indexOf(query.toLowerCase()) === 0) {
-      suffix = normalizedOption.slice(query.length);
-    }
-    document.execCommand("insertText", false, suffix + " ");
-  }
 
   function SearchFilterDropdown(props) {
     var id = props.id;
@@ -335,10 +293,6 @@
     var filters = _filters[0];
     var setFilters = _filters[1];
 
-    var _mentionState = useState(null);
-    var mentionState = _mentionState[0];
-    var setMentionState = _mentionState[1];
-
     var _reviewOpen = useState(false);
     var reviewOpen = _reviewOpen[0];
     var setReviewOpen = _reviewOpen[1];
@@ -398,7 +352,6 @@
         setDraft(null);
         return;
       }
-      setMentionState(null);
       var cached = draftCacheRef.current[selectedSessionId];
       if (cached) {
         setDraft(clone(cached));
@@ -591,30 +544,6 @@
         timelineDetected: timelineDetected,
         bodyText: bodyText
       };
-    }
-
-    function handleEditorKeyUp(_event, editor) {
-      setMentionState(detectMentionState(editor));
-    }
-
-    function handleEditorKeyDown(event, editor) {
-      if (!mentionState) {
-        return;
-      }
-      var filtered = locationOptions.filter(function (option) {
-        return !mentionState.query || option.label.toLowerCase().indexOf(mentionState.query.toLowerCase()) >= 0;
-      });
-      if (!filtered.length) {
-        return;
-      }
-      if (event.key === "Tab" || event.key === "Enter") {
-        event.preventDefault();
-        applyMentionAutocomplete(mentionState, filtered[0].label);
-        setMentionState(detectMentionState(editor));
-      }
-      if (event.key === "Escape") {
-        setMentionState(null);
-      }
     }
 
     async function applyTimelineToCharacters(sessionPayload, acceptedEvents) {
@@ -829,15 +758,6 @@
       };
     }, [draft && draft.bodyHtml, draft && draft.lastEditedAt, JSON.stringify(characterOptions), JSON.stringify(locationOptions)]);
 
-    var mentionOptions = useMemo(function () {
-      if (!mentionState) {
-        return [];
-      }
-      return locationOptions.filter(function (option) {
-        return !mentionState.query || option.label.toLowerCase().indexOf(mentionState.query.toLowerCase()) >= 0;
-      }).slice(0, 12);
-    }, [mentionState, characterOptions, locationOptions]);
-
     return html`<section className="gm-notebook-page session-journal-page">
       <div className="gm-notebook-global-toolbar session-journal-toolbar card">
         <div className="gm-notebook-global-search">
@@ -969,7 +889,7 @@
             <section className="notebook-body-card session-journal-body">
               <div className="section-heading notebook-writing-heading">
                 <h3>Session Journal</h3>
-                <span className="note-subtitle">${editMode ? "Type @ to mention Characters, Locations, Tags, Clans, Sects & Timeline Events, #Location for quick tags, !Important Event to flag a timeline event • " + status : status}</span>
+                <span className="note-subtitle">${editMode ? "Type @ to mention Characters, Locations, Tags, Clans, Sects & Timeline Events, #Location to link or create a Location, !Important Event to flag a timeline event • " + status : status}</span>
               </div>
               <${window.MentionEditor.MentionRichTextEditor}
                 editable=${editMode}
@@ -977,22 +897,7 @@
                 onChange=${function (htmlValue) { updateDraftField("bodyHtml", htmlValue); updateDraftField("lastEditedAt", new Date().toISOString()); }}
                 editorClassName="rich-editor profile-rich-editor character-rich-text session-rich-editor"
                 viewerClassName="profile-biography-content character-rich-text"
-                onEditorKeyUp=${handleEditorKeyUp}
-                onEditorKeyDown=${handleEditorKeyDown}
               />
-              ${mentionState ? html`<div className="notebook-mention-picker session-mention-picker">
-                <div className="section-heading">
-                  <h3>Location Suggestions</h3>
-                  <span className="note-subtitle">Enter or Tab to accept • Esc to dismiss</span>
-                </div>
-                <div className="notebook-mention-results">
-                  ${mentionOptions.length ? mentionOptions.map(function (option, index) {
-                    return html`<button key=${"session-mention-" + option.value + "-" + index} type="button" className="notebook-mention-option" onClick=${function () { applyMentionAutocomplete(mentionState, option.label); setMentionState(null); }}>
-                      <strong>${option.label}</strong>
-                    </button>`;
-                  }) : html`<p className="hint">No matches.</p>`}
-                </div>
-              </div>` : null}
             </section>
           ` : ((state.sessions || []).length ? html`<div className="profile-empty">Select or create a session to begin journaling.</div>` : html`<div className="session-empty-state">
               <h3>No sessions have been recorded yet.</h3>

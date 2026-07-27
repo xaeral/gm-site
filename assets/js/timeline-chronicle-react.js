@@ -125,6 +125,7 @@
       relatedSession: true,
       session: true,
       location: true,
+      locationId: true,
       gmNotes: true,
       tags: true,
       characterIds: true,
@@ -157,7 +158,12 @@
       description: normalizeString(event.description, ""),
       storyArc: normalizeString(event.storyArc, ""),
       relatedSession: normalizeString(event.relatedSession || event.session, ""),
+      // `location` is legacy free text, preserved as-is (never written by
+      // new saves once locationId is set) purely so pre-existing events
+      // keep displaying exactly as they did before this field existed --
+      // see the modal's Location field / saveModalEvent.
       location: normalizeString(event.location, ""),
+      locationId: normalizeString(event.locationId, ""),
       gmNotes: normalizeString(event.gmNotes, ""),
       tags: parseTags(event.tags),
       characterIds: characterIds,
@@ -306,6 +312,10 @@
     var characters = _characters[0];
     var setCharacters = _characters[1];
 
+    var _locations = useState([]);
+    var locations = _locations[0];
+    var setLocations = _locations[1];
+
     var _loading = useState(true);
     var loading = _loading[0];
     var setLoading = _loading[1];
@@ -356,7 +366,8 @@
         description: "",
         storyArc: "",
         relatedSession: "",
-        location: "",
+        locationId: "",
+        legacyLocation: "",
         gmNotes: "",
         tags: "",
         extraMeta: {}
@@ -395,6 +406,37 @@
 
       return function () {
         cancelled = true;
+      };
+    }, []);
+
+    // Locations for the Event Type modal's Location picker -- fetched once
+    // and kept live via subscribeLocationRecordChanges so a location
+    // created/renamed/deleted from the Locations page (or another tab)
+    // shows up here too, not just ones created through this picker itself.
+    useEffect(function () {
+      var cancelled = false;
+      function loadLocations() {
+        if (typeof shared.readLocationRecords !== "function") {
+          return;
+        }
+        shared.readLocationRecords().then(function (records) {
+          if (cancelled) {
+            return;
+          }
+          setLocations(Array.isArray(records) ? records : []);
+        }).catch(function () {
+          if (!cancelled) {
+            setLocations([]);
+          }
+        });
+      }
+      loadLocations();
+      var unsubscribe = typeof shared.subscribeLocationRecordChanges === "function"
+        ? shared.subscribeLocationRecordChanges(loadLocations)
+        : function () {};
+      return function () {
+        cancelled = true;
+        unsubscribe();
       };
     }, []);
 
@@ -495,6 +537,15 @@
         })
         .sort(function (a, b) { return a.label.localeCompare(b.label); });
     }, [characters]);
+
+    var locationOptions = useMemo(function () {
+      return (locations || [])
+        .filter(function (location) { return location && location.id; })
+        .map(function (location) {
+          return { id: location.id, label: normalizeString(location.name, "Unnamed Location") };
+        })
+        .sort(function (a, b) { return a.label.localeCompare(b.label); });
+    }, [locations]);
 
     var clanOptions = useMemo(function () {
       var seen = {};
@@ -989,7 +1040,8 @@
           description: "",
           storyArc: "",
           relatedSession: "",
-          location: "",
+          locationId: "",
+          legacyLocation: "",
           gmNotes: "",
           tags: "",
           extraMeta: {}
@@ -1018,7 +1070,8 @@
           description: normalizeString(entry.event.description, ""),
           storyArc: normalizeString(entry.event.storyArc, ""),
           relatedSession: normalizeString(entry.event.relatedSession, ""),
-          location: normalizeString(entry.event.location, ""),
+          locationId: normalizeString(entry.event.locationId, ""),
+          legacyLocation: normalizeString(entry.event.location, ""),
           gmNotes: normalizeString(entry.event.gmNotes, ""),
           tags: (entry.event.tags || []).join(", "),
           extraMeta: Object.assign({}, entry.event.extraMeta || {})
@@ -1074,7 +1127,12 @@
         description: normalizeString(draft.description, ""),
         storyArc: normalizeString(draft.storyArc, ""),
         relatedSession: normalizeString(draft.relatedSession, ""),
-        location: normalizeString(draft.location, ""),
+        // A picked/created locationId always supersedes the legacy free-text
+        // value; if the user never touched the Location picker on an old
+        // event, its original free text is preserved untouched instead of
+        // being silently dropped by this save.
+        locationId: normalizeString(draft.locationId, ""),
+        location: draft.locationId ? "" : normalizeString(draft.legacyLocation, ""),
         gmNotes: normalizeString(draft.gmNotes, ""),
         tags: parseTags(draft.tags),
         characterIds: targetCharacterIds,
@@ -1195,6 +1253,10 @@
               var isExpanded = expandedEntryKey === entry.key;
               var linkedCharacters = (entry.linkedCharacters && entry.linkedCharacters.length ? entry.linkedCharacters : [entry.character]).filter(Boolean);
               var characterNames = linkedCharacters.map(function (character) { return normalizeString(character.name, "Unnamed Character"); }).join(", ");
+              var linkedLocation = entry.event.locationId
+                ? locations.find(function (location) { return location.id === entry.event.locationId; })
+                : null;
+              var locationDisplayText = linkedLocation ? normalizeString(linkedLocation.name, "Unnamed Location") : entry.event.location;
               var eventType = eventTypeInfo(entry.event.eventType);
               var iconPath = entry.system ? (SYSTEM_TYPE_ICONS[entry.systemType] || SYSTEM_TYPE_ICONS.birth) : eventType.icon;
               var iconColor = entry.system ? undefined : eventType.color;
@@ -1226,7 +1288,7 @@
                   <span className="chronicle-entry-icon">${shared.Icon({ icon: iconPath, color: iconColor, className: "chronicle-entry-icon-svg" })}</span>
                   <span className="chronicle-entry-title">${entry.event.title || "Untitled Event"}</span>
                   ${characterNames ? html`<span className="chronicle-entry-badge"><span aria-hidden="true">👥</span> ${characterNames}</span>` : null}
-                  ${entry.event.location ? html`<span className="chronicle-entry-badge"><span aria-hidden="true">📍</span> ${entry.event.location}</span>` : null}
+                  ${locationDisplayText ? html`<span className="chronicle-entry-badge"><span aria-hidden="true">📍</span> ${locationDisplayText}</span>` : null}
                   ${entry.event.relatedSession ? html`<span className="chronicle-entry-badge"><span aria-hidden="true">📅</span> ${entry.event.relatedSession}</span>` : null}
                 </div>
                 ${isExpanded ? html`<div className="chronicle-entry-details">
@@ -1253,7 +1315,15 @@
                   ${entry.event.gmNotes ? html`<p><strong>GM Notes:</strong> ${entry.event.gmNotes}</p>` : null}
                   ${entry.event.relatedSession ? html`<p><strong>Related Session:</strong> ${entry.event.relatedSession}</p>` : null}
                   ${entry.event.storyArc ? html`<p><strong>Story Arc:</strong> ${entry.event.storyArc}</p>` : null}
-                  ${entry.event.location ? html`<p><strong>Location:</strong> ${entry.event.location}</p>` : null}
+                  ${linkedLocation ? html`<p><strong>Location:</strong> <button
+                      type="button"
+                      className="notebook-chip location-link-chip"
+                      onClick=${function (event) {
+                        event.stopPropagation();
+                        window.location.href = "locations.html?location=" + linkedLocation.id;
+                      }}
+                    ><span>${normalizeString(linkedLocation.name, "Unnamed Location")}</span></button></p>`
+                    : (entry.event.location ? html`<p><strong>Location:</strong> ${entry.event.location}</p>` : null)}
                 </div>` : null}
               </article>`;
             })}
@@ -1314,9 +1384,18 @@
               <label>Session
                 <input type="text" value=${modalState.draft.relatedSession} onInput=${function (event) { updateModalField("relatedSession", event.target.value); }} placeholder="Optional" />
               </label>
-              <label>Location
-                <input type="text" value=${modalState.draft.location} onInput=${function (event) { updateModalField("location", event.target.value); }} placeholder="Optional" />
-              </label>
+              <div>
+                <${shared.EntityPickerField}
+                  entityType="location"
+                  label="Location"
+                  value=${modalState.draft.locationId}
+                  options=${locationOptions}
+                  onChange=${function (id) { updateModalField("locationId", id); }}
+                  onCreated=${function (created) { setLocations(function (prev) { return prev.concat([{ id: created.id, name: created.label }]); }); }}
+                  placeholder="Search locations..."
+                  createLabelNoun="Location"
+                />
+              </div>
               <label>Tags
                 <input type="text" value=${modalState.draft.tags} onInput=${function (event) { updateModalField("tags", event.target.value); }} placeholder="tag1, tag2" />
               </label>

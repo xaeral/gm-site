@@ -129,10 +129,6 @@ h6 {
   color: var(--text-muted);
 }
 
-.sidebar-footer strong {
-  font-size: 0.96rem;
-}
-
 .main-content {
   padding: 1.4rem clamp(1rem, 2vw, 2.2rem) 2rem;
   display: grid;
@@ -1245,6 +1241,27 @@ button:focus-visible {
 
 .entity-multiselect-search-row input {
   width: 100%;
+}
+
+.entity-picker-input {
+  width: 100%;
+  border: 1px solid var(--border-line);
+  border-radius: 8px;
+  background: #151521;
+  color: #fff;
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.entity-picker-create-option {
+  color: #ff8fa8;
+  border-top: 1px solid rgba(209, 13, 64, 0.3);
+}
+
+.entity-picker-create-option:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 @media (max-width: 1160px) {

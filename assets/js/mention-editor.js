@@ -51,6 +51,12 @@
 
   var MAX_RESULTS = 8;
   var MENTION_TRIGGER_PATTERN = /(?:^|[\s([{])@([^\s@]{0,60})$/;
+  // "#" is a Location-only shortcut trigger, distinct from "@"'s full
+  // multi-type search -- e.g. "#Forum" searches Locations only, and its
+  // create-prompt creates a Location directly (no "choose a type" step,
+  // since the type is already implied by the trigger character itself).
+  var HASH_TRIGGER_PATTERN = /(?:^|[\s([{])#([^\s#]{0,60})$/;
+  var HASH_TRIGGER_ENTITY_TYPE = "location";
 
   function uniqueByKey(list) {
     var seen = {};
@@ -179,8 +185,11 @@
     return matches.slice(0, MAX_RESULTS);
   }
 
-  async function searchMentionCandidates(query) {
+  async function searchMentionCandidates(query, entityFilter) {
     var candidates = await collectMentionCandidates();
+    if (entityFilter) {
+      candidates = candidates.filter(function (candidate) { return candidate.type === entityFilter; });
+    }
     return filterMentionCandidates(candidates, query);
   }
 
@@ -210,11 +219,15 @@
       return null;
     }
     var textBeforeCaret = range.toString();
-    var match = MENTION_TRIGGER_PATTERN.exec(textBeforeCaret);
-    if (!match) {
-      return null;
+    var atMatch = MENTION_TRIGGER_PATTERN.exec(textBeforeCaret);
+    if (atMatch) {
+      return { trigger: "@", query: atMatch[1], entityFilter: null };
     }
-    return { query: match[1] };
+    var hashMatch = HASH_TRIGGER_PATTERN.exec(textBeforeCaret);
+    if (hashMatch) {
+      return { trigger: "#", query: hashMatch[1], entityFilter: HASH_TRIGGER_ENTITY_TYPE };
+    }
+    return null;
   }
 
   function caretClientRect(editor) {
@@ -569,11 +582,19 @@
   // Builds the flat, keyboard-navigable item list a "search" mode dropdown
   // shows: real matches, plus -- only when nothing matched at all -- a
   // trailing "Create ..." prompt.
-  function buildSearchItems(results, query) {
+  function buildSearchItems(results, query, entityFilter) {
     var items = results.map(function (result) { return Object.assign({ kind: "candidate" }, result); });
     var trimmedQuery = String(query || "").trim();
     if (!results.length && trimmedQuery) {
-      items.push({ kind: "create-prompt", label: "Create \"" + trimmedQuery + "\"..." });
+      if (entityFilter) {
+        // The trigger already implies the type (e.g. "#" -> Location), so
+        // this create-prompt carries createType directly and skips the
+        // generic "choose a type" step -- see activateItem.
+        var typeLabel = ENTITY_LABELS[entityFilter] || entityFilter;
+        items.push({ kind: "create-prompt", createType: entityFilter, label: "Create " + typeLabel + " \"" + trimmedQuery + "\"" });
+      } else {
+        items.push({ kind: "create-prompt", label: "Create \"" + trimmedQuery + "\"..." });
+      }
     }
     return items;
   }
@@ -610,9 +631,9 @@
       setDropdown(null);
     }
 
-    function runSearch(query) {
+    function runSearch(query, entityFilter) {
       var seq = ++searchSeqRef.current;
-      searchMentionCandidates(query).then(function (results) {
+      searchMentionCandidates(query, entityFilter).then(function (results) {
         if (seq !== searchSeqRef.current) {
           return;
         }
@@ -620,7 +641,7 @@
           if (!prev || prev.mode !== "search") {
             return prev;
           }
-          return Object.assign({}, prev, { items: buildSearchItems(results, prev.query), activeIndex: 0, loading: false });
+          return Object.assign({}, prev, { items: buildSearchItems(results, prev.query, prev.entityFilter), activeIndex: 0, loading: false });
         });
       });
     }
@@ -638,6 +659,8 @@
       var rect = caretClientRect(editorNode);
       setDropdown({
         mode: "search",
+        trigger: detection.trigger,
+        entityFilter: detection.entityFilter || null,
         query: detection.query,
         nameDraft: detection.query,
         items: [],
@@ -646,7 +669,7 @@
         loading: true,
         triggerAnchor: triggerAnchor
       });
-      runSearch(detection.query);
+      runSearch(detection.query, detection.entityFilter || null);
     }
 
     // Single dispatcher for "an item in the dropdown was chosen," regardless
@@ -670,6 +693,12 @@
       }
 
       if (item.kind === "create-prompt") {
+        if (item.createType) {
+          // The trigger already told us the type (e.g. "#" -> location) --
+          // create it directly instead of asking the user to pick a type.
+          finishCreate(function () { return createEntityByType(item.createType, dropdown.nameDraft); });
+          return;
+        }
         setDropdown(function (prev) {
           if (!prev) {
             return prev;
@@ -993,6 +1022,7 @@
     MentionRichTextEditor: MentionRichTextEditor,
     searchMentionCandidates: searchMentionCandidates,
     navigationHrefFor: navigationHrefFor,
+    createLocationEntity: createLocationEntity,
     ENTITY_ICONS: ENTITY_ICONS,
     ENTITY_LABELS: ENTITY_LABELS
   };

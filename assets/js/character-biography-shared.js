@@ -1133,6 +1133,9 @@
     if (input.location !== undefined) {
       normalized.location = input.location;
     }
+    if (input.locationId !== undefined) {
+      normalized.locationId = input.locationId;
+    }
     if (Array.isArray(input.tags)) {
       normalized.tags = input.tags.slice();
     }
@@ -2998,6 +3001,134 @@
     </div>`;
   }
 
+  // Single-select searchable entity picker with inline "create new" support
+  // -- reuses the Mention Editor's own search (searchMentionCandidates) and
+  // creation (createLocationEntity, ...) so a location created here is
+  // indistinguishable from one created anywhere else in the app. Currently
+  // wired up for Locations only (Timeline Events' Location field); the
+  // `entityType` prop is there so a future field can reuse this instead of
+  // adding another bespoke picker.
+  //
+  // Usage: `<${EntityPickerField} entityType="location" value=${draft.locationId}
+  //   options=${locations} onChange=${(id) => ...} onCreated=${(created) => ...} />`
+  function EntityPickerField(props) {
+    var entityType = (props && props.entityType) || "location";
+    var value = (props && props.value) || "";
+    var options = Array.isArray(props && props.options) ? props.options : [];
+    var onChange = typeof (props && props.onChange) === "function" ? props.onChange : function () {};
+    var onCreated = typeof (props && props.onCreated) === "function" ? props.onCreated : function () {};
+    var placeholder = (props && props.placeholder) || "Search...";
+    var createLabelNoun = (props && props.createLabelNoun) || "Location";
+    var label = props && props.label;
+
+    var _open = useState(false);
+    var open = _open[0];
+    var setOpen = _open[1];
+    var _query = useState("");
+    var query = _query[0];
+    var setQuery = _query[1];
+    var _creating = useState(false);
+    var creating = _creating[0];
+    var setCreating = _creating[1];
+    var rootRef = useRef(null);
+
+    var selected = options.find(function (option) { return option.id === value; }) || null;
+
+    var filteredOptions = useMemo(function () {
+      var term = String(query || "").trim().toLowerCase();
+      var list = !term ? options : options.filter(function (option) {
+        return String(option.label || "").toLowerCase().indexOf(term) !== -1;
+      });
+      return list.slice(0, 50);
+    }, [options, query]);
+
+    useEffect(function () {
+      if (!open) {
+        return;
+      }
+      function onPointerDown(event) {
+        if (rootRef.current && !rootRef.current.contains(event.target)) {
+          setOpen(false);
+        }
+      }
+      function onEscape(event) {
+        if (event.key === "Escape") {
+          setOpen(false);
+        }
+      }
+      document.addEventListener("pointerdown", onPointerDown);
+      document.addEventListener("keydown", onEscape);
+      return function () {
+        document.removeEventListener("pointerdown", onPointerDown);
+        document.removeEventListener("keydown", onEscape);
+      };
+    }, [open]);
+
+    function selectOption(id) {
+      onChange(id);
+      setQuery("");
+      setOpen(false);
+    }
+
+    function clearSelection() {
+      onChange("");
+      setQuery("");
+    }
+
+    async function handleCreate() {
+      var name = String(query || "").trim();
+      var mentionEditor = window.MentionEditor;
+      if (!name || creating || !mentionEditor || typeof mentionEditor.createLocationEntity !== "function") {
+        return;
+      }
+      setCreating(true);
+      var created = entityType === "location" ? await mentionEditor.createLocationEntity(name) : null;
+      setCreating(false);
+      if (created && created.id) {
+        onCreated(created);
+        onChange(created.id);
+        setQuery("");
+        setOpen(false);
+      }
+    }
+
+    var trimmedQuery = String(query || "").trim();
+    var showCreatePrompt = trimmedQuery && !filteredOptions.length;
+
+    return html`<div className="character-filter-dropdown entity-multiselect-dropdown entity-picker-field" ref=${rootRef}>
+      ${label ? html`<span className="character-filter-label">${label}</span>` : null}
+      ${selected ? html`<div className="notebook-chip-list">
+        <button type="button" className="notebook-chip">
+          <span>${selected.label}</span>
+          <strong aria-hidden="true" onClick=${function (event) { event.stopPropagation(); clearSelection(); }}>×</strong>
+        </button>
+      </div>` : html`<input
+        type="text"
+        className="entity-picker-input"
+        value=${query}
+        placeholder=${placeholder}
+        onFocus=${function () { setOpen(true); }}
+        onInput=${function (event) { setQuery(event.target.value); setOpen(true); }}
+      />`}
+      ${open && !selected ? html`<div className="character-filter-menu entity-multiselect-menu">
+        ${filteredOptions.length ? filteredOptions.map(function (option) {
+          return html`<button
+            key=${"entity-picker-opt-" + option.id}
+            type="button"
+            className="character-filter-option"
+            onClick=${function () { selectOption(option.id); }}
+          >
+            <span>${option.label}</span>
+          </button>`;
+        }) : null}
+        ${showCreatePrompt ? html`<button type="button" className="character-filter-option entity-picker-create-option" disabled=${creating} onClick=${handleCreate}>
+          <span>➕ Create "${trimmedQuery}" as a ${createLabelNoun}</span>
+        </button>` : null}
+        ${!filteredOptions.length && !trimmedQuery ? html`<div className="character-filter-option notebook-filter-empty"><span></span><span>Type to search...</span></div>` : null}
+      </div>` : null}
+    </div>`;
+  }
+
   window.CampaignAtlasCharactersShared = {
     DB_NAME: DB_NAME,
     DB_VERSION: DB_VERSION,
@@ -3044,6 +3175,7 @@
     ListCardActions: ListCardActions,
     TagChips: TagChips,
     OwnerDropdown: OwnerDropdown,
-    Icon: Icon
+    Icon: Icon,
+    EntityPickerField: EntityPickerField
   };
 })();
