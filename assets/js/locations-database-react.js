@@ -785,8 +785,8 @@
                   ${location.tags && location.tags.length ? html`<span>${location.tags.join(", ")}</span>` : null}
                 </div>
                 <${shared.ListCardActions} actions=${[
-                  { key: "edit", icon: "✎", label: "Edit " + (location.name || "location"), onClick: function () { editLocation(location.id); } },
-                  { key: "delete", icon: "🗑", label: "Delete " + (location.name || "location"), destructive: true, onClick: function () { deleteLocation(location); } }
+                  { key: "edit", icon: "../assets/Icons/edit.svg", label: "Edit " + (location.name || "location"), onClick: function () { editLocation(location.id); } },
+                  { key: "delete", icon: "../assets/Icons/delete.svg", label: "Delete " + (location.name || "location"), destructive: true, onClick: function () { deleteLocation(location); } }
                 ]} />
               </button>`;
             })}

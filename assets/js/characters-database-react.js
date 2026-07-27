@@ -353,9 +353,9 @@
                     React.createElement("span", null, normalizeString(entry.clan, "None") + " • " + normalizeString(entry.sect, "None"))
                   ),
                   html`<${shared.ListCardActions} actions=${[
-                    { key: "favorite", icon: entry.pinned ? "★" : "☆", label: entry.pinned ? "Unpin character" : "Pin character", active: entry.pinned, onClick: function () { togglePinned(entry); } },
-                    { key: "edit", icon: "✎", label: "Edit " + (entry.name || "character"), onClick: function () { requestEditCharacter(entry.id); } },
-                    { key: "delete", icon: "🗑", label: "Delete " + (entry.name || "character"), destructive: true, onClick: function () { deleteCharacter(entry); } }
+                    { key: "favorite", icon: "../assets/Icons/pin.svg", label: entry.pinned ? "Unpin character" : "Pin character", active: entry.pinned, onClick: function () { togglePinned(entry); } },
+                    { key: "edit", icon: "../assets/Icons/edit.svg", label: "Edit " + (entry.name || "character"), onClick: function () { requestEditCharacter(entry.id); } },
+                    { key: "delete", icon: "../assets/Icons/delete.svg", label: "Delete " + (entry.name || "character"), destructive: true, onClick: function () { deleteCharacter(entry); } }
                   ]} />`
                 );
               })}

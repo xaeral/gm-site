@@ -196,7 +196,7 @@
       activity.push({
         key: "character:" + character.id,
         type: "character",
-        icon: "👤",
+        icon: "assets/Icons/Characters.svg",
         label: "Character updated",
         title: normalizeString(character.name, "Unnamed Character"),
         timestamp: character.updatedAt,
@@ -211,7 +211,7 @@
       activity.push({
         key: "relationship:" + (relationship.id || index),
         type: "relationship",
-        icon: "🔗",
+        icon: "assets/Icons/chain-link.svg",
         label: "Relationship updated",
         title: characterName(relationship.from) + " & " + characterName(relationship.to),
         timestamp: relationship.updatedAt,
@@ -227,7 +227,7 @@
       activity.push({
         key: "session:" + session.id,
         type: "session",
-        icon: "📖",
+        icon: "assets/Icons/session.svg",
         label: "Session updated",
         title: "Session " + (session.sessionNumber || "?") + ": " + normalizeString(session.title, "Untitled Session"),
         timestamp: timestamp,
@@ -242,7 +242,7 @@
       activity.push({
         key: "location:" + location.id,
         type: "location",
-        icon: "📍",
+        icon: "assets/Icons/location.svg",
         label: "Location updated",
         title: normalizeString(location.name, "Unnamed Location"),
         timestamp: location.updatedAt,
@@ -257,7 +257,7 @@
       activity.push({
         key: "timeline:" + entry.key,
         type: "timeline",
-        icon: "🕒",
+        icon: "assets/Icons/story-arc.svg",
         label: "Timeline event added",
         title: entry.title + " (" + entry.characterName + ")",
         timestamp: entry.createdAt,
@@ -272,7 +272,7 @@
       activity.push({
         key: "note:" + note.id,
         type: "note",
-        icon: "📝",
+        icon: "assets/Icons/tag.svg",
         label: "Note updated",
         title: normalizeString(note.title, "Untitled Note"),
         timestamp: note.updatedAt,

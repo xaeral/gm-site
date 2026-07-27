@@ -9,6 +9,7 @@
   var useRef = React.useRef;
   var useState = React.useState;
   var html = htm.bind(React.createElement);
+  var shared = window.CampaignAtlasCharactersShared || {};
 
   function normalizeFilterString(value, fallback) {
     var next = String(value || "").trim();
@@ -286,7 +287,7 @@
           aria-controls=${bodyId}
           onClick=${function () { toggleFilterSectionCollapsed(kind); }}
         >
-          <span className="character-directory-filter-section-caret" aria-hidden="true">${collapsed ? "▶" : "▼"}</span>
+          <span className="character-directory-filter-section-caret" aria-hidden="true">${shared.Icon({ icon: collapsed ? "../assets/Icons/chevron-right.svg" : "../assets/Icons/chevron-down.svg", size: 12 })}</span>
           <span className="character-directory-filter-section-title">${label}</span>
           ${selectedCount ? html`<span className="character-directory-filter-section-count">${selectedCount}</span>` : null}
         </button>

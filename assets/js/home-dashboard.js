@@ -32,7 +32,7 @@
       ${items.map(function (item) {
         return html`<li key=${item.key} className="dashboard-activity-item">
           <a href=${item.href}>
-            <span className="dashboard-activity-icon" aria-hidden="true">${item.icon}</span>
+            <span className="dashboard-activity-icon" aria-hidden="true">${shared.Icon({ icon: item.icon, size: 17 })}</span>
             <span className="dashboard-activity-body">
               <span className="dashboard-activity-title">${item.title}</span>
               <span className="dashboard-activity-meta">${item.label} • ${item.relativeLabel}</span>

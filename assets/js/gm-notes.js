@@ -736,7 +736,7 @@
                 }}
               >
                 <button type="button" className="notebook-folder-header" aria-expanded=${!collapsed} onClick=${function () { toggleFolder(folder); }}>
-                  <span className="notebook-folder-caret" aria-hidden="true">${collapsed ? "▶" : "▼"}</span>
+                  <span className="notebook-folder-caret" aria-hidden="true">${shared.Icon({ icon: collapsed ? "../assets/Icons/chevron-right.svg" : "../assets/Icons/chevron-down.svg", size: 13 })}</span>
                   <span className="notebook-folder-title">${folder.title}</span>
                   <span className="notebook-folder-count">${folderNotes.length}</span>
                 </button>
@@ -753,9 +753,9 @@
                       <strong>${note.title || "Untitled Note"}</strong>
                       <span>${note.sessionLabel || "No session"}</span>
                       <${shared.ListCardActions} actions=${[
-                        { key: "pin", icon: "📌", label: note.pinned ? "Unpin " + (note.title || "note") : "Pin " + (note.title || "note"), active: note.pinned, onClick: function () { toggleNotePinned(note); } },
-                        { key: "edit", icon: "✏️", label: "Edit " + (note.title || "note"), onClick: function () { editNoteEntry(note.id); } },
-                        { key: "delete", icon: "🗑", label: "Delete " + (note.title || "note"), destructive: true, onClick: function () { deleteNoteEntry(note); } }
+                        { key: "pin", icon: "../assets/Icons/pin.svg", label: note.pinned ? "Unpin " + (note.title || "note") : "Pin " + (note.title || "note"), active: note.pinned, onClick: function () { toggleNotePinned(note); } },
+                        { key: "edit", icon: "../assets/Icons/edit.svg", label: "Edit " + (note.title || "note"), onClick: function () { editNoteEntry(note.id); } },
+                        { key: "delete", icon: "../assets/Icons/delete.svg", label: "Delete " + (note.title || "note"), destructive: true, onClick: function () { deleteNoteEntry(note); } }
                       ]} />
                     </button>`;
                   }) : html`<p className="hint">No notes in this folder.</p>`}

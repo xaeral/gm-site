@@ -4149,14 +4149,14 @@
             return html`<div className="tag-group-shell" key=${"tag-group-" + group.id}>
               <div className="tag-group-header">
                 <button type="button" className="tag-group-toggle" onClick=${function () { toggleTagGroupCollapsed(group.id); }}>
-                  <span className="tag-group-caret">${isCollapsed ? "▶" : "▼"}</span>
+                  <span className="tag-group-caret">${Icon({ icon: isCollapsed ? "../assets/Icons/chevron-right.svg" : "../assets/Icons/chevron-down.svg", size: 12 })}</span>
                   <span>${group.name}</span>
                   <span className="hint">${tags.length} tag${tags.length === 1 ? "" : "s"}</span>
                 </button>
                 <div className="tag-group-actions">
-                  <button type="button" className="tag-icon-button" title="Rename tag group" aria-label="Rename tag group" onClick=${function () { renameTagGroup(group.id); }}>✎</button>
-                  <button type="button" className="tag-icon-button" title="Add tag" aria-label="Add tag" onClick=${function () { addTag(group.id); }}>+</button>
-                  <button type="button" className="tag-icon-button" title="Delete tag group" aria-label="Delete tag group" onClick=${function () { deleteTagGroup(group.id, group.name); }}>🗑</button>
+                  <button type="button" className="tag-icon-button" title="Rename tag group" aria-label="Rename tag group" onClick=${function () { renameTagGroup(group.id); }}>${Icon({ icon: "../assets/Icons/edit.svg", size: 14 })}</button>
+                  <button type="button" className="tag-icon-button" title="Add tag" aria-label="Add tag" onClick=${function () { addTag(group.id); }}>${Icon({ icon: "../assets/Icons/plus.svg", size: 14 })}</button>
+                  <button type="button" className="tag-icon-button" title="Delete tag group" aria-label="Delete tag group" onClick=${function () { deleteTagGroup(group.id, group.name); }}>${Icon({ icon: "../assets/Icons/delete.svg", size: 14 })}</button>
                 </div>
               </div>
 
@@ -4184,8 +4184,8 @@
                           </div>
                           <div className="tag-row-actions">
                             <span className="tag-row-usage">${usage} used</span>
-                            <button type="button" className="tag-icon-button" title="Edit tag" aria-label=${"Edit " + tag.name} onClick=${function () { isEditingThisTag ? cancelEditTag() : startEditTag(group.id, tag); }}>✎</button>
-                            <button type="button" className="tag-icon-button" title="Delete tag" aria-label=${"Delete " + tag.name} onClick=${function () { deleteTag(group.id, tag.id, tag.name); }}>🗑</button>
+                            <button type="button" className="tag-icon-button" title="Edit tag" aria-label=${"Edit " + tag.name} onClick=${function () { isEditingThisTag ? cancelEditTag() : startEditTag(group.id, tag); }}>${Icon({ icon: "../assets/Icons/edit.svg", size: 14 })}</button>
+                            <button type="button" className="tag-icon-button" title="Delete tag" aria-label=${"Delete " + tag.name} onClick=${function () { deleteTag(group.id, tag.id, tag.name); }}>${Icon({ icon: "../assets/Icons/delete.svg", size: 14 })}</button>
                           </div>
                         </div>
 
@@ -4321,8 +4321,8 @@
                       <span className="rtm-type-color-dot" style=${{ background: typeItem.color }} aria-hidden="true"></span>
                       <span className="rtm-type-summary-name">${typeItem.name}</span>
                       <div className="rtm-type-summary-actions">
-                        <button type="button" className="rtm-icon-btn" title="Edit" aria-label="Edit" onClick=${function () { startEditRelationshipType(category.id, typeItem); }}>✏</button>
-                        <button type="button" className="rtm-icon-btn destructive" title="Delete" aria-label="Delete" onClick=${function () { deleteRelationshipType(category.id, typeItem.id, typeItem.name); }}>✕</button>
+                        <button type="button" className="rtm-icon-btn" title="Edit" aria-label="Edit" onClick=${function () { startEditRelationshipType(category.id, typeItem); }}>${Icon({ icon: "../assets/Icons/edit.svg", size: 14 })}</button>
+                        <button type="button" className="rtm-icon-btn destructive" title="Delete" aria-label="Delete" onClick=${function () { deleteRelationshipType(category.id, typeItem.id, typeItem.name); }}>${Icon({ icon: "../assets/Icons/delete.svg", size: 14 })}</button>
                       </div>
                     </div>
                     <p className="rtm-type-summary-style">${relationshipTypeSummaryText(typeItem)}</p>

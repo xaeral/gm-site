@@ -32,12 +32,12 @@
   // CharacterBiographyWorkspace's, so no other changes are required.
 
   var ENTITY_ICONS = {
-    character: "👤",
-    location: "📍",
-    tag: "🏷",
-    clan: "🩸",
-    sect: "🏛",
-    "timeline-event": "📅"
+    character: "../assets/Icons/Characters.svg",
+    location: "../assets/Icons/location.svg",
+    tag: "../assets/Icons/tag.svg",
+    clan: "../assets/Icons/droplet1.svg",
+    sect: "../assets/Icons/Relationships.svg",
+    "timeline-event": "../assets/Icons/session.svg"
   };
 
   var ENTITY_LABELS = {
@@ -996,7 +996,7 @@
       />
       ${dropdown ? html`<div className="mention-editor-dropdown" ref=${dropdownElRef} role=${dropdown.mode === "created" ? "status" : "listbox"} aria-label="Mention search results">
         ${dropdown.mode === "created" ? html`<div className="mention-editor-created-confirm">
-          <span className="mention-editor-created-message">✓ Created "${dropdown.createdLabel}"</span>
+          <span className="mention-editor-created-message">${shared.Icon({ icon: "../assets/Icons/check.svg", size: 14 })} Created "${dropdown.createdLabel}"</span>
           ${dropdown.createdHref ? html`<button type="button" className="mention-editor-created-open" onClick=${function () { window.location.href = dropdown.createdHref; }}>Open to edit →</button>` : null}
         </div>` : null}
 
@@ -1025,7 +1025,7 @@
         ${dropdown.mode !== "created" && dropdown.items.length
           ? dropdown.items.map(function (item, index) {
               var icon = item.kind === "candidate" ? (ENTITY_ICONS[item.type] || "")
-                : item.kind === "create-prompt" ? "➕"
+                : item.kind === "create-prompt" ? "../assets/Icons/plus.svg"
                 : item.kind === "create-type" ? item.icon
                 : ENTITY_ICONS.character;
               var typeLabel = item.kind === "candidate" ? (ENTITY_LABELS[item.type] || "") : "";
@@ -1042,7 +1042,7 @@
                 onMouseEnter=${function () { setDropdown(function (prev) { return prev ? Object.assign({}, prev, { activeIndex: index }) : prev; }); }}
                 onClick=${function () { activateItem(item); }}
               >
-                <span className="mention-editor-option-icon" aria-hidden="true">${icon}</span>
+                <span className="mention-editor-option-icon" aria-hidden="true">${icon ? shared.Icon({ icon: icon, size: 15 }) : null}</span>
                 <span className="mention-editor-option-label">${item.label}</span>
                 ${typeLabel ? html`<span className="mention-editor-option-type">${typeLabel}</span>` : null}
               </button>`;

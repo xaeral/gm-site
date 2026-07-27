@@ -1343,11 +1343,21 @@ h6 {
 }
 
 .character-rich-text .bio-checklist li::before {
-  content: "☐";
+  content: "";
   position: absolute;
   left: 0;
-  top: 0;
-  color: #ff9fb5;
+  top: 0.15em;
+  width: 0.95rem;
+  height: 0.95rem;
+  background-color: #ff9fb5;
+  -webkit-mask-image: url('../Icons/checkbox-empty.svg');
+  mask-image: url('../Icons/checkbox-empty.svg');
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
 }
 
 .character-rich-text table {

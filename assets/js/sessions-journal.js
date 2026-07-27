@@ -202,7 +202,7 @@
               <div className="session-review-item-head">
                 <label className="session-review-accept">
                   <input type="checkbox" checked=${event.accepted ? "checked" : undefined} onChange=${function () { onToggleAccept(index); }} />
-                  <span>${event.accepted ? "✓" : "○"} ${event.rawText}</span>
+                  <span>${event.accepted ? shared.Icon({ icon: "../assets/Icons/check.svg", size: 13 }) : null} ${event.rawText}</span>
                 </label>
                 <button type="button" onClick=${function () { onRemove(index); }}>Remove</button>
               </div>
@@ -823,7 +823,7 @@
                 <span>${session.title || "Untitled Session"}</span>
                 <p>${formatDateDisplay(session.datePlayed)}</p>
                 <${shared.ListCardActions} actions=${[
-                  { key: "edit", icon: "✎", label: "Edit Session " + (session.sessionNumber || ""), onClick: function () { editSessionEntry(session.id); } }
+                  { key: "edit", icon: "../assets/Icons/edit.svg", label: "Edit Session " + (session.sessionNumber || ""), onClick: function () { editSessionEntry(session.id); } }
                 ]} />
               </button>`;
             }) : html`<p className="hint">${(state.sessions || []).length ? "No sessions match current search and filters." : "No sessions yet."}</p>`}

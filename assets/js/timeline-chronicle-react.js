@@ -1282,14 +1282,14 @@
                       event.stopPropagation();
                       openEditModal(entry);
                     }}
-                  >✎</button>` : null}
+                  >${shared.Icon({ icon: "../assets/Icons/edit.svg", size: 15 })}</button>` : null}
                 </div>
                 <div className="chronicle-entry-summary">
                   <span className="chronicle-entry-icon">${shared.Icon({ icon: iconPath, color: iconColor, className: "chronicle-entry-icon-svg" })}</span>
                   <span className="chronicle-entry-title">${entry.event.title || "Untitled Event"}</span>
-                  ${characterNames ? html`<span className="chronicle-entry-badge"><span aria-hidden="true">👥</span> ${characterNames}</span>` : null}
-                  ${locationDisplayText ? html`<span className="chronicle-entry-badge"><span aria-hidden="true">📍</span> ${locationDisplayText}</span>` : null}
-                  ${entry.event.relatedSession ? html`<span className="chronicle-entry-badge"><span aria-hidden="true">📅</span> ${entry.event.relatedSession}</span>` : null}
+                  ${characterNames ? html`<span className="chronicle-entry-badge"><span aria-hidden="true">${shared.Icon({ icon: "../assets/Icons/Characters.svg", size: 13 })}</span> ${characterNames}</span>` : null}
+                  ${locationDisplayText ? html`<span className="chronicle-entry-badge"><span aria-hidden="true">${shared.Icon({ icon: "../assets/Icons/location.svg", size: 13 })}</span> ${locationDisplayText}</span>` : null}
+                  ${entry.event.relatedSession ? html`<span className="chronicle-entry-badge"><span aria-hidden="true">${shared.Icon({ icon: "../assets/Icons/session.svg", size: 13 })}</span> ${entry.event.relatedSession}</span>` : null}
                 </div>
                 ${isExpanded ? html`<div className="chronicle-entry-details">
                   ${!entry.system && linkedCharacters.length ? html`<div className="chronicle-entry-characters">

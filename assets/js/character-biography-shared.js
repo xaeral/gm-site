@@ -1014,15 +1014,15 @@
         ),
         ReactRef.createElement("div", { className: "rich-toolbar-divider", "aria-hidden": "true" }),
         ReactRef.createElement("div", { className: "rich-toolbar-group" },
-          createBiographyToolbarButton({ key: "callout", className: "toolbar-icon-callout", title: "Callout block", label: "❝", active: toolbarState.callout, onClick: function () { runCommand("formatBlock", "<blockquote>"); } }),
+          createBiographyToolbarButton({ key: "callout", className: "toolbar-icon-callout", title: "Callout block", label: Icon({ icon: "../assets/Icons/callout.svg", size: 15 }), active: toolbarState.callout, onClick: function () { runCommand("formatBlock", "<blockquote>"); } }),
           createBiographyToolbarButton({ key: "rule", className: "toolbar-icon-rule", title: "Horizontal rule", label: "―", active: false, onClick: function () { runCommand("insertHorizontalRule"); } })
         ),
         ReactRef.createElement("div", { className: "rich-toolbar-divider", "aria-hidden": "true" }),
         ReactRef.createElement("div", { className: "rich-toolbar-group" },
-          createBiographyToolbarButton({ key: "spoiler", className: "toolbar-icon-spoiler", title: "Insert spoiler block", label: "◐", active: false, onClick: insertSpoiler }),
-          createBiographyToolbarButton({ key: "image", className: "toolbar-icon-image", title: "Insert image", label: "🖼", active: false, onClick: insertImage }),
-          createBiographyToolbarButton({ key: "table", className: "toolbar-icon-table", title: "Insert table", label: "▦", active: false, onClick: insertTable }),
-          createBiographyToolbarButton({ key: "checklist", className: "toolbar-icon-checklist", title: "Insert checklist", label: "☑", active: false, onClick: insertChecklist })
+          createBiographyToolbarButton({ key: "spoiler", className: "toolbar-icon-spoiler", title: "Insert spoiler block", label: Icon({ icon: "../assets/Icons/spoiler.svg", size: 16 }), active: false, onClick: insertSpoiler }),
+          createBiographyToolbarButton({ key: "image", className: "toolbar-icon-image", title: "Insert image", label: Icon({ icon: "../assets/Icons/image.svg", size: 16 }), active: false, onClick: insertImage }),
+          createBiographyToolbarButton({ key: "table", className: "toolbar-icon-table", title: "Insert table", label: Icon({ icon: "../assets/Icons/table.svg", size: 16 }), active: false, onClick: insertTable }),
+          createBiographyToolbarButton({ key: "checklist", className: "toolbar-icon-checklist", title: "Insert checklist", label: Icon({ icon: "../assets/Icons/checklist.svg", size: 16 }), active: false, onClick: insertChecklist })
         )
       ),
       ReactRef.createElement("div", {
@@ -2805,11 +2805,14 @@
   //
   // Usage: render as a child of a `position: relative` list-item button,
   // e.g. `<${ListCardActions} actions=${[
-  //   { key: "favorite", icon: "★", label: "Favorite", active: entry.pinned, onClick: () => toggle(entry) },
-  //   { key: "edit", icon: "✎", label: "Edit", onClick: () => edit(entry) },
-  //   { key: "delete", icon: "🗑", label: "Delete", destructive: true, onClick: () => remove(entry) }
-  // ]} />`. Every action's click (mouse or keyboard) stops propagation so
-  // it never also triggers the card's own onClick.
+  //   { key: "favorite", icon: "../assets/Icons/pin.svg", label: "Favorite", active: entry.pinned, onClick: () => toggle(entry) },
+  //   { key: "edit", icon: "../assets/Icons/edit.svg", label: "Edit", onClick: () => edit(entry) },
+  //   { key: "delete", icon: "../assets/Icons/delete.svg", label: "Delete", destructive: true, onClick: () => remove(entry) }
+  // ]} />`. `icon` is an SVG asset path rendered via the Icon() helper above
+  // (mask-image + currentColor), so hover/active/destructive theming keeps
+  // working automatically -- never a raw glyph/emoji. Every action's click
+  // (mouse or keyboard) stops propagation so it never also triggers the
+  // card's own onClick.
   function ListCardActions(props) {
     var actions = (Array.isArray(props && props.actions) ? props.actions : []).filter(function (action) {
       return action && typeof action.onClick === "function";
@@ -2834,7 +2837,7 @@
               action.onClick(event);
             }
           }}
-        >${action.icon}</span>`;
+        >${Icon({ icon: action.icon, size: 15 })}</span>`;
       })}
     </span>`;
   }
@@ -3122,7 +3125,8 @@
           </button>`;
         }) : null}
         ${showCreatePrompt ? html`<button type="button" className="character-filter-option entity-picker-create-option" disabled=${creating} onClick=${handleCreate}>
-          <span>➕ Create "${trimmedQuery}" as a ${createLabelNoun}</span>
+          ${Icon({ icon: "../assets/Icons/plus.svg", size: 14 })}
+          <span>Create "${trimmedQuery}" as a ${createLabelNoun}</span>
         </button>` : null}
         ${!filteredOptions.length && !trimmedQuery ? html`<div className="character-filter-option notebook-filter-empty"><span></span><span>Type to search...</span></div>` : null}
       </div>` : null}
