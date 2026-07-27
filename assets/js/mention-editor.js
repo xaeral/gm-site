@@ -380,6 +380,42 @@
     return null;
   }
 
+  // Reads the mention chips actually present in a piece of stored content
+  // (a note's bodyHtml, a session recap, ...) -- the single source of truth
+  // for "which entities does this content reference," since every mention
+  // is written as an atomic chip carrying its own data-entity-* attributes
+  // (see buildMentionElement). Consumers that need a live "which
+  // Characters/Locations are mentioned here" list (e.g. GM Notes' Character
+  // Tags / Location Tags summary panels) should call this against the
+  // content's current HTML rather than tracking a separate id array that
+  // can silently drift out of sync with what the text actually says.
+  function extractMentionEntities(html) {
+    var container = document.createElement("div");
+    container.innerHTML = String(html || "");
+    var nodes = container.querySelectorAll('.mention-chip[data-mention="1"]');
+    var seen = {};
+    var results = [];
+    nodes.forEach(function (node) {
+      var type = node.getAttribute("data-entity-type");
+      var id = node.getAttribute("data-entity-id");
+      if (!type || !id) {
+        return;
+      }
+      var key = type + ":" + id;
+      if (seen[key]) {
+        return;
+      }
+      seen[key] = true;
+      results.push({
+        type: type,
+        id: id,
+        label: node.getAttribute("data-entity-label") || id,
+        ownerId: node.getAttribute("data-entity-owner-id") || ""
+      });
+    });
+    return results;
+  }
+
   // Live rename propagation: re-resolves every mention chip's displayed
   // label against the CURRENT character/location record (by id), patching
   // just the label text node in place -- never touches the rest of the
@@ -1023,6 +1059,7 @@
     searchMentionCandidates: searchMentionCandidates,
     navigationHrefFor: navigationHrefFor,
     createLocationEntity: createLocationEntity,
+    extractMentionEntities: extractMentionEntities,
     ENTITY_ICONS: ENTITY_ICONS,
     ENTITY_LABELS: ENTITY_LABELS
   };

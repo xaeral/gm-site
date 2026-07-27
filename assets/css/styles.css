@@ -2353,6 +2353,30 @@ button:focus-visible {
   gap: 0.55rem;
 }
 
+/* Character Tags / Location Tags summary panels -- compact, content-sized
+   (no fixed min-height). Flex column instead of the shared grid above so
+   the area below the heading can center a single-line empty-state message
+   without affecting the chip list's natural top-aligned wrapping. */
+.notebook-reference-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem 0.65rem;
+}
+
+.notebook-reference-card h4 {
+  margin: 0;
+}
+
+.notebook-reference-card > p.hint {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  margin: 0;
+}
+
 .notebook-mention-rows {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
