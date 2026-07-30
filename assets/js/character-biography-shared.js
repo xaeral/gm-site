@@ -874,6 +874,7 @@
         type: "button",
         className: "rich-toolbar-button " + (props.className || "") + (props.active ? " active" : ""),
         title: props.title,
+        style: props.style,
         "aria-label": props.ariaLabel || props.title,
         "aria-pressed": props.active ? "true" : "false",
         onMouseDown: function (event) { event.preventDefault(); },
@@ -881,6 +882,55 @@
       },
       props.label
     );
+  }
+
+  // Predefined Highlight toolbar swatches -- `value` is what gets handed to
+  // execCommand("hiliteColor", ...), `key` is the stable id used to match a
+  // swatch back up against the color the browser reports on the current
+  // selection (see highlightKeyForColorValue) so the toolbar can show which
+  // color, if any, is currently active.
+  var HIGHLIGHT_COLORS = [
+    { key: "yellow", label: "Yellow", value: "#fef08a" },
+    { key: "green", label: "Green", value: "#bbf7d0" },
+    { key: "blue", label: "Blue", value: "#bfdbfe" },
+    { key: "pink", label: "Pink", value: "#fbcfe8" },
+    { key: "purple", label: "Purple", value: "#e9d5ff" },
+    { key: "orange", label: "Orange", value: "#fed7aa" },
+    { key: "gray", label: "Gray", value: "#e5e7eb" }
+  ];
+
+  // Browsers normalize any color handed to `style.backgroundColor` (hex,
+  // named, whatever) down to an "rgb(r, g, b)" string when read back --
+  // converts that back to "#rrggbb" so it can be matched against
+  // HIGHLIGHT_COLORS. Returns null for anything it can't parse (e.g.
+  // "transparent", "rgba(0, 0, 0, 0)", or no background at all).
+  function colorValueToHex(value) {
+    if (!value || typeof value !== "string") {
+      return null;
+    }
+    if (/^#[0-9a-f]{6}$/i.test(value)) {
+      return value.toLowerCase();
+    }
+    var match = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/i.exec(value);
+    if (!match) {
+      return null;
+    }
+    if (match[4] !== undefined && Number(match[4]) === 0) {
+      return null;
+    }
+    var toHex = function (component) {
+      return Math.max(0, Math.min(255, Number(component))).toString(16).padStart(2, "0");
+    };
+    return "#" + toHex(match[1]) + toHex(match[2]) + toHex(match[3]);
+  }
+
+  function highlightKeyForColorValue(value) {
+    var hex = colorValueToHex(value);
+    if (!hex) {
+      return null;
+    }
+    var found = HIGHLIGHT_COLORS.filter(function (option) { return option.value.toLowerCase() === hex; })[0];
+    return found ? found.key : null;
   }
 
   function CharacterBiographyWorkspace(props) {
@@ -911,6 +961,32 @@
     var _toolbarState = useState({});
     var toolbarState = _toolbarState[0];
     var setToolbarState = _toolbarState[1];
+    var _highlightMenuOpen = useState(false);
+    var highlightMenuOpen = _highlightMenuOpen[0];
+    var setHighlightMenuOpen = _highlightMenuOpen[1];
+    var highlightMenuRef = useRef(null);
+
+    useEffect(function () {
+      if (!highlightMenuOpen) {
+        return;
+      }
+      function handlePointerDown(event) {
+        if (highlightMenuRef.current && !highlightMenuRef.current.contains(event.target)) {
+          setHighlightMenuOpen(false);
+        }
+      }
+      function handleKeyDown(event) {
+        if (event.key === "Escape") {
+          setHighlightMenuOpen(false);
+        }
+      }
+      document.addEventListener("mousedown", handlePointerDown);
+      document.addEventListener("keydown", handleKeyDown);
+      return function () {
+        document.removeEventListener("mousedown", handlePointerDown);
+        document.removeEventListener("keydown", handleKeyDown);
+      };
+    }, [highlightMenuOpen]);
 
     useLayoutEffect(function () {
       if (!editable) {
@@ -957,6 +1033,25 @@
       return null;
     }
 
+    // Walks up from the selection looking for the nearest inline
+    // background-color (however it got there -- our own hiliteColor swatches,
+    // pasted HTML, etc.) and maps it back to one of HIGHLIGHT_COLORS so the
+    // toolbar can show which highlight color, if any, is active at the caret.
+    function activeHighlightKey() {
+      var editor = editorRef.current;
+      var node = selectionElement();
+      while (node && node !== editor) {
+        if (node.nodeType === 1 && node.style && node.style.backgroundColor) {
+          var key = highlightKeyForColorValue(node.style.backgroundColor);
+          if (key) {
+            return key;
+          }
+        }
+        node = node.parentElement;
+      }
+      return null;
+    }
+
     function refreshToolbarState() {
       var editor = editorRef.current;
       if (!editor || document.activeElement !== editor) {
@@ -973,7 +1068,8 @@
         alignLeft: document.queryCommandState("justifyLeft"),
         alignCenter: document.queryCommandState("justifyCenter"),
         alignRight: document.queryCommandState("justifyRight"),
-        callout: Boolean(ancestorTag("blockquote"))
+        callout: Boolean(ancestorTag("blockquote")),
+        highlightColor: activeHighlightKey()
       });
     }
 
@@ -1006,6 +1102,133 @@
 
     function toggleHeading(tagName) {
       runCommand("formatBlock", ancestorTag(tagName) ? "<p>" : "<" + tagName + ">");
+    }
+
+    // "Remove highlight" clears a span's background-color by setting it to
+    // transparent (the only cross-browser way to un-set a hiliteColor via
+    // execCommand) -- this sweeps the now-pointless "background-color:
+    // transparent" spans back out of the DOM afterward so repeated
+    // highlight/un-highlight cycles don't leave the document full of empty
+    // wrapper spans. Only unwraps a span when clearing that one property
+    // leaves it with no attributes left to justify existing.
+    function stripTransparentHighlightSpans(root) {
+      // Broad `[style]` selector (not just span/font) since execCommand can
+      // apply hiliteColor's inline style directly onto whatever element
+      // already wraps the selection -- e.g. an existing <i> -- rather than
+      // always introducing a new span.
+      var candidates = root.querySelectorAll("[style]");
+      Array.prototype.forEach.call(candidates, function (node) {
+        var bg = node.style.backgroundColor;
+        if (bg && colorValueToHex(bg) !== null) {
+          return;
+        }
+        if (bg) {
+          node.style.removeProperty("background-color");
+        }
+        var styleAttr = node.getAttribute("style");
+        if (styleAttr && styleAttr.trim()) {
+          return;
+        }
+        node.removeAttribute("style");
+        if (node.tagName !== "SPAN" || node.attributes.length > 0) {
+          return;
+        }
+        var parent = node.parentNode;
+        if (!parent) {
+          return;
+        }
+        while (node.firstChild) {
+          parent.insertBefore(node.firstChild, node);
+        }
+        parent.removeChild(node);
+      });
+    }
+
+    // Applies (or, with color "transparent", removes) a background
+    // highlight on the current selection. Goes through execCommand rather
+    // than manual Range surgery so it participates in the browser's native
+    // undo/redo stack the same way Bold/Italic/Underline already do.
+    // styleWithCSS is toggled on only for the duration of this one command --
+    // it's what makes hiliteColor produce an inline `style="background-color"`
+    // span we can later detect (activeHighlightKey) and clean up
+    // (stripTransparentHighlightSpans), and resetting it straight back to
+    // false keeps every other command's markup (e.g. Bold's <b>) unaffected.
+    function applyHighlight(color) {
+      var editor = editorRef.current;
+      if (!editor) {
+        return;
+      }
+      editor.focus();
+      document.execCommand("styleWithCSS", false, true);
+      var applied = document.execCommand("hiliteColor", false, color);
+      if (!applied) {
+        document.execCommand("backColor", false, color);
+      }
+      document.execCommand("styleWithCSS", false, false);
+      if (color === "transparent") {
+        stripTransparentHighlightSpans(editor);
+      }
+      syncEditorToChange();
+      refreshToolbarState();
+      setHighlightMenuOpen(false);
+    }
+
+    function removeHighlight() {
+      applyHighlight("transparent");
+    }
+
+    // Strips bold/italic/underline/strikethrough/superscript/subscript/code/
+    // text color/highlight color from the selection (per the standard
+    // execCommand("removeFormat") behaviour) and separately unlinks any
+    // anchors, since removeFormat deliberately leaves <a> untouched. Neither
+    // command touches block structure (headings, lists, checklists, tables,
+    // blockquotes) or deletes text, only inline formatting.
+    function removeFormatting() {
+      var editor = editorRef.current;
+      if (!editor) {
+        return;
+      }
+      editor.focus();
+      document.execCommand("removeFormat");
+      document.execCommand("unlink");
+      syncEditorToChange();
+      refreshToolbarState();
+    }
+
+    function renderHighlightMenu() {
+      return ReactRef.createElement(
+        "div",
+        { className: "rich-toolbar-highlight-menu", role: "menu", "aria-label": "Highlight color" },
+        ReactRef.createElement(
+          "div",
+          { className: "rich-toolbar-highlight-swatches" },
+          HIGHLIGHT_COLORS.map(function (option) {
+            return ReactRef.createElement("button", {
+              key: option.key,
+              type: "button",
+              role: "menuitemradio",
+              className: "rich-toolbar-highlight-swatch" + (toolbarState.highlightColor === option.key ? " active" : ""),
+              style: { backgroundColor: option.value },
+              title: option.label,
+              "aria-label": option.label,
+              "aria-checked": toolbarState.highlightColor === option.key ? "true" : "false",
+              onMouseDown: function (event) { event.preventDefault(); },
+              onClick: function () { applyHighlight(option.value); }
+            });
+          })
+        ),
+        ReactRef.createElement(
+          "button",
+          {
+            type: "button",
+            className: "rich-toolbar-highlight-clear",
+            role: "menuitem",
+            onMouseDown: function (event) { event.preventDefault(); },
+            onClick: removeHighlight
+          },
+          "Remove highlight"
+        )
+      );
     }
 
     function insertSpoiler() {
@@ -1124,7 +1347,28 @@
         ReactRef.createElement("div", { className: "rich-toolbar-group" },
           createBiographyToolbarButton({ key: "bold", className: "toolbar-icon-bold", title: "Bold", label: "B", active: toolbarState.bold, onClick: function () { runCommand("bold"); } }),
           createBiographyToolbarButton({ key: "italic", className: "toolbar-icon-italic", title: "Italic", label: "I", active: toolbarState.italic, onClick: function () { runCommand("italic"); } }),
-          createBiographyToolbarButton({ key: "underline", className: "toolbar-icon-underline", title: "Underline", label: "U", active: toolbarState.underline, onClick: function () { runCommand("underline"); } })
+          createBiographyToolbarButton({ key: "underline", className: "toolbar-icon-underline", title: "Underline", label: "U", active: toolbarState.underline, onClick: function () { runCommand("underline"); } }),
+          ReactRef.createElement(
+            "div",
+            { className: "rich-toolbar-highlight-wrap", ref: highlightMenuRef },
+            createBiographyToolbarButton({
+              key: "highlight",
+              className: "toolbar-icon-highlight",
+              title: "Highlight color",
+              ariaLabel: "Highlight color",
+              active: Boolean(toolbarState.highlightColor),
+              style: toolbarState.highlightColor
+                ? { color: (HIGHLIGHT_COLORS.filter(function (option) { return option.key === toolbarState.highlightColor; })[0] || {}).value }
+                : null,
+              label: Icon({ icon: "../assets/Icons/highlighter.svg", size: 16 }),
+              onClick: function () { setHighlightMenuOpen(function (open) { return !open; }); }
+            }),
+            highlightMenuOpen ? renderHighlightMenu() : null
+          )
+        ),
+        ReactRef.createElement("div", { className: "rich-toolbar-divider", "aria-hidden": "true" }),
+        ReactRef.createElement("div", { className: "rich-toolbar-group" },
+          createBiographyToolbarButton({ key: "remove-formatting", className: "toolbar-icon-clear-format", title: "Remove formatting", ariaLabel: "Remove formatting", label: Icon({ icon: "../assets/Icons/eraser.svg", size: 16 }), active: false, onClick: removeFormatting })
         ),
         ReactRef.createElement("div", { className: "rich-toolbar-divider", "aria-hidden": "true" }),
         ReactRef.createElement("div", { className: "rich-toolbar-group" },
