@@ -454,7 +454,12 @@
       return "";
     }
     if (character.bioHtml && String(character.bioHtml).trim()) {
-      return String(character.bioHtml).replace(/<img(?![^>]*\bloading=)/gi, '<img loading="lazy" decoding="async"');
+      // normalizeHighlightContrastHtml here (rather than in each of this
+      // function's several read-only callers) is what fixes up highlights
+      // saved before the highlight-contrast behaviour existed, or by some
+      // other path entirely (import, direct IndexedDB edit) -- everywhere
+      // biography HTML is displayed read-only ultimately reads through here.
+      return normalizeHighlightContrastHtml(String(character.bioHtml).replace(/<img(?![^>]*\bloading=)/gi, '<img loading="lazy" decoding="async"'));
     }
     var plainText = String(character.bio || "").trim();
     if (!plainText) {
@@ -933,6 +938,79 @@
     return found ? found.key : null;
   }
 
+  // Perceived-brightness contrast pick (standard YIQ-ish weighting) -- not a
+  // lookup against HIGHLIGHT_COLORS, since any future dark preset (or a
+  // pasted/legacy background-color this app didn't create) needs to resolve
+  // to readable text too, not just today's seven pastel swatches.
+  function contrastTextColorForHex(hex) {
+    var r = parseInt(hex.slice(1, 3), 16);
+    var g = parseInt(hex.slice(3, 5), 16);
+    var b = parseInt(hex.slice(5, 7), 16);
+    var brightness = (r * 299 + g * 587 + b * 114) / 1000;
+    return brightness > 150 ? "#000000" : "#ffffff";
+  }
+
+  // Keeps every inline-highlighted element's text readable against its own
+  // background-color, and undoes that once the highlight is gone -- without
+  // ever touching a text color the user picked themselves. The distinction
+  // is the "data-auto-text-color" marker: only a `color` this function set
+  // (marker present) is fair game to update or remove; a `color` found
+  // without the marker is assumed to be the user's own choice and is left
+  // alone. Runs over the *whole* root every time (not just a selection) so
+  // it also fixes up highlights that predate this behaviour, or whose color
+  // changed since it was last applied, whenever the doc loads or changes.
+  function normalizeHighlightContrast(root) {
+    if (!root || !root.querySelectorAll) {
+      return;
+    }
+    var elements = root.querySelectorAll('[style*="background-color"], [data-auto-text-color]');
+    Array.prototype.forEach.call(elements, function (node) {
+      var hex = colorValueToHex(node.style.backgroundColor);
+      var isAuto = node.getAttribute("data-auto-text-color") === "1";
+      if (!hex) {
+        // No real highlight left on this element -- if we're the ones who
+        // colored its text, put that back the way we found it.
+        if (isAuto) {
+          node.style.removeProperty("color");
+          node.removeAttribute("data-auto-text-color");
+          var styleAttr = node.getAttribute("style");
+          if (styleAttr !== null && !styleAttr.trim()) {
+            node.removeAttribute("style");
+          }
+          if (node.tagName === "SPAN" && node.attributes.length === 0) {
+            var parent = node.parentNode;
+            if (parent) {
+              while (node.firstChild) {
+                parent.insertBefore(node.firstChild, node);
+              }
+              parent.removeChild(node);
+            }
+          }
+        }
+        return;
+      }
+      if (node.style.color && !isAuto) {
+        return;
+      }
+      node.style.color = contrastTextColorForHex(hex);
+      node.setAttribute("data-auto-text-color", "1");
+    });
+  }
+
+  // Same normalization, but for an HTML string rather than a live editor --
+  // used by the read-only viewer, which renders via dangerouslySetInnerHTML
+  // rather than through the contentEditable surface that syncEditorToChange
+  // and the value-load effect already keep normalized.
+  function normalizeHighlightContrastHtml(htmlString) {
+    if (!htmlString) {
+      return htmlString;
+    }
+    var container = document.createElement("div");
+    container.innerHTML = htmlString;
+    normalizeHighlightContrast(container);
+    return container.innerHTML;
+  }
+
   function CharacterBiographyWorkspace(props) {
     var settings = props && typeof props === "object" ? props : {};
     var editable = Boolean(settings.editable);
@@ -1002,6 +1080,10 @@
         editor.innerHTML = htmlValue;
       }
       normalizeChecklistItems(editor);
+      // Picks up highlights saved before this contrast behaviour existed
+      // (or whose color was set some other way) the moment the field opens,
+      // not just the next time it's edited.
+      normalizeHighlightContrast(editor);
       lastSyncedRef.current = { html: htmlValue };
     }, [editable, htmlValue]);
 
@@ -1083,6 +1165,11 @@
       // interactive box -- catch that here so it upgrades on the very next
       // input event rather than staying inert until the page reloads.
       normalizeChecklistItems(editor);
+      // Every mutation (typing, Bold/Italic, checklist toggles, applying or
+      // clearing a highlight, Remove Formatting, ...) funnels through here,
+      // which makes this the one place that needs to keep highlighted text
+      // readable and clean up the auto text color once a highlight is gone.
+      normalizeHighlightContrast(editor);
       var nextHtml = editor.innerHTML;
       lastSyncedRef.current = { html: nextHtml };
       onChange(nextHtml);
